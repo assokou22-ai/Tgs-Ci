@@ -1,0 +1,8 @@
+{
+  "name": "RM- TGS CI - Repair - Gestionnaire PRO",
+  "description": "Application de gestion d'atelier spécialisée Macbook pour TGS CI. Inclut la gestion multimédia (Vidéo/Audio), les rapports techniques avancés et l'export de dossiers juridiques.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}
