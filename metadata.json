@@ -1,8 +1,11 @@
 {
-  "name": "RM- TGS CI - Repair - Gestionnaire PRO",
-  "description": "Application de gestion d'atelier spécialisée Macbook pour TGS CI. Inclut la gestion multimédia (Vidéo/Audio), les rapports techniques avancés et l'export de dossiers juridiques.",
+  "name": "RM- TGS CI - Repair - Gestionnaire PRO 2026 - OK",
+  "description": "Système de gestion haute performance pour TGS-CI, spécialisé dans la réparation MacBook/Pro/Air/Neo. Intègre l'IA Gemini 1.5/2.0 pour les diagnostics, une base de données technique ultra-précise (Références AXXXX), et la gestion avancée des stocks et factures.",
   "requestFramePermissions": [
     "camera",
     "microphone"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
   ]
 }

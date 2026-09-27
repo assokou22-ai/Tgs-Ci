@@ -12,7 +12,10 @@ const Modal: React.FC<ModalProps> = ({ isOpen, onClose, children, containerClass
 
   useEffect(() => {
     if (isOpen) {
-      setIsRendered(true);
+      const timer = setTimeout(() => {
+        setIsRendered(true);
+      }, 0);
+      return () => clearTimeout(timer);
     }
   }, [isOpen]);
 
@@ -26,7 +29,7 @@ const Modal: React.FC<ModalProps> = ({ isOpen, onClose, children, containerClass
 
   return (
     <div
-      className={`fixed inset-0 bg-black z-50 flex justify-center items-center transition-opacity duration-300 ${isOpen ? 'bg-opacity-75' : 'bg-opacity-0'}`}
+      className={`fixed inset-0 bg-black z-[200] flex justify-center items-center transition-opacity duration-300 ${isOpen ? 'bg-opacity-75' : 'bg-opacity-0'}`}
       onClick={onClose}
       onTransitionEnd={handleAnimationEnd}
     >

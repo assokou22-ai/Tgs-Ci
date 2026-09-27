@@ -4,41 +4,59 @@ import { useAppSettings } from './useAppSettings.ts';
 import { ColorPalette, ThemeType } from '../types.ts';
 
 const THEMES: Record<Exclude<ThemeType, 'system' | 'ia-aleatoire'>, ColorPalette> = {
-    'blanc-noir-bleu': {
-        primary: '#2563eb', // Blue 600
-        secondary: '#1e293b', // Slate 800
-        bg: '#ffffff',
-        surface: '#f8fafc',
-        text: '#0f172a',
-        textMuted: '#64748b',
+    'monochrome': {
+        primary: '#3b82f6',
+        secondary: '#6b7280',
+        bg: '#F5F5F7',
+        surface: '#FFFFFF',
+        text: '#1D1D1F',
+        textMuted: '#86868B',
         accent: '#3b82f6'
     },
-    'blanc-vert-bleu': {
-        primary: '#10b981', // Emerald 500
-        secondary: '#0369a1', // Sky 700
-        bg: '#ffffff',
-        surface: '#f0fdf4',
-        text: '#064e3b',
-        textMuted: '#6b7280',
-        accent: '#0ea5e9'
+    'clair': {
+        primary: '#007AFF',
+        secondary: '#8E8E93',
+        bg: '#F5F5F7',
+        surface: '#FFFFFF',
+        text: '#1D1D1F',
+        textMuted: '#86868B',
+        accent: '#007AFF'
     },
-    'blanc-bleu-noir': {
-        primary: '#0ea5e9', // Sky 500
-        secondary: '#0f172a', // Slate 900
-        bg: '#ffffff',
-        surface: '#f1f5f9',
-        text: '#1e293b',
-        textMuted: '#475569',
-        accent: '#2563eb'
+    'sombre': {
+        primary: '#0A84FF',
+        secondary: '#8E8E93',
+        bg: '#1C1C1E',
+        surface: '#2C2C2E',
+        text: '#F5F5F7',
+        textMuted: '#8E8E93',
+        accent: '#0A84FF'
     },
-    'professionnel': {
-        primary: '#000000',
-        secondary: '#4b5563',
-        bg: '#ffffff',
-        surface: '#ffffff',
+    'bleu-apple': {
+        primary: '#0056D2',
+        secondary: '#4A5568',
+        bg: '#F0F4F8',
+        surface: '#FFFFFF',
+        text: '#1A365D',
+        textMuted: '#718096',
+        accent: '#0056D2'
+    },
+    'vert-nature': {
+        primary: '#2D6A4F',
+        secondary: '#52796F',
+        bg: '#F2F7F2',
+        surface: '#FFFFFF',
+        text: '#1B2E1B',
+        textMuted: '#84A98C',
+        accent: '#2D6A4F'
+    },
+    'vga-classic': {
+        primary: '#0000FF', // Bleu pur pour les boutons
+        secondary: '#000000',
+        bg: '#D4D0C8', // Gris Windows Classic
+        surface: '#FFFFFF',
         text: '#000000',
-        textMuted: '#9ca3af',
-        accent: '#111827'
+        textMuted: '#404040',
+        accent: '#FF0000' // Rouge pur pour alertes
     }
 };
 
@@ -48,53 +66,51 @@ export const useTheme = () => {
     useEffect(() => {
         const root = document.documentElement;
         
-        // 1. Dark mode logic
         const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
         const updateDarkMode = () => {
+            if (settings.theme === 'vga-classic') {
+                root.classList.remove('dark');
+                root.classList.add('legacy-vga');
+                return;
+            } else {
+                root.classList.remove('legacy-vga');
+            }
+
             if (settings.theme === 'system') {
                 if (mediaQuery.matches) root.classList.add('dark');
                 else root.classList.remove('dark');
+            } else if (settings.theme === 'sombre') {
+                root.classList.add('dark');
             } else {
-                // For custom themes, we usually disable standard dark mode to control everything via variables
                 root.classList.remove('dark');
             }
         };
 
         updateDarkMode();
-        mediaQuery.addEventListener('change', updateDarkMode);
-
-        // 2. Custom Variables Injection
-        if (settings.theme !== 'system') {
-            let palette: ColorPalette | undefined;
-            
-            if (settings.theme === 'ia-aleatoire') {
-                palette = settings.customPalette;
-            } else {
-                palette = THEMES[settings.theme as keyof typeof THEMES];
-            }
-
-            if (palette) {
-                root.style.setProperty('--color-primary', palette.primary);
-                root.style.setProperty('--color-bg', palette.bg);
-                root.style.setProperty('--color-surface', palette.surface);
-                root.style.setProperty('--color-text', palette.text);
-                root.style.setProperty('--color-text-muted', palette.textMuted);
-                root.style.setProperty('--color-accent', palette.accent);
-                
-                // Add a global class to help components adapt
-                root.classList.add('custom-theme');
-            }
-        } else {
-            // Reset to defaults
-            root.classList.remove('custom-theme');
-            root.style.removeProperty('--color-primary');
-            root.style.removeProperty('--color-bg');
-            root.style.removeProperty('--color-surface');
-            root.style.removeProperty('--color-text');
-            root.style.removeProperty('--color-text-muted');
-            root.style.removeProperty('--color-accent');
+        if (mediaQuery.addEventListener) {
+            mediaQuery.addEventListener('change', updateDarkMode);
         }
 
-        return () => mediaQuery.removeEventListener('change', updateDarkMode);
+        const palette = settings.theme === 'ia-aleatoire' 
+            ? settings.customPalette 
+            : THEMES[settings.theme as keyof typeof THEMES];
+
+        if (palette) {
+            root.style.setProperty('--color-primary', palette.primary);
+            root.style.setProperty('--color-bg', palette.bg);
+            root.style.setProperty('--color-surface', palette.surface);
+            root.style.setProperty('--color-text', palette.text);
+            root.style.setProperty('--color-text-muted', palette.textMuted);
+            root.style.setProperty('--color-accent', palette.accent);
+            root.classList.add('custom-theme');
+        } else {
+            root.classList.remove('custom-theme');
+        }
+
+        return () => {
+            if (mediaQuery.removeEventListener) {
+                mediaQuery.removeEventListener('change', updateDarkMode);
+            }
+        };
     }, [settings.theme, settings.customPalette]);
 };

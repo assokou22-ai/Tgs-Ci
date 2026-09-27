@@ -1,12 +1,12 @@
 
 export const getEnv = (key: string): string | undefined => {
   try {
-    // @ts-ignore
+    // @ts-expect-error process might not be defined
     if (typeof process !== 'undefined' && process && process.env) {
-      // @ts-ignore
+      // @ts-expect-error process might not be defined
       return process.env[key];
     }
-  } catch (e) {
+  } catch {
     // Ignore errors in environments where process is restricted
   }
   return undefined;

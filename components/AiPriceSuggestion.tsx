@@ -1,3 +1,4 @@
+
 import React, { useState } from 'react';
 import { GoogleGenAI, Type, GenerateContentResponse } from "@google/genai";
 import { SparklesIcon } from './icons.tsx';
@@ -27,11 +28,11 @@ const AiPriceSuggestion: React.FC<AiPriceSuggestionProps> = ({ problemDescriptio
     `;
 
     try {
-        // Fixed: Directly use process.env.API_KEY and gemini-3-flash-preview model
-        const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+        // Fix: Follow initialization guidelines strictly.
+        const ai = new GoogleGenAI({apiKey: process.env.API_KEY});
         const response: GenerateContentResponse = await ai.models.generateContent({
-            model: 'gemini-3-flash-preview',
-            contents: prompt,
+            model: 'gemini-1.5-flash',
+            contents: [{ role: 'user', parts: [{ text: prompt }] }],
             config: {
               responseMimeType: "application/json",
               responseSchema: {
@@ -58,7 +59,7 @@ const AiPriceSuggestion: React.FC<AiPriceSuggestionProps> = ({ problemDescriptio
             console.error("Failed to parse AI response:", parseError);
             setError("La réponse de l'IA est malformée.");
         }
-    } catch (e: any) {
+    } catch (e) {
         console.error("Erreur de suggestion de prix IA :", e);
         setError("La suggestion de l'IA a échoué. Réessayez ou vérifiez la connexion.");
     } finally {

@@ -1,15 +1,16 @@
 
-
-
 import React, { useState, useEffect, useRef } from 'react';
 import Modal from './Modal.tsx';
 import { DiagnosticCheck, RepairTicket, EntryCondition } from '../types.ts';
-import { PlusCircleIcon, ExclamationTriangleIcon, TrashIcon, CloudArrowDownIcon } from './icons.tsx';
+import { PlusCircleIcon, TrashIcon, CloudArrowDownIcon } from './icons.tsx';
+import SmartAutocompleteInput from './SmartAutocompleteInput.tsx';
+import { learnFromData } from '../services/suggestionService.ts';
+import { compressImageBase64 } from '../utils/imageCompression.ts';
 
 interface DiagnosticFormModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onSave: (report: DiagnosticCheck[], images: string[]) => void;
+  onSave: (report: DiagnosticCheck[], images: string[], selectedScenario: EntryCondition) => void;
   ticket: RepairTicket;
 }
 
@@ -19,26 +20,149 @@ const MANDATORY_COMPONENTS = [
 ];
 
 const DiagnosticFormModal: React.FC<DiagnosticFormModalProps> = ({ isOpen, onClose, onSave, ticket }) => {
+  const [selectedScenario, setSelectedScenario] = useState<EntryCondition>(
+    ticket.diagnosticSheetB?.entryCondition || EntryCondition.NO_POWER
+  );
   const [report, setReport] = useState<DiagnosticCheck[]>([]);
   const [images, setImages] = useState<string[]>([]);
   const [newComponentName, setNewComponentName] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const entryCondition = ticket.diagnosticSheetB?.entryCondition || EntryCondition.NO_POWER;
-
   useEffect(() => {
     if (isOpen) {
-      const initialReport = ticket.diagnosticReport && ticket.diagnosticReport.length > 0
-        ? [...ticket.diagnosticReport]
-        : MANDATORY_COMPONENTS.map(name => ({
+      const activeCond = ticket.diagnosticSheetB?.entryCondition || EntryCondition.NO_POWER;
+
+      let initialReport: DiagnosticCheck[] = [];
+      if (ticket.diagnosticReport && ticket.diagnosticReport.length > 0) {
+        initialReport = [...ticket.diagnosticReport];
+      } else {
+        if (activeCond === EntryCondition.BOOT_DISPLAY) {
+          initialReport = MANDATORY_COMPONENTS.map(name => ({
             component: name,
-            status: (entryCondition === EntryCondition.NO_POWER) ? 'Non testable (état machine)' : 'Non testé' as any,
-            notes: '',
+            status: 'OK',
+            notes: 'Fonctionnel'
           }));
-      setReport(initialReport);
-      setImages(ticket.diagnosticImages || []);
+        } else if (activeCond === EntryCondition.BOOT_NO_DISPLAY) {
+          initialReport = [
+            {
+              component: 'Écran (Affichage/Rétro)',
+              status: 'Non testable (état machine)',
+              notes: 'Ne peut être testé tant que l\'affichage/carte mère ne démarre pas'
+            }
+          ];
+        } else {
+          initialReport = MANDATORY_COMPONENTS.map(name => ({
+            component: name,
+            status: 'Non testable (état machine)',
+            notes: 'Ne peut être testé tant que la carte mère ne démarre pas'
+          }));
+        }
+      }
+
+      const timer = setTimeout(() => {
+        setSelectedScenario(activeCond);
+        setReport(initialReport as DiagnosticCheck[]);
+        setImages(ticket.diagnosticImages || []);
+      }, 0);
+      return () => clearTimeout(timer);
     }
-  }, [isOpen, ticket.diagnosticReport, ticket.diagnosticImages, entryCondition]);
+  }, [isOpen, ticket.diagnosticReport, ticket.diagnosticImages, ticket.diagnosticSheetB?.entryCondition]);
+
+  const handleScenarioChange = (newScenario: EntryCondition) => {
+    // Check if the current report contains any customized modifications
+    const isReportCustomized = report.length > 0 && (
+      report.some(item => {
+        const isDefaultOK = item.status === 'OK' && (item.notes === 'Fonctionnel' || item.notes === '');
+        const isDefaultNonTestable = item.status === 'Non testable (état machine)' && (item.notes === 'Ne peut etre testé tant que la carte mere ne demarre' || item.notes === '');
+        return !isDefaultOK && !isDefaultNonTestable;
+      })
+    );
+
+    if (isReportCustomized) {
+      const scenarioName = newScenario === EntryCondition.BOOT_DISPLAY 
+        ? "Scénario A (S'affiche)" 
+        : newScenario === EntryCondition.BOOT_NO_DISPLAY 
+          ? "Scénario B (Pas d'affichage)" 
+          : "Scénario C (Ne démarre pas)";
+          
+      const confirmReset = window.confirm(
+        `Vous avez saisi des observations personnalisées dans ce rapport technique. ` +
+        `Voulez-vous également charger le modèle de composants par défaut pour le ${scenarioName} ?\n\n` +
+        `• Cliquez sur "OK" pour charger le modèle par défaut (effacera vos modifications).\n` +
+        `• Cliquez sur "Annuler" pour changer uniquement de scénario et conserver vos modifications.`
+      );
+      
+      if (!confirmReset) {
+        // Only update the selected scenario type but do not overwrite report!
+        setSelectedScenario(newScenario);
+        return;
+      }
+    }
+
+    setSelectedScenario(newScenario);
+    
+    let newReport: DiagnosticCheck[] = [];
+    if (newScenario === EntryCondition.BOOT_DISPLAY) {
+      newReport = MANDATORY_COMPONENTS.map(name => ({
+        component: name,
+        status: 'OK',
+        notes: 'Fonctionnel'
+      }));
+    } else if (newScenario === EntryCondition.BOOT_NO_DISPLAY) {
+      newReport = [
+        {
+          component: 'Écran (Affichage/Rétro)',
+          status: 'Non testable (état machine)',
+          notes: 'Ne peut etre testé tant que la carte mere ne demarre'
+        }
+      ];
+    } else {
+      newReport = MANDATORY_COMPONENTS.map(name => ({
+        component: name,
+        status: 'Non testable (état machine)',
+        notes: 'Ne peut etre testé tant que la carte mere ne demarre'
+      }));
+    }
+    setReport(newReport);
+  };
+
+  const handleRemoveComponent = (index: number) => {
+    setReport(prev => prev.filter((_, i) => i !== index));
+  };
+
+  const handleResetToDefaultTemplate = (scenario: EntryCondition) => {
+    let newReport: DiagnosticCheck[] = [];
+    if (scenario === EntryCondition.BOOT_DISPLAY) {
+      newReport = MANDATORY_COMPONENTS.map(name => ({
+        component: name,
+        status: 'OK',
+        notes: 'Fonctionnel'
+      }));
+    } else if (scenario === EntryCondition.BOOT_NO_DISPLAY) {
+      newReport = [
+        {
+          component: 'Écran (Affichage/Rétro)',
+          status: 'Non testable (état machine)',
+          notes: 'Ne peut être testé tant que l\'affichage/carte mère ne démarre pas'
+        }
+      ];
+    } else {
+      newReport = MANDATORY_COMPONENTS.map(name => ({
+        component: name,
+        status: 'Non testable (état machine)',
+        notes: 'Ne peut être testé tant que la carte mère ne démarre pas'
+      }));
+    }
+    setReport(newReport);
+  };
+
+  const handleSetAllStatus = (status: string, notes: string) => {
+    setReport(prev => prev.map(item => ({
+      ...item,
+      status,
+      notes: notes !== undefined ? notes : item.notes
+    })));
+  };
 
   const handleItemChange = (index: number, field: keyof DiagnosticCheck, value: string) => {
     const updatedReport = [...report];
@@ -57,12 +181,12 @@ const DiagnosticFormModal: React.FC<DiagnosticFormModalProps> = ({ isOpen, onClo
     const files = e.target.files;
     if (!files) return;
 
-    // Fix: Explicitly typing 'file' as Blob to resolve "Argument of type 'unknown' is not assignable to parameter of type 'Blob'" error
-    Array.from(files).forEach((file: Blob) => {
+    Array.from(files).forEach((file: File) => {
         const reader = new FileReader();
-        reader.onload = (event) => {
+        reader.onload = async (event) => {
             const base64 = event.target?.result as string;
-            setImages(prev => [...prev, base64].slice(0, 6)); // Max 6 images
+            const compressed = await compressImageBase64(base64);
+            setImages(prev => [...prev, compressed].slice(0, 6));
         };
         reader.readAsDataURL(file);
     });
@@ -72,130 +196,178 @@ const DiagnosticFormModal: React.FC<DiagnosticFormModalProps> = ({ isOpen, onClo
     setImages(prev => prev.filter((_, i) => i !== index));
   };
 
-  const handleSubmit = () => {
-    onSave(report, images);
+  const handleSubmit = async () => {
+    for (const item of report) {
+        if (item.notes.length > 3) {
+            await learnFromData({ notes: item.notes }, { notes: 'diagnostic_notes' });
+        }
+    }
+    onSave(report, images, selectedScenario);
   };
   
   if (!isOpen) return null;
 
   return (
-    <Modal isOpen={isOpen} onClose={onClose} containerClassName="bg-gray-800 rounded-lg shadow-xl w-full max-w-4xl m-4 p-6 border border-gray-700">
+    <Modal isOpen={isOpen} onClose={onClose} containerClassName="bg-apple-surface rounded-3xl shadow-2xl w-full max-w-4xl m-4 p-6 border border-white/10">
       <div className="flex flex-col h-[85vh]">
-        <div className="flex justify-between items-start mb-4">
-            <div>
-                <h2 className="text-2xl font-bold text-white">Diagnostic Fonctionnel Appareil</h2>
-                <div className="mt-1 flex items-center gap-2 px-2 py-0.5 bg-blue-900/30 text-blue-300 border border-blue-800 rounded text-xs">
-                    <ExclamationTriangleIcon className="w-3 h-3" />
-                    <span>Mode : {entryCondition}</span>
+        <div className="flex justify-between items-start mb-6">
+            <div className="flex-grow">
+                <h2 className="text-2xl font-black text-white uppercase tracking-tighter">Rapport Technique</h2>
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  {Object.values(EntryCondition).map(cond => {
+                    const isSelected = selectedScenario === cond;
+                    let label = "";
+                    if (cond === EntryCondition.BOOT_DISPLAY) label = "Scénario A (S'affiche)";
+                    else if (cond === EntryCondition.BOOT_NO_DISPLAY) label = "Scénario B (Pas d'affichage)";
+                    else label = "Scénario C (Ne démarre pas)";
+
+                    return (
+                      <button
+                        key={cond}
+                        type="button"
+                        onClick={() => handleScenarioChange(cond)}
+                        className={`px-3 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-wider border transition-all ${
+                          isSelected 
+                            ? 'bg-blue-600 text-white border-blue-500 shadow-md shadow-blue-950/50' 
+                            : 'bg-white/5 text-slate-400 border-white/5 hover:bg-white/10'
+                        }`}
+                      >
+                        {label}
+                      </button>
+                    );
+                  })}
+
+                  <button
+                    type="button"
+                    onClick={() => handleResetToDefaultTemplate(selectedScenario)}
+                    className="px-2.5 py-1.5 bg-white/5 hover:bg-white/10 text-slate-400 hover:text-white rounded-xl text-[9px] font-bold uppercase tracking-wider border border-white/10 transition-colors ml-auto"
+                    title="Recharger la liste standard des composants pour ce scénario"
+                  >
+                    Réinitialiser au modèle
+                  </button>
                 </div>
             </div>
-            <button onClick={onClose} className="text-gray-400 hover:text-white">&times;</button>
+            <button onClick={onClose} className="text-apple-muted hover:text-white transition-colors text-2xl font-bold ml-4">&times;</button>
+        </div>
+
+        {/* Quick Batch Bar */}
+        <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 bg-white/[0.03] rounded-xl border border-white/5 mb-3 text-[10px]">
+          <div className="text-slate-400 font-bold uppercase tracking-wider text-[9px]">
+            Composants ({report.length})
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => handleSetAllStatus('OK', 'Fonctionnel')}
+              className="px-2 py-1 bg-green-500/10 hover:bg-green-500/20 text-green-400 rounded-lg text-[9px] font-black uppercase tracking-wider border border-green-500/20 transition-all"
+            >
+              Tout marquer OK
+            </button>
+            <button
+              type="button"
+              onClick={() => handleSetAllStatus('Non testable (état machine)', 'Ne peut être testé tant que la carte mère ne démarre pas')}
+              className="px-2 py-1 bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 rounded-lg text-[9px] font-black uppercase tracking-wider border border-amber-500/20 transition-all"
+            >
+              Tout marquer Non Testable
+            </button>
+          </div>
         </div>
 
         <div className="flex-grow overflow-y-auto pr-2 space-y-6 custom-scrollbar">
-          {/* Section Tests */}
-          <div className="space-y-3">
+          <div className="space-y-2">
             {report.map((item, index) => (
-                <div key={index} className="grid grid-cols-1 md:grid-cols-12 gap-3 p-3 bg-gray-700/50 rounded-lg border border-gray-600 hover:border-gray-500 transition-colors">
-                <div className="md:col-span-4 flex items-center">
-                    <span className="font-semibold text-gray-200 text-sm">{item.component}</span>
-                </div>
-                <div className="md:col-span-3">
-                    <select
-                    value={item.status}
-                    onChange={(e) => handleItemChange(index, 'status', e.target.value)}
-                    className={`block w-full text-xs rounded-md border-gray-600 shadow-sm focus:ring-blue-500 focus:border-blue-500 bg-gray-800 text-white ${
-                        item.status === 'OK' ? 'text-green-400' : 
-                        item.status === 'Problème' ? 'text-red-400' : 
-                        item.status === 'Non testable (état machine)' ? 'text-orange-400' : 'text-gray-400'
-                    }`}
-                    >
-                    <option value="Non testé">Non testé</option>
-                    <option value="OK">OK / Fonctionnel</option>
-                    <option value="Problème">Défaut / Problème</option>
-                    <option value="Non testable (état machine)">Non testable (État d'arrivée)</option>
-                    </select>
-                </div>
-                <div className="md:col-span-5">
-                    <input
-                    type="text"
-                    value={item.notes}
-                    onChange={(e) => handleItemChange(index, 'notes', e.target.value)}
-                    placeholder="Notes précises sur l'état..."
-                    className="block w-full text-xs rounded-md border-gray-600 shadow-sm focus:border-blue-500 focus:ring-blue-500 bg-gray-800 text-white"
-                    />
-                </div>
+                <div key={index} className="grid grid-cols-1 md:grid-cols-12 gap-3 p-3 bg-white/[0.02] rounded-2xl border border-white/5 hover:border-white/10 transition-colors group items-center">
+                    <div className="md:col-span-4 flex items-center gap-2">
+                        <input
+                            type="text"
+                            value={item.component}
+                            onChange={(e) => handleItemChange(index, 'component', e.target.value)}
+                            className="font-bold text-slate-200 text-xs uppercase tracking-tight bg-transparent border-b border-transparent focus:border-blue-500 outline-none w-full px-1 py-0.5 rounded transition-colors"
+                        />
+                    </div>
+                    <div className="md:col-span-3">
+                        <select
+                            value={item.status}
+                            onChange={(e) => handleItemChange(index, 'status', e.target.value)}
+                            className={`block w-full text-[10px] font-black uppercase rounded-lg border-white/10 shadow-sm focus:ring-apple-blue focus:border-apple-blue bg-black/40 text-white p-2 ${
+                                item.status === 'OK' ? 'text-green-400' : 
+                                item.status === 'Problème' ? 'text-red-400' : 
+                                item.status === 'Non testable (état machine)' ? 'text-orange-400' : 'text-slate-500'
+                            }`}
+                        >
+                            <option value="Non testé">Non testé</option>
+                            <option value="OK">OK / Fonctionnel</option>
+                            <option value="Problème">Défaut / Problème</option>
+                            <option value="Non testable (état machine)">Non testable</option>
+                        </select>
+                    </div>
+                    <div className="md:col-span-4">
+                        <SmartAutocompleteInput
+                            category="diagnostic_notes"
+                            value={item.notes}
+                            onChange={(v) => handleItemChange(index, 'notes', v)}
+                            placeholder="Observations techniques..."
+                            className="block w-full text-xs rounded-lg border-white/10 shadow-sm focus:border-apple-blue focus:ring-apple-blue bg-black/40 text-white p-2"
+                        />
+                    </div>
+                    <div className="md:col-span-1 flex justify-end">
+                        <button
+                            type="button"
+                            onClick={() => handleRemoveComponent(index)}
+                            className="p-2 text-slate-500 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-all"
+                            title="Supprimer ce composant"
+                        >
+                            <TrashIcon className="w-4 h-4" />
+                        </button>
+                    </div>
                 </div>
             ))}
           </div>
 
-          {/* Section Images */}
-          <div className="bg-gray-900/30 p-4 rounded-lg border border-gray-700">
-              <div className="flex justify-between items-center mb-4">
-                  <h3 className="text-sm font-bold text-gray-400 uppercase flex items-center gap-2">
-                      <CloudArrowDownIcon className="w-5 h-5 text-blue-400"/>
-                      Photos de Diagnostic ({images.length}/6)
+          <div className="bg-white/5 p-5 rounded-2xl border border-white/10 shadow-inner">
+              <div className="flex justify-between items-center mb-6">
+                  <h3 className="text-[10px] font-black text-apple-muted uppercase tracking-[0.2em] flex items-center gap-2">
+                      <CloudArrowDownIcon className="w-4 h-4 text-apple-blue"/> Preuves visuelles ({images.length}/6)
                   </h3>
-                  <button 
-                    type="button"
-                    onClick={() => fileInputRef.current?.click()}
-                    className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold rounded-md transition-all"
-                  >
-                      Ajouter des photos
-                  </button>
+                  <button type="button" onClick={() => fileInputRef.current?.click()} className="px-4 py-2 bg-apple-blue text-white text-[10px] font-black rounded-xl uppercase tracking-widest shadow-lg shadow-blue-900/20">Ajouter photos</button>
                   <input type="file" ref={fileInputRef} onChange={handleImageUpload} multiple accept="image/*" className="hidden" />
               </div>
 
               {images.length > 0 ? (
                   <div className="grid grid-cols-3 md:grid-cols-6 gap-3">
                       {images.map((img, idx) => (
-                          <div key={idx} className="relative group aspect-square rounded-lg overflow-hidden border border-gray-600">
-                              <img src={img} alt="Diagnostic" className="w-full h-full object-cover" />
-                              <button 
-                                onClick={() => removeImage(idx)}
-                                className="absolute top-1 right-1 bg-red-600 text-white p-1 rounded-full opacity-0 group-hover:opacity-100 transition-opacity"
-                              >
-                                  <TrashIcon className="w-3 h-3" />
-                              </button>
+                          <div key={idx} className="relative group aspect-square rounded-xl overflow-hidden border border-white/10 bg-black shadow-lg">
+                              <img src={img} alt="Expertise" className="w-full h-full object-cover" />
+                              <button onClick={() => removeImage(idx)} className="absolute top-1 right-1 bg-red-600 text-white p-1.5 rounded-full opacity-0 group-hover:opacity-100 transition-opacity shadow-lg"><TrashIcon className="w-3 h-3" /></button>
                           </div>
                       ))}
                   </div>
               ) : (
-                  <p className="text-center text-gray-500 text-xs py-4 border-2 border-dashed border-gray-700 rounded-lg">
-                      Aucune photo jointe. Indispensable pour documenter l'oxydation ou les dommages physiques.
-                  </p>
+                  <div className="py-8 border-2 border-dashed border-white/10 rounded-2xl flex flex-col items-center justify-center opacity-30 text-apple-muted">
+                      <CloudArrowDownIcon className="w-8 h-8 mb-2" />
+                      <p className="text-[9px] font-black uppercase tracking-widest">Documents visuels requis</p>
+                  </div>
               )}
           </div>
         </div>
         
-        <div className="mt-4 pt-4 border-t border-gray-700 grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="mt-6 pt-6 border-t border-white/10 grid grid-cols-1 md:grid-cols-2 gap-6 items-end">
             <div>
-                <h3 className="text-xs font-bold text-gray-500 uppercase mb-2">Ajouter un point de contrôle spécifique</h3>
+                <h3 className="text-[9px] font-black text-apple-muted uppercase tracking-widest mb-2 ml-1">Autre composant</h3>
                 <div className="flex gap-2">
                     <input
                         type="text"
                         value={newComponentName}
                         onChange={(e) => setNewComponentName(e.target.value)}
-                        placeholder="Ex: Lecteur carte SD, Port HDMI..."
-                        className="flex-grow px-3 py-2 text-sm border border-gray-600 rounded-md bg-gray-700 text-white focus:ring-blue-500 outline-none"
+                        placeholder="Ex: Touch Bar..."
+                        className="flex-grow p-2.5 text-xs bg-black/40 border border-white/10 rounded-xl text-white outline-none"
                     />
-                    <button
-                        type="button"
-                        onClick={handleAddNewComponent}
-                        className="p-2 bg-gray-600 text-white rounded-md hover:bg-gray-500"
-                        disabled={!newComponentName.trim()}
-                    >
-                        <PlusCircleIcon className="w-5 h-5" />
-                    </button>
+                    <button type="button" onClick={handleAddNewComponent} className="p-2.5 bg-white/5 text-white rounded-xl hover:bg-white/10 border border-white/10" disabled={!newComponentName.trim()}><PlusCircleIcon className="w-5 h-5" /></button>
                 </div>
             </div>
-            <div className="flex items-end justify-end gap-3">
-              <button type="button" onClick={onClose} className="px-4 py-2 bg-gray-600 text-white font-semibold rounded-md hover:bg-gray-700 text-sm">
-                Annuler
-              </button>
-              <button type="button" onClick={handleSubmit} className="px-6 py-2 bg-blue-600 text-white font-bold rounded-md hover:bg-blue-500 shadow-lg shadow-blue-900/20 text-sm">
-                Valider le Diagnostic
-              </button>
+            <div className="flex justify-end gap-3">
+              <button type="button" onClick={onClose} className="px-6 py-3 text-apple-muted font-black uppercase text-[10px] tracking-widest hover:text-white transition-colors">Annuler</button>
+              <button type="button" onClick={handleSubmit} className="px-8 py-3 bg-apple-blue text-white font-black rounded-xl uppercase text-[10px] tracking-widest shadow-xl shadow-blue-900/40">Certifier le Diagnostic</button>
             </div>
         </div>
       </div>

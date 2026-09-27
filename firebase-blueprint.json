@@ -1,0 +1,212 @@
+{
+  "entities": {
+    "ticket": {
+      "title": "Repair Ticket",
+      "description": "MacBook repair ticket",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" },
+        "status": { "type": "string" },
+        "problemDescription": { "type": "string" },
+        "macModel": { "type": "string" },
+        "macColor": { "type": "string" }
+      },
+      "required": ["id", "createdAt", "updatedAt", "status", "macModel"]
+    },
+    "stock": {
+      "title": "Stock Item",
+      "description": "Inventory stock item",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "quantity": { "type": "number" },
+        "category": { "type": "string" }
+      },
+      "required": ["id", "name", "quantity", "category"]
+    },
+    "stockUsage": {
+      "title": "Stock Usage",
+      "description": "Inventory material consumption",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "stock_id": { "type": "string" },
+        "ticket_id": { "type": "string" },
+        "quantite_utilisee": { "type": "number" }
+      },
+      "required": ["id", "stock_id", "ticket_id", "quantite_utilisee"]
+    },
+    "externalPurchase": {
+      "title": "External Purchase",
+      "description": "Collaborator purchase item",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "ticket_id": { "type": "string" },
+        "item_name": { "type": "string" },
+        "purchase_price": { "type": "number" }
+      },
+      "required": ["id", "ticket_id", "item_name", "purchase_price"]
+    },
+    "service": {
+      "title": "Repair Service",
+      "description": "Predefined repair service item",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "price": { "type": "number" }
+      },
+      "required": ["id", "name", "price"]
+    },
+    "facture": {
+      "title": "Invoice",
+      "description": "Client invoice document",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "numero": { "type": "string" },
+        "total": { "type": "number" },
+        "status": { "type": "string" }
+      },
+      "required": ["id", "numero", "total", "status"]
+    },
+    "proforma": {
+      "title": "Proforma",
+      "description": "Proforma quote document",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "numero": { "type": "string" },
+        "total": { "type": "number" },
+        "status": { "type": "string" }
+      },
+      "required": ["id", "numero", "total", "status"]
+    },
+    "commande": {
+      "title": "Supplier order",
+      "description": "Purchase order for parts",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "numero": { "type": "string" },
+        "total": { "type": "number" },
+        "status": { "type": "string" }
+      },
+      "required": ["id", "numero", "total", "status"]
+    },
+    "appointment": {
+      "title": "Appointment",
+      "description": "Customer appointment",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "clientName": { "type": "string" },
+        "date": { "type": "string" },
+        "time": { "type": "string" }
+      },
+      "required": ["id", "clientName", "date", "time"]
+    },
+    "simpleDocument": {
+      "title": "Simple Document",
+      "description": "Simple custom text document",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "content": { "type": "string" }
+      },
+      "required": ["id", "title", "content"]
+    },
+    "storedDocument": {
+      "title": "Stored Document",
+      "description": "Base64 database doc file mapping",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "data": { "type": "string" }
+      },
+      "required": ["id", "name", "data"]
+    },
+    "suggestions": {
+      "title": "Suggestion Set",
+      "description": "Auto-complete values for forms",
+      "type": "object",
+      "properties": {
+        "category": { "type": "string" },
+        "values": { "type": "array" }
+      },
+      "required": ["category"]
+    },
+    "dailyBackup": {
+      "title": "Daily Backup",
+      "description": "Daily automated system backup state",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "date": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "payload": { "type": "string" }
+      },
+      "required": ["id", "date", "createdAt", "payload"]
+    }
+  },
+  "firestore": {
+    "tickets/{ticketId}": {
+      "schema": "ticket",
+      "description": "MacBook repair tickets database"
+    },
+    "stock/{stockId}": {
+      "schema": "stock",
+      "description": "Inventory stock items"
+    },
+    "stockUsage/{usageId}": {
+      "schema": "stockUsage",
+      "description": "Inventory materials mapping"
+    },
+    "externalPurchases/{purchaseId}": {
+      "schema": "externalPurchase",
+      "description": "External supplier mapping"
+    },
+    "services/{serviceId}": {
+      "schema": "service",
+      "description": "Service definitions"
+    },
+    "factures/{factureId}": {
+      "schema": "facture",
+      "description": "Client invoice database"
+    },
+    "proformas/{proformaId}": {
+      "schema": "proforma",
+      "description": "Client proforma database"
+    },
+    "commandes/{commandeId}": {
+      "schema": "commande",
+      "description": "Parts order database"
+    },
+    "appointments/{appointmentId}": {
+      "schema": "appointment",
+      "description": "Client appointments calendar"
+    },
+    "simpleDocuments/{docId}": {
+      "schema": "simpleDocument",
+      "description": "Custom simple sheets"
+    },
+    "storedDocuments/{storedId}": {
+      "schema": "storedDocument",
+      "description": "User manual uploads"
+    },
+    "suggestions/{categoryId}": {
+      "schema": "suggestions",
+      "description": "Autocomplete suggestion tags"
+    },
+    "dailyBackups/{backupId}": {
+      "schema": "dailyBackup",
+      "description": "Automated closing-hour backups database"
+    }
+  }
+}

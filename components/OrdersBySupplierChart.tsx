@@ -8,6 +8,17 @@ interface OrdersBySupplierChartProps {
 
 const COLORS = ['#4299E1', '#4FD1C5', '#F6E05E', '#F56565', '#B794F4'];
 
+const CustomTooltip = ({ active, payload }: { active?: boolean; payload?: { name: string; value: number }[] }) => {
+    if (active && payload && payload.length) {
+        return (
+        <div className="p-2 bg-gray-700 border border-gray-600 rounded-md shadow-lg">
+            <p className="label text-white">{`${payload[0].name} : ${payload[0].value.toLocaleString('fr-FR')} F`}</p>
+        </div>
+        );
+    }
+    return null;
+};
+
 const OrdersBySupplierChart: React.FC<OrdersBySupplierChartProps> = ({ commandes }) => {
     const chartData = useMemo(() => {
         const data: { [key: string]: number } = {};
@@ -20,17 +31,6 @@ const OrdersBySupplierChart: React.FC<OrdersBySupplierChartProps> = ({ commandes
         return Object.entries(data).map(([name, value]) => ({ name, value })).sort((a,b) => b.value - a.value);
     }, [commandes]);
     
-    const CustomTooltip = ({ active, payload }: any) => {
-        if (active && payload && payload.length) {
-            return (
-            <div className="p-2 bg-gray-700 border border-gray-600 rounded-md shadow-lg">
-                <p className="label text-white">{`${payload[0].name} : ${payload[0].value.toLocaleString('fr-FR')} F`}</p>
-            </div>
-            );
-        }
-        return null;
-    };
-
     return (
         <div className="bg-gray-800 p-4 rounded-lg shadow-lg h-96">
             <h3 className="text-lg font-bold text-white mb-4">Dépenses par Fournisseur</h3>

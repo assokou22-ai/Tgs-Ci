@@ -8,185 +8,146 @@ interface PrintableLegalFolderProps {
   customFieldDefs: CustomFieldDef[];
 }
 
-const PrintableLegalFolder: React.FC<PrintableLegalFolderProps> = ({ ticket, customFieldDefs }) => {
-  const totalCost = (ticket.costs.diagnostic || 0) + (ticket.costs.repair || 0);
-  const balance = totalCost - (ticket.costs.advance || 0);
-
-  const mainContainerStyle: React.CSSProperties = {
-    fontFamily: 'Arial, sans-serif',
-    color: '#000',
-    backgroundColor: 'white',
-    width: '210mm',
-    padding: '12mm',
-    boxSizing: 'border-box',
-    display: 'flex',
-    flexDirection: 'column',
-    fontSize: '8.5pt',
-    lineHeight: '1.3',
-  };
-
+const PrintableLegalFolder: React.FC<PrintableLegalFolderProps> = ({ ticket }) => {
   const sectionHeaderStyle: React.CSSProperties = {
-    backgroundColor: '#1a202c',
-    color: '#fff',
-    padding: '6px 12px',
+    backgroundColor: '#f5f5f7',
+    color: '#000',
+    padding: '5px 10px',
     fontWeight: '900',
     textTransform: 'uppercase',
-    marginTop: '18px',
-    marginBottom: '10px',
-    fontSize: '9.5pt',
+    marginTop: '15px',
+    marginBottom: '8px',
+    fontSize: '8.5pt',
     letterSpacing: '0.5px',
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center'
+    borderLeft: '3pt solid #000'
   };
 
   const gridTableStyle: React.CSSProperties = {
     display: 'grid',
     gridTemplateColumns: '150px 1fr',
-    border: '1px solid #000',
-    marginBottom: '12px'
+    border: '0.8pt solid #eee',
+    marginBottom: '10px'
   };
 
   const gridHeaderStyle: React.CSSProperties = {
-    padding: '6px',
-    backgroundColor: '#f3f4f6',
-    borderRight: '1px solid #000',
-    borderBottom: '1px solid #000',
-    fontWeight: 'bold',
+    padding: '5px 8px',
+    backgroundColor: '#fafafa',
+    borderRight: '0.8pt solid #eee',
+    borderBottom: '0.8pt solid #eee',
+    fontWeight: '700',
     fontSize: '7.5pt',
-    textTransform: 'uppercase'
+    textTransform: 'uppercase',
+    color: '#666'
   };
 
   const gridValueStyle: React.CSSProperties = {
-    padding: '6px',
-    borderBottom: '1px solid #000',
+    padding: '5px 8px',
+    borderBottom: '0.8pt solid #eee',
     fontSize: '8.5pt'
   };
 
   const formatDateTime = (iso?: string) => {
-    if (!iso) return 'Non renseigné';
+    if (!iso) return 'N/A';
     return new Date(iso).toLocaleString('fr-FR', {
         day: '2-digit', month: '2-digit', year: 'numeric',
         hour: '2-digit', minute: '2-digit'
-    }).replace(',', ' à');
+    });
   };
 
-  const batteryLabel = {
-      'unknown': 'INCONNU',
-      'yes': 'FONCTIONNELLE',
-      'no': 'NON FONCTIONNELLE'
-  }[ticket.batteryFunctional] || 'INCONNU';
-
   return (
-    <div style={mainContainerStyle}>
-      {/* HEADER OFFICIEL JURIDIQUE */}
-      <header style={{ borderBottom: '3px solid #000', paddingBottom: '10px', marginBottom: '15px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <div style={{ textAlign: 'left' }}>
-            <div style={{ fontSize: '18pt', fontWeight: '900', color: '#000' }}>TGS - CI</div>
-            <div style={{ fontSize: '9pt', fontWeight: 'bold' }}>EXPERT MACBOOK INDÉPENDANT</div>
-            <div style={{ fontSize: '7pt', color: '#444' }}>COCODY FAYA | ABIDJAN, CÔTE D'IVOIRE</div>
+    <div className="printable-page">
+      <header style={{ borderBottom: '2pt solid #000', paddingBottom: '12px', marginBottom: '15px' }}>
+        <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '5px' }}>
+            <AppleLogo style={{ width: '28px', height: '28px', color: '#000' }} />
         </div>
-        <div style={{ textAlign: 'center' }}>
-            <AppleLogo style={{ width: '35px', height: '35px' }} />
-        </div>
-        <div style={{ textAlign: 'right' }}>
-            <div style={{ fontSize: '11pt', fontWeight: '900', border: '2px solid #000', padding: '4px 10px', display: 'inline-block' }}>
-                DOSSIER DE PREUVE N° {ticket.id}
-            </div>
-            <div style={{ fontSize: '7pt', marginTop: '4px', fontWeight: 'bold' }}>Généré le : {new Date().toLocaleDateString('fr-FR')}</div>
+
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div style={{ textAlign: 'left' }}>
+              <div style={{ fontSize: '20pt', fontWeight: '900', color: '#000', letterSpacing: '0.02em' }}>TGS - CI</div>
+              <div style={{ fontSize: '7.5pt', fontWeight: 'bold', textTransform: 'uppercase', color: '#666' }}>Département Expertise Technique</div>
+          </div>
+          <div style={{ textAlign: 'right' }}>
+              <div style={{ fontSize: '10pt', fontWeight: '900', border: '1.2pt solid #000', padding: '4px 10px', display: 'inline-block' }}>
+                  DOSSIER JURIDIQUE N° {ticket.id}
+              </div>
+              <div style={{ fontSize: '7.5pt', marginTop: '3px', fontWeight: 'bold' }}>Archivé le {new Date().toLocaleDateString('fr-FR')}</div>
+          </div>
         </div>
       </header>
 
-      <div style={{ textAlign: 'center', marginBottom: '15px' }}>
-          <h1 style={{ fontSize: '12pt', fontWeight: '900', textTransform: 'uppercase', textDecoration: 'underline' }}>Synthèse de Conformité Technique et Engagement Contractuel</h1>
-      </div>
-
-      {/* 1. IDENTIFICATION */}
-      <div style={sectionHeaderStyle}><span>1. Identification des Parties & Matériel</span></div>
+      <div style={sectionHeaderStyle}>1. Identification du Dossier</div>
       <div style={gridTableStyle}>
-          <div style={gridHeaderStyle}>Titulaire du dossier</div>
+          <div style={gridHeaderStyle}>Titulaire</div>
           <div style={gridValueStyle}><strong>{ticket.client.name}</strong> ({ticket.client.phone})</div>
-          
-          <div style={gridHeaderStyle}>Appareil Identifié</div>
-          <div style={gridValueStyle}><strong>{ticket.macBrand} {ticket.macModel}</strong></div>
-          
-          <div style={gridHeaderStyle}>État à la Réception</div>
-          <div style={gridValueStyle}>
-              {ticket.powersOn ? "S'allume / Réagit" : "Aucun allumage / Inerte"} | 
-              Batterie : {batteryLabel} | 
-              Chargeur : {ticket.chargerIncluded ? 'FOURNI' : 'ABSENT'}
-          </div>
-
-          <div style={gridHeaderStyle}>Problème Déclaré</div>
-          <div style={{ ...gridValueStyle, borderBottom: 'none' }}>{ticket.problemDescription}</div>
+          <div style={gridHeaderStyle}>Matériel</div>
+          <div style={gridValueStyle}><strong>{ticket.macBrand} {ticket.macModel}</strong> | S/N: {ticket.serialNumber || 'N/A'}</div>
+          <div style={gridHeaderStyle}>Date d'Entrée</div>
+          <div style={{ ...gridValueStyle, borderBottom: 'none' }}>{formatDateTime(ticket.createdAt)}</div>
       </div>
 
-      {/* 2. TRAÇABILITÉ CHRONOLOGIQUE */}
-      <div style={sectionHeaderStyle}><span>2. Traçabilité Chronologique de l'Intervention</span></div>
-      <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: '12px', border: '1px solid #000' }}>
+      <div style={sectionHeaderStyle}>2. État Initial Matériel</div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '10px', marginBottom: '10px' }}>
+          <div style={{ border: '0.4pt solid #DDD', padding: '8px', textAlign: 'center' }}>
+            <div style={{ fontSize: '7pt', fontWeight: 'bold', color: '#666' }}>Chargeur</div>
+            <div style={{ fontSize: '9pt', fontWeight: 'bold' }}>{ticket.chargerIncluded ? 'OUI' : 'NON'}</div>
+          </div>
+          <div style={{ border: '0.4pt solid #DDD', padding: '8px', textAlign: 'center' }}>
+            <div style={{ fontSize: '7pt', fontWeight: 'bold', color: '#666' }}>Batterie</div>
+            <div style={{ fontSize: '9pt', fontWeight: 'bold' }}>{ticket.batteryFunctional === 'yes' ? 'OK' : ticket.batteryFunctional === 'no' ? 'HS' : 'Inconnue'}</div>
+          </div>
+          <div style={{ border: '0.4pt solid #DDD', padding: '8px', textAlign: 'center' }}>
+            <div style={{ fontSize: '7pt', fontWeight: 'bold', color: '#666' }}>Allumage</div>
+            <div style={{ fontSize: '9pt', fontWeight: 'bold' }}>{ticket.powersOn ? 'OUI' : 'NON'}</div>
+          </div>
+      </div>
+
+      <div style={sectionHeaderStyle}>3. Journal des Interventions</div>
+      <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: '10px', fontSize: '7.5pt' }}>
           <thead>
-              <tr style={{ backgroundColor: '#f3f4f6', fontSize: '7pt', fontWeight: 'bold' }}>
-                  <th style={{ border: '1px solid #000', padding: '4px', textAlign: 'left' }}>DATE / HEURE</th>
-                  <th style={{ border: '1px solid #000', padding: '4px', textAlign: 'left' }}>OPÉRATEUR</th>
-                  <th style={{ border: '1px solid #000', padding: '4px', textAlign: 'left' }}>ACTION / ÉTAPE RÉALISÉE</th>
+              <tr style={{ backgroundColor: '#000', color: '#fff' }}>
+                  <th style={{ padding: '5px', textAlign: 'left', width: '110px' }}>Date</th>
+                  <th style={{ padding: '5px', textAlign: 'left', width: '80px' }}>Auteur</th>
+                  <th style={{ padding: '5px', textAlign: 'left' }}>Action Réalisée</th>
               </tr>
           </thead>
-          <tbody>
+          <tbody style={{ border: '0.8pt solid #eee' }}>
               {ticket.history.map((entry, idx) => (
-                  <tr key={idx} style={{ fontSize: '7.5pt' }}>
-                      <td style={{ border: '1px solid #000', padding: '4px', fontMono: 'monospace' }}>{formatDateTime(entry.timestamp)}</td>
-                      <td style={{ border: '1px solid #000', padding: '4px' }}>{entry.user}</td>
-                      <td style={{ border: '1px solid #000', padding: '4px' }}>{entry.action}</td>
+                  <tr key={idx} style={{ borderBottom: '0.4pt solid #eee' }}>
+                      <td style={{ padding: '5px', fontFamily: 'monospace' }}>{formatDateTime(entry.timestamp)}</td>
+                      <td style={{ padding: '5px', fontWeight: 'bold' }}>{entry.user.toUpperCase()}</td>
+                      <td style={{ padding: '5px' }}>{entry.action}</td>
                   </tr>
               ))}
           </tbody>
       </table>
 
-      {/* 3. AUDIT TECHNIQUE COMPLET */}
-      <div style={sectionHeaderStyle}><span>3. Audit Technique & Expertise Approfondie</span></div>
-      <div style={{ border: '1px solid #000', padding: '8px', backgroundColor: '#fafafa', marginBottom: '12px' }}>
-          <div style={{ fontWeight: '900', borderBottom: '1px solid #000', paddingBottom: '4px', marginBottom: '8px' }}>RAPPORT DE DIAGNOSTIC FONCTIONNEL (FICHE A)</div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '5px' }}>
-              {ticket.diagnosticReport?.map((dr, i) => (
-                  <div key={i} style={{ borderBottom: '1px dashed #ccc', padding: '2px 0', fontSize: '7.5pt' }}>
-                      <strong>{dr.component} :</strong> {dr.status} {dr.notes ? `[${dr.notes}]` : ''}
-                  </div>
-              ))}
-          </div>
-
-          {ticket.diagnosticSheetB && (
-              <div style={{ marginTop: '12px', borderTop: '2px solid #000', paddingTop: '8px' }}>
-                  <div style={{ fontWeight: '900', textDecoration: 'underline', marginBottom: '5px' }}>EXPERTISE ÉLECTRONIQUE AVANCÉE (FICHE B)</div>
-                  <div style={{ fontSize: '8pt', marginBottom: '5px' }}><strong>Condition initiale :</strong> {ticket.diagnosticSheetB.entryCondition}</div>
-                  <div style={{ fontSize: '8pt', whiteSpace: 'pre-wrap', backgroundColor: '#fff', padding: '5px', border: '1px solid #ddd' }}>
-                      {ticket.diagnosticSheetB.visualInspection || "Aucune anomalie visuelle majeure signalée par l'expert."}
-                  </div>
+      <div style={{ marginTop: 'auto' }}>
+          <div style={sectionHeaderStyle}>4. Cadre Légal TGS-CI</div>
+          <div style={{ fontSize: '8.5pt', color: '#000', textAlign: 'left', marginBottom: '20px', padding: '10px', border: '1pt solid #000', backgroundColor: '#fafafa' }}>
+              <div style={{ fontWeight: '900', textTransform: 'uppercase', marginBottom: '6px', borderBottom: '0.5pt solid #000', paddingBottom: '3px' }}>
+                  Clauses et Conditions Générales :
               </div>
-          )}
-          
-          <div style={{ marginTop: '10px', fontWeight: 'bold', fontSize: '8pt' }}>Notes de l'expert :</div>
-          <div style={{ fontSize: '8.5pt', fontStyle: 'italic', padding: '5px' }}>{ticket.technicianNotes || "Néant."}</div>
-      </div>
-
-      {/* FOOTER JURIDIQUE & SIGNATURES */}
-      <div style={{ marginTop: 'auto', borderTop: '3px solid #000', paddingTop: '10px' }}>
-          <div style={{ fontSize: '7pt', color: '#000', textAlign: 'justify', marginBottom: '15px', lineHeight: '1.3' }}>
-              <strong>MENTIONS ET LIMITES DE RESPONSABILITÉ TGS CI :</strong> TGS CI agit selon une <strong>obligation de moyens</strong>. 
-              La sauvegarde des données avant intervention relève de la <strong>responsabilité exclusive du client</strong> ; l'atelier ne pourra être tenu responsable de toute perte. 
-              La <strong>garantie est limitée à 1 mois</strong> (30j). La garantie est <strong>annulée</strong> en cas de bris de scellé, oxydation, choc physique ou intervention d'un tiers. Tout appareil doit être retiré sous <strong>30 jours</strong> après avis de disponibilité.
-              La signature ci-dessous vaut pour acceptation intégrale du rapport technique et des CGV susmentionnées.
+              <div>• <strong>Diagnostic :</strong> 5 000 F CFA fixes, non remboursables.</div>
+              <div>• <strong>Données :</strong> Sauvegarde à la charge du client exclusivement.</div>
+              <div>• <strong>Garantie :</strong> 30 jours sur l'intervention effectuée.</div>
+              <div>• <strong>Délais :</strong> Abandon réputé après 90 jours sans retrait.</div>
+              <div style={{ marginTop: '5px', fontWeight: 'bold', color: '#c53030' }}>
+                  • Accord Client : L'ouverture pour diagnostic peut annuler la garantie constructeur.
+              </div>
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: '30px' }}>
+
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '30px' }}>
               <div style={{ textAlign: 'center' }}>
-                  <div style={{ fontSize: '8pt', fontWeight: '900', textTransform: 'uppercase' }}>Accord Client & Reconnaissance des Faits</div>
-                  <div style={{ height: '80px', border: '1.5px solid #000', marginTop: '6px', display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: '#fcfcfc' }}>
-                      {ticket.clientSignature && <img src={ticket.clientSignature} style={{ maxHeight: '90%', maxWidth: '95%' }} />}
+                  <div style={{ fontSize: '8pt', fontWeight: '900', textTransform: 'uppercase', marginBottom: '3px' }}>Titulaire</div>
+                  <div style={{ fontSize: '7pt', fontStyle: 'italic', marginBottom: '3px' }}>"Lu et Approuvé"</div>
+                  <div style={{ height: '60px', border: '0.8pt solid #000', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                      {ticket.clientSignature && <img src={ticket.clientSignature} style={{ maxHeight: '90%' }} />}
                   </div>
               </div>
               <div style={{ textAlign: 'center' }}>
-                  <div style={{ fontSize: '8pt', fontWeight: '900', textTransform: 'uppercase' }}>Visa TGS - CI (Cachet)</div>
-                  <div style={{ height: '80px', border: '2px dashed #999', marginTop: '6px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                       <span style={{ color: '#ccc', fontSize: '8pt' }}>VISA EXPERT</span>
+                  <div style={{ fontSize: '8pt', fontWeight: '900', textTransform: 'uppercase', marginBottom: '10px' }}>Visa Expert TGS-CI</div>
+                  <div style={{ height: '60px', border: '0.8pt dashed #ccc', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                       <span style={{ color: '#ccc', fontWeight: '900', fontSize: '9pt' }}>VISA TECHNIQUE</span>
                   </div>
               </div>
           </div>

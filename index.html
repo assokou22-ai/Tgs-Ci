@@ -1,103 +1,260 @@
+
 <!DOCTYPE html>
 <html lang="fr">
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>TGS CI - Gestionnaire MacBook PRO</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, shrink-to-fit=no, viewport-fit=cover" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <title>RM- TGS CI - Repair - Gestionnaire PRO 2026 - OK</title>
+    <meta name="description" content="Système de gestion haute performance pour TGS-CI, spécialisé dans la réparation MacBook/Pro/Air/Neo. Intègre l'IA Gemini 1.5/2.0 pour les diagnostics, une base de données technique ultra-précise (Références AXXXX), et la gestion avancée des stocks et factures." />
+    <meta property="og:title" content="RM- TGS CI - Repair - Gestionnaire PRO 2026 - OK" />
+    <meta property="og:description" content="Système de gestion haute performance pour TGS-CI, spécialisé dans la réparation MacBook/Pro/Air/Neo. Intègre l'IA Gemini 1.5/2.0 pour les diagnostics, une base de données technique ultra-précise (Références AXXXX), et la gestion avancée des stocks et factures." />
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
+      window.process = { env: { API_KEY: "" } };
+      
       tailwind.config = {
         darkMode: 'class',
         theme: {
           extend: {
-            colors: {
-              'apple-blue': '#0066CC',
-              'apple-gray': '#86868b',
-              'custom-primary': 'var(--color-primary, #2563eb)',
-              'custom-bg': 'var(--color-bg, #0f172a)',
-              'custom-surface': 'var(--color-surface, #1e293b)',
-              'custom-text': 'var(--color-text, #f8fafc)',
+            screens: {
+              'xs': '400px',
             },
-            borderRadius: {
-              'xl': '1rem',
-              '2xl': '1.5rem',
-              '3xl': '2rem',
+            colors: {
+              apple: {
+                blue: '#0071e3',
+                deep: '#000000',
+                surface: '#1c1c1e',
+                card: '#2c2c2e',
+                border: '#3a3a3c',
+                muted: '#8e8e93',
+                light: '#f5f5f7'
+              }
             },
             animation: {
-              'fade-in': 'fadeIn 0.3s ease-out',
+              'fade-in': 'fadeIn 0.2s ease-out',
+              'slide-up': 'slideUp 0.3s cubic-bezier(0, 0, 0.2, 1)',
             },
             keyframes: {
-              fadeIn: {
-                '0%': { opacity: '0', transform: 'translateY(10px)' },
-                '100%': { opacity: '1', transform: 'translateY(0)' },
-              }
+              fadeIn: { '0%': { opacity: '0' }, '100%': { opacity: '1' } },
+              slideUp: { '0%': { transform: 'translateY(10px)', opacity: '0' }, '100%': { transform: 'translateY(0)', opacity: '1' } }
             }
           }
         }
       }
     </script>
     <style>
-      @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;700&display=swap');
+      @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap');
       
       :root {
-        font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        font-family: 'Inter', -apple-system, system-ui, sans-serif;
       }
 
       body {
-        background-color: #020617;
-        color: #f8fafc;
+        background-color: #000000;
+        color: #f5f5f7;
         -webkit-font-smoothing: antialiased;
+        padding-top: env(safe-area-inset-top, 0px);
+        padding-bottom: env(safe-area-inset-bottom, 0px);
+        padding-left: env(safe-area-inset-left, 0px);
+        padding-right: env(safe-area-inset-right, 0px);
       }
 
-      .glass {
-        background: rgba(15, 23, 42, 0.6);
-        backdrop-filter: blur(16px);
-        border: 1px solid rgba(255, 255, 255, 0.08);
+      /* Inertial scrolling for touch viewports */
+      * {
+        -webkit-overflow-scrolling: touch;
       }
 
-      .glass-card {
-        background: rgba(30, 41, 59, 0.4);
-        backdrop-filter: blur(12px);
-        border: 1px solid rgba(255, 255, 255, 0.05);
+      /* STRUCTURE A4 UNIFIÉE (ÉCRAN & PRINT) */
+      .printable-page {
+        width: 210mm !important;
+        min-height: 297mm !important;
+        padding: 8mm 10mm;
+        margin: 0 !important;
+        box-sizing: border-box !important;
+        background: #ffffff !important;
+        color: #000000 !important;
+        position: relative !important;
+        display: flex !important;
+        flex-direction: column !important;
+        page-break-inside: avoid !important;
+        break-inside: avoid !important;
+        page-break-after: always !important;
+        break-after: page !important;
+        -webkit-print-color-adjust: exact !important;
+        print-color-adjust: exact !important;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif !important;
+        letter-spacing: 0.02em !important;
+        word-spacing: normal !important;
       }
 
-      .text-gradient {
-        background: linear-gradient(135deg, #ffffff 0%, #94a3b8 100%);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
+      .printable-page:last-child {
+        page-break-after: auto !important;
+        break-after: auto !important;
       }
 
-      /* Custom Scrollbar Premium */
-      ::-webkit-scrollbar { width: 5px; }
-      ::-webkit-scrollbar-track { background: rgba(0, 0, 0, 0.1); }
-      ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.1); border-radius: 10px; }
-      ::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.2); }
+      .printable-page * {
+        letter-spacing: 0.02em !important;
+        box-sizing: border-box;
+      }
+
+      /* STRUCTURE SPÉCIFIQUE FICHE MONO-PAGE (DÉPÔT, RAPPORT TECHNIQUE, ETC.) : STRICTEMENT 1 SEULE PAGE A4 */
+      .printable-page.ticket-single-page,
+      .printable-page.single-page-fit {
+        height: 296mm !important;
+        max-height: 296mm !important;
+        min-height: 296mm !important;
+        overflow: hidden !important;
+        page-break-inside: avoid !important;
+        break-inside: avoid !important;
+        page-break-after: always !important;
+        break-after: page !important;
+      }
+
+      .printable-page.ticket-single-page:last-child,
+      .printable-page.single-page-fit:last-child {
+        page-break-after: auto !important;
+        break-after: auto !important;
+      }
 
       @media print {
-        .no-print { display: none !important; }
-        body { background: white !important; color: black !important; }
-        .print-container { width: 100% !important; padding: 0 !important; margin: 0 !important; }
+        @page {
+          size: A4 portrait;
+          margin: 0 !important;
+        }
+        
+        html, body {
+          width: 210mm !important;
+          min-height: 297mm !important;
+          margin: 0 !important;
+          padding: 0 !important;
+          background: #ffffff !important;
+        }
+
+        #root, .no-print {
+          display: none !important;
+        }
+
+        .printable-page {
+          border: none !important;
+          box-shadow: none !important;
+          page-break-inside: avoid !important;
+          break-inside: avoid !important;
+          page-break-after: always !important;
+          break-after: page !important;
+        }
+
+        .printable-page:last-child {
+          page-break-after: auto !important;
+          break-after: auto !important;
+        }
+
+        .printable-page.ticket-single-page,
+        .printable-page.single-page-fit {
+          height: 296mm !important;
+          max-height: 296mm !important;
+          min-height: 296mm !important;
+          overflow: hidden !important;
+          page-break-inside: avoid !important;
+          break-inside: avoid !important;
+          page-break-after: always !important;
+          break-after: page !important;
+        }
+
+        .printable-page.ticket-single-page:last-child,
+        .printable-page.single-page-fit:last-child {
+          page-break-after: auto !important;
+          break-after: auto !important;
+        }
+
+        /* Fix Firefox/Safari: s'assurer que les fonds s'impriment */
+        * {
+          -webkit-print-color-adjust: exact !important;
+          print-color-adjust: exact !important;
+        }
+      }
+
+      /* Utilitaires UI */
+      .glass {
+        background: rgba(28, 28, 30, 0.85);
+        backdrop-filter: blur(25px) saturate(200%);
+        -webkit-backdrop-filter: blur(25px) saturate(200%);
+        border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+      }
+
+      .apple-card {
+        background: #1c1c1e;
+        border: 1px solid #3a3a3c;
+        border-radius: 20px;
+        transition: transform 0.2s ease;
+      }
+
+      /* BARRES DE DÉFILEMENT UNIFIÉES ET VISIBLES (UX CROSS-DEVICE) */
+      .custom-scrollbar::-webkit-scrollbar {
+        width: 10px;
+        height: 10px;
+      }
+      
+      .custom-scrollbar::-webkit-scrollbar-track {
+        background: rgba(255, 255, 255, 0.02);
+        border-radius: 10px;
+      }
+      
+      .custom-scrollbar::-webkit-scrollbar-thumb {
+        background: #4a4a4c;
+        border: 2px solid transparent;
+        background-clip: padding-box;
+        border-radius: 10px;
+      }
+
+      .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+        background: #0071e3;
+        border: 2px solid transparent;
+        background-clip: padding-box;
+      }
+
+      /* Pour Firefox */
+      .custom-scrollbar {
+        scrollbar-width: thin;
+        scrollbar-color: #4a4a4c rgba(255, 255, 255, 0.02);
+      }
+      
+      .btn-apple-primary {
+        background: #0071e3;
+        color: white;
+        transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+      }
+
+      /* Effet d'ombre de scroll horizontal */
+      .scroll-shadow-right {
+        background: linear-gradient(to right, rgba(0,0,0,0), rgba(0,0,0,0.5));
+        pointer-events: none;
       }
     </style>
   <script type="importmap">
 {
   "imports": {
-    "react-dom/": "https://esm.sh/react-dom@^19.2.3/",
-    "@google/genai": "https://esm.sh/@google/genai@^1.34.0",
+    "recharts": "https://esm.sh/recharts@^3.6.0",
+    "react-dom": "https://esm.sh/react-dom@^19.2.3",
+    "react-dom/client": "https://esm.sh/react-dom@^19.2.3/client",
+    "jspdf": "https://esm.sh/jspdf@^3.0.4",
     "react/": "https://esm.sh/react@^19.2.3/",
     "react": "https://esm.sh/react@^19.2.3",
-    "html2canvas": "https://esm.sh/html2canvas@^1.4.1",
-    "recharts": "https://esm.sh/recharts@^3.6.0",
-    "jspdf": "https://esm.sh/jspdf@^3.0.4",
-    "xlsx": "https://esm.sh/xlsx@^0.18.5",
+    "@google/genai": "https://esm.sh/@google/genai@^1.34.0",
+    "idb": "https://esm.sh/idb@^8.0.3",
     "jspdf-autotable": "https://esm.sh/jspdf-autotable@^5.0.2",
-    "idb": "https://esm.sh/idb@^8.0.3"
+    "xlsx": "https://esm.sh/xlsx@^0.18.5",
+    "html2canvas": "https://esm.sh/html2canvas@^1.4.1",
+    "qrcode": "https://esm.sh/qrcode@1.5.4",
+    "react-dom/": "https://esm.sh/react-dom@^19.2.3/"
   }
 }
 </script>
+<link rel="stylesheet" href="/index.css">
 </head>
-  <body class="selection:bg-blue-500/30">
+  <body class="dark overflow-x-hidden">
     <div id="root"></div>
     <script type="module" src="/index.tsx"></script>
   </body>

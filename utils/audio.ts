@@ -3,8 +3,8 @@ let audioContext: AudioContext | null = null;
 const getAudioContext = (): AudioContext | null => {
     if (typeof window !== 'undefined' && !audioContext) {
         try {
-            audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
-        } catch (e) {
+            audioContext = new (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)();
+        } catch {
             console.error("Web Audio API is not supported in this browser");
             return null;
         }

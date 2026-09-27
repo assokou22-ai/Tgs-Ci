@@ -12,7 +12,10 @@ const PasswordModal: React.FC<PasswordModalProps> = ({ isOpen, onClose, onSubmit
 
   useEffect(() => {
     if (isOpen) {
-      setPassword('');
+      const timer = setTimeout(() => {
+        setPassword('');
+      }, 0);
+      return () => clearTimeout(timer);
     }
   }, [isOpen]);
 

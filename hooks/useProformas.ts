@@ -1,20 +1,25 @@
+
 import { useState, useEffect, useCallback } from 'react';
 import { Proforma } from '../types.ts';
 import { dbGetProformas, dbAddProforma, dbUpdateProforma, dbDeleteProforma } from '../services/dbService.ts';
+import { useToastContext } from '../context/ToastContext.tsx';
 
 const useProformas = () => {
+  const { showToast } = useToastContext();
   const [proformas, setProformas] = useState<Proforma[]>([]);
   const [loading, setLoading] = useState(true);
 
   const fetchProformas = useCallback(async () => {
-    setLoading(true);
     const storedProformas = await dbGetProformas();
     setProformas(storedProformas.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()));
     setLoading(false);
   }, []);
 
   useEffect(() => {
-    fetchProformas();
+    const init = async () => {
+      await fetchProformas();
+    };
+    init();
     window.addEventListener('datareceived', fetchProformas);
     return () => {
         window.removeEventListener('datareceived', fetchProformas);
@@ -39,10 +44,10 @@ const useProformas = () => {
         fetchProformas();
     } catch (error) {
         console.error("Failed to add proforma:", error);
-        alert("L'ajout de la proforma a échoué.");
+        showToast("L'ajout a échoué.", "error");
         throw error;
     }
-  }, [fetchProformas]);
+  }, [fetchProformas, showToast]);
 
   const updateProforma = useCallback(async (proforma: Proforma) => {
     try {
@@ -51,22 +56,20 @@ const useProformas = () => {
         fetchProformas();
     } catch (error) {
         console.error("Failed to update proforma:", error);
-        alert("La modification de la proforma a échoué.");
+        showToast("La modification a échoué.", "error");
         throw error;
     }
-  }, [fetchProformas]);
+  }, [fetchProformas, showToast]);
 
   const deleteProforma = useCallback(async (proformaId: string) => {
-    if (window.confirm("Êtes-vous sûr de vouloir supprimer cette proforma ?")) {
-      try {
-        await dbDeleteProforma(proformaId);
-        fetchProformas();
-      } catch (error) {
-          console.error("Failed to delete proforma:", error);
-          alert("La suppression de la proforma a échoué.");
-      }
+    try {
+      await dbDeleteProforma(proformaId);
+      fetchProformas();
+    } catch (error) {
+        console.error("Failed to delete proforma:", error);
+        showToast("La suppression a échoué.", "error");
     }
-  }, [fetchProformas]);
+  }, [fetchProformas, showToast]);
 
   return { proformas, loading, addProforma, updateProforma, deleteProforma };
 };

@@ -1,3 +1,4 @@
+
 import React, { useState } from 'react';
 import { GoogleGenAI, GenerateContentResponse } from "@google/genai";
 import { SparklesIcon } from './icons.tsx';
@@ -28,16 +29,16 @@ const AiCorrectionButton: React.FC<AiCorrectionButtonProps> = ({ text, onCorrect
     `;
 
     try {
-        // Fixed: Directly use process.env.API_KEY and gemini-3-flash-preview model
-        const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+        // Fix: Follow initialization guidelines strictly.
+        const ai = new GoogleGenAI({apiKey: process.env.API_KEY});
         const response: GenerateContentResponse = await ai.models.generateContent({
-            model: 'gemini-3-flash-preview',
+            model: 'gemini-1.5-flash',
             contents: prompt,
         });
 
         const correctedText = response.text ? response.text.trim() : '';
         onCorrected(correctedText);
-    } catch (e: any) {
+    } catch (e) {
         console.error(e);
         setError("Erreur de l'IA");
     } finally {

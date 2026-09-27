@@ -3,7 +3,8 @@ import { GoogleGenAI, Type } from "@google/genai";
 import { ColorPalette } from '../types.ts';
 
 export const generateAiTheme = async (): Promise<ColorPalette> => {
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+    // Fix: Follow initialization guidelines strictly.
+    const ai = new GoogleGenAI({apiKey: process.env.API_KEY});
     const prompt = `Génère une palette de couleurs professionnelle et moderne pour une application web de gestion. 
     L'ambiance doit être technologique et épurée.
     Retourne un objet JSON avec les clés suivantes :
@@ -17,8 +18,8 @@ export const generateAiTheme = async (): Promise<ColorPalette> => {
     Utilise exclusivement des codes Hexadécimaux.`;
 
     const response = await ai.models.generateContent({
-        model: 'gemini-3-flash-preview',
-        contents: prompt,
+        model: 'gemini-1.5-flash',
+        contents: [{ role: 'user', parts: [{ text: prompt }] }],
         config: {
             responseMimeType: "application/json",
             responseSchema: {

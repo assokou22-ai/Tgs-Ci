@@ -1,0 +1,228 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // 1. Global safety net (default deny)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Hardened Global Helpers ---
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && (
+        ('email_verified' in request.auth.token && request.auth.token.email_verified == true) || 
+        ('email' in request.auth.token && request.auth.token.email == "assokou22@gmail.com") ||
+        ('email' in request.auth.token && request.auth.token.email == "thegoodstore@gmail.com") ||
+        ('email' in request.auth.token && request.auth.token.email == "thegoodstoreci@gmail.com")
+      );
+    }
+
+    function isAdmin() {
+      return isSignedIn() && (
+        ('email' in request.auth.token && request.auth.token.email == "assokou22@gmail.com") ||
+        ('email' in request.auth.token && request.auth.token.email == "thegoodstore@gmail.com") ||
+        ('email' in request.auth.token && request.auth.token.email == "thegoodstoreci@gmail.com")
+      );
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128;
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // --- Validation Blueprints ---
+
+    function isValidTicket(data) {
+      return true;
+    }
+
+    // Since anyone can use suggestions or other structures, customize appropriately
+    function isValidStock(data) {
+      return true;
+    }
+
+    function isValidStockUsage(data) {
+      return data.get('id', '') is string && data.get('id', '').size() <= 256;
+    }
+
+    function isValidExternalPurchase(data) {
+      return data.get('id', '') is string && data.get('id', '').size() <= 256;
+    }
+
+    function isValidService(data) {
+      return true;
+    }
+
+    function isValidDocument(data) {
+      return data.get('id', '') is string && data.get('id', '').size() <= 256;
+    }
+
+    function isValidAppointment(data) {
+      return data.get('id', '') is string && data.get('id', '').size() <= 256;
+    }
+
+    // Special allowance for custom and simple sheets
+    function isValidSimpleDoc(data) {
+      return data.get('id', '') is string && data.get('id', '').size() <= 256;
+    }
+
+    function isValidStoredDoc(data) {
+      return data.get('id', '') is string && data.get('id', '').size() <= 256;
+    }
+
+    function isValidSuggestion(data) {
+      return true;
+    }
+
+    function isValidSettings(data) {
+      return data.get('id', '') is string && data.get('id', '').size() <= 256;
+    }
+
+    // --- Rules for collections ---
+
+    match /test/{testId} {
+      allow get: if isSignedIn() && isValidId(testId);
+    }
+
+    match /settings/{settingsId} {
+      allow get: if isVerifiedUser() && isValidId(settingsId);
+      allow create, update: if isVerifiedUser() && isValidId(settingsId) && isValidSettings(incoming());
+      allow delete: if isAdmin() && isValidId(settingsId);
+    }
+
+    match /engagementsSav/{savId} {
+      allow get: if isVerifiedUser() && isValidId(savId);
+      allow list: if isVerifiedUser();
+      allow create, update: if isVerifiedUser() && isValidId(savId);
+      allow delete: if isAdmin() && isValidId(savId);
+    }
+
+    match /tickets/{ticketId} {
+      allow get: if isVerifiedUser() && isValidId(ticketId);
+      allow list: if isVerifiedUser();
+      allow create: if isVerifiedUser() && isValidId(ticketId) && isValidTicket(incoming());
+      allow update: if isVerifiedUser() && isValidId(ticketId) && isValidTicket(incoming());
+      allow delete: if isAdmin() && isValidId(ticketId);
+    }
+
+    match /stock/{stockId} {
+      allow get: if isVerifiedUser() && isValidId(stockId);
+      allow list: if isVerifiedUser();
+      allow create: if isVerifiedUser() && isValidId(stockId) && isValidStock(incoming());
+      allow update: if isVerifiedUser() && isValidId(stockId) && isValidStock(incoming());
+      allow delete: if isAdmin() && isValidId(stockId);
+    }
+
+    match /stockUsage/{usageId} {
+      allow get: if isVerifiedUser() && isValidId(usageId);
+      allow list: if isVerifiedUser();
+      allow create: if isVerifiedUser() && isValidId(usageId) && isValidStockUsage(incoming());
+      allow update: if isVerifiedUser() && isValidId(usageId) && isValidStockUsage(incoming());
+      allow delete: if isAdmin() && isValidId(usageId);
+    }
+
+    match /externalPurchases/{purchaseId} {
+      allow get: if isVerifiedUser() && isValidId(purchaseId);
+      allow list: if isVerifiedUser();
+      allow create: if isVerifiedUser() && isValidId(purchaseId) && isValidExternalPurchase(incoming());
+      allow update: if isVerifiedUser() && isValidId(purchaseId) && isValidExternalPurchase(incoming());
+      allow delete: if isAdmin() && isValidId(purchaseId);
+    }
+
+    match /services/{serviceId} {
+      allow get: if isVerifiedUser() && isValidId(serviceId);
+      allow list: if isVerifiedUser();
+      allow create: if isVerifiedUser() && isValidId(serviceId) && isValidService(incoming());
+      allow update: if isVerifiedUser() && isValidId(serviceId) && isValidService(incoming());
+      allow delete: if isAdmin() && isValidId(serviceId);
+    }
+
+    match /factures/{factureId} {
+      allow get: if isVerifiedUser() && isValidId(factureId);
+      allow list: if isVerifiedUser();
+      allow create: if isVerifiedUser() && isValidId(factureId) && isValidDocument(incoming());
+      allow update: if isVerifiedUser() && isValidId(factureId) && isValidDocument(incoming());
+      allow delete: if isAdmin() && isValidId(factureId);
+    }
+
+    match /proformas/{proformaId} {
+      allow get: if isVerifiedUser() && isValidId(proformaId);
+      allow list: if isVerifiedUser();
+      allow create: if isVerifiedUser() && isValidId(proformaId) && isValidDocument(incoming());
+      allow update: if isVerifiedUser() && isValidId(proformaId) && isValidDocument(incoming());
+      allow delete: if isAdmin() && isValidId(proformaId);
+    }
+
+    match /commandes/{commandeId} {
+      allow get: if isVerifiedUser() && isValidId(commandeId);
+      allow list: if isVerifiedUser();
+      allow create: if isVerifiedUser() && isValidId(commandeId) && isValidDocument(incoming());
+      allow update: if isVerifiedUser() && isValidId(commandeId) && isValidDocument(incoming());
+      allow delete: if isAdmin() && isValidId(commandeId);
+    }
+
+    match /appointments/{appointmentId} {
+      allow get: if isVerifiedUser() && isValidId(appointmentId);
+      allow list: if isVerifiedUser();
+      allow create: if isVerifiedUser() && isValidId(appointmentId) && isValidAppointment(incoming());
+      allow update: if isVerifiedUser() && isValidId(appointmentId) && isValidAppointment(incoming());
+      allow delete: if isAdmin() && isValidId(appointmentId);
+    }
+
+    match /simpleDocuments/{docId} {
+      allow get: if isVerifiedUser() && isValidId(docId);
+      allow list: if isVerifiedUser();
+      allow create: if isVerifiedUser() && isValidId(docId) && isValidSimpleDoc(incoming());
+      allow update: if isVerifiedUser() && isValidId(docId) && isValidSimpleDoc(incoming());
+      allow delete: if isAdmin() && isValidId(docId);
+    }
+
+    match /storedDocuments/{storedId} {
+      allow get: if isVerifiedUser() && isValidId(storedId);
+      allow list: if isVerifiedUser();
+      allow create: if isVerifiedUser() && isValidId(storedId) && isValidStoredDoc(incoming());
+      allow update: if isVerifiedUser() && isValidId(storedId) && isValidStoredDoc(incoming());
+      allow delete: if isAdmin() && isValidId(storedId);
+    }
+
+    match /suggestions/{categoryId} {
+      allow get: if isVerifiedUser() && isValidId(categoryId);
+      allow list: if isVerifiedUser();
+      allow create: if isVerifiedUser() && isValidId(categoryId) && isValidSuggestion(incoming());
+      allow update: if isVerifiedUser() && isValidId(categoryId) && isValidSuggestion(incoming());
+      allow delete: if isAdmin() && isValidId(categoryId);
+    }
+
+    match /mouvementsStock/{mouvementId} {
+      allow get: if isVerifiedUser() && isValidId(mouvementId);
+      allow list: if isVerifiedUser();
+      allow create, update: if isVerifiedUser() && isValidId(mouvementId);
+      allow delete: if isAdmin() && isValidId(mouvementId);
+    }
+
+    match /deviceSessions/{sessionId} {
+      allow get: if isVerifiedUser() && isValidId(sessionId);
+      allow list: if isVerifiedUser();
+      allow create, update: if isVerifiedUser() && isValidId(sessionId);
+      allow delete: if isAdmin() && isValidId(sessionId);
+    }
+
+    match /dailyBackups/{backupId} {
+      allow get: if isVerifiedUser() && isValidId(backupId);
+      allow list: if isVerifiedUser();
+      allow create, update: if isVerifiedUser() && isValidId(backupId);
+      allow delete: if isAdmin() && isValidId(backupId);
+    }
+  }
+}

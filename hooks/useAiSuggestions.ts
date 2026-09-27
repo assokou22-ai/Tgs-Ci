@@ -1,3 +1,4 @@
+
 import { useState } from 'react';
 import { GoogleGenAI, GenerateContentResponse } from "@google/genai";
 
@@ -30,11 +31,11 @@ export const useAiSuggestions = (): AiSuggestionHook => {
         `;
 
         try {
-            // Fixed: Directly use process.env.API_KEY and gemini-3-flash-preview model
-            const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+            // Fix: Follow initialization guidelines strictly.
+            const ai = new GoogleGenAI({apiKey: process.env.API_KEY});
             const response: GenerateContentResponse = await ai.models.generateContent({
-                model: 'gemini-3-flash-preview',
-                contents: prompt,
+                model: 'gemini-1.5-flash',
+                contents: [{ role: 'user', parts: [{ text: prompt }] }],
             });
             setSuggestion(response.text || '');
         } catch (e) {

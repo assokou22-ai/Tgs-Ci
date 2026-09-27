@@ -1,302 +1,315 @@
 
-import { BackupData, StoredBackup, RepairTicket, StockItem, RepairServiceItem, SuggestionRecord, Appointment, Facture, Proforma, Commande, EntityType, SimpleDocument, StoredDocument } from '../types.ts';
+import { BackupData, EntityType, SerializedAppSettings } from '../types.ts';
 import { 
     dbGetTickets, dbGetStock, dbGetServices, dbGetSuggestions, 
-    dbClearTickets, dbClearStock, dbClearServices, dbClearSuggestions,
-    dbGetBackups, dbAddBackup, dbDeleteBackup, 
-    dbGetAppointments, dbClearAppointments,
-    bulkPut, dbClearSyncQueue,
-    dbGetFactures, dbGetProformas, dbGetCommandes,
-    dbClearFactures, dbClearProformas, dbClearCommandes, dbClearLogs,
-    dbBulkPutTickets, dbBulkPutStock, dbBulkPutServices, dbBulkPutAppointments, dbBulkPutSuggestions, dbBulkPutFactures, dbBulkPutProformas, dbBulkPutCommandes, dbRunRestoreTransaction, dbGet,
-    dbGetSimpleDocuments, dbGetStoredDocuments, dbClearSimpleDocuments, dbClearStoredDocuments, dbBulkPutSimpleDocuments, dbBulkPutStoredDocuments
+    dbGetAppointments, dbGetFactures, dbGetProformas, dbGetCommandes,
+    dbGetSimpleDocuments, dbGetStoredDocuments, dbGetStockUsage, dbGetExternalPurchases,
+    dbClearSyncQueue, dbClearLogs, dbRunRestoreTransaction, dbGet, dbPutDirect, dbGetEngagementsSav
 } from './dbService.ts';
-import { sanitizeTickets, sanitizeStock, sanitizeServices, sanitizeAppointments, sanitizeFactures, sanitizeProformas, sanitizeCommandes, sanitizeSuggestions, sanitizeSimpleDocuments, sanitizeStoredDocuments } from '../utils/sanitize.ts';
-import { saveDataToServer } from './serverService.ts';
 import { mergeUpdates } from '../utils/merge.ts';
+import { doc, getDoc, setDoc } from 'firebase/firestore';
+import { db, auth } from './firebase.ts';
+import { getBackupAppIdentifier, formatBackupFileName } from '../utils/backupIdentifier.ts';
 
+const SETTINGS_LS_KEY = 'mac-repair-app-appSettings';
 
-export const compileFullBackupData = async (): Promise<BackupData> => {
-    const tickets = await dbGetTickets();
-    const stock = await dbGetStock();
-    const services = await dbGetServices();
-    const suggestions = await dbGetSuggestions();
-    const appointments = await dbGetAppointments();
-    const factures = await dbGetFactures();
-    const proformas = await dbGetProformas();
-    const commandes = await dbGetCommandes();
-    const simpleDocuments = await dbGetSimpleDocuments();
-    const storedDocuments = await dbGetStoredDocuments();
-    return { tickets, stock, services, suggestions, appointments, factures, proformas, commandes, simpleDocuments, storedDocuments };
+/**
+ * Génère un nom de fichier classable commençant par l'identifiant distinctif de l'application (ex: INVESTISSEMENT)
+ */
+export const generateSortableFileName = (type: 'FULL' | 'FINANCE' | 'TECH' = 'FULL', customIdentifier?: string): string => {
+    return formatBackupFileName(type, customIdentifier);
 };
 
+/**
+ * Compile les données dans une structure hiérarchique hautement organisée (V4)
+ */
+export const compileFullBackupData = async (): Promise<Record<string, unknown>> => {
+    const appIdentifier = getBackupAppIdentifier();
+    const [
+        tickets, stock, services, suggestions, 
+        appointments, factures, proformas, commandes, 
+        simpleDocs, storedDocs, stockUsage, externalPurchases,
+        engagementsSav
+    ] = await Promise.all([
+        dbGetTickets(), dbGetStock(), dbGetServices(), dbGetSuggestions(),
+        dbGetAppointments(), dbGetFactures(), dbGetProformas(), dbGetCommandes(),
+        dbGetSimpleDocuments(), dbGetStoredDocuments(), dbGetStockUsage(), dbGetExternalPurchases(),
+        dbGetEngagementsSav()
+    ]);
 
-const createAndDownloadBackupFile = async (fileName: string) => {
-    const data = await compileFullBackupData();
-    const dataStr = JSON.stringify(data, null, 2);
-    const dataUri = 'data:application/json;charset=utf-8,'+ encodeURIComponent(dataStr);
-    
-    const linkElement = document.createElement('a');
-    linkElement.setAttribute('href', dataUri);
-    linkElement.setAttribute('download', fileName);
-    document.body.appendChild(linkElement);
-    linkElement.click();
-    document.body.removeChild(linkElement);
-
-    const totalCases = data.tickets.length;
-    const totalStock = data.stock.length;
-    const totalDocs = data.simpleDocuments.length + data.storedDocuments.length;
-    
-    setTimeout(() => {
-        alert(`Exportation réussie !\n\nRésumé du contenu :\n- ${totalCases} Fiches clients\n- ${totalStock} Articles de stock\n- ${totalDocs} Documents et fichiers\n\nLe fichier "${fileName}" a été enregistré.`);
-    }, 500);
-};
-
-export const backupData = async (fileName: string) => {
-    try {
-        await createAndDownloadBackupFile(fileName);
-    } catch (error) {
-        console.error("Failed to create backup file", error);
-        alert("Erreur lors de la création du fichier de sauvegarde.");
+    let appSettings: SerializedAppSettings | undefined;
+    const storedSettings = localStorage.getItem(SETTINGS_LS_KEY);
+    if (storedSettings) {
+        try { appSettings = JSON.parse(storedSettings); } catch { console.warn("Settings skipped."); }
     }
-};
 
-type StoreConfig = {
-    name: keyof BackupData;
-    storeName: string;
-    entityName: string;
-    sanitizer: (data: any[]) => any[];
-    clearer: () => Promise<void>;
-};
-
-const storesToProcess: StoreConfig[] = [
-    { name: 'tickets', storeName: 'tickets', entityName: 'fiches de réparation', sanitizer: sanitizeTickets, clearer: dbClearTickets },
-    { name: 'stock', storeName: 'stock', entityName: 'stock', sanitizer: sanitizeStock, clearer: dbClearStock },
-    { name: 'services', storeName: 'services', entityName: 'services', sanitizer: sanitizeServices, clearer: dbClearServices },
-    { name: 'appointments', storeName: 'appointments', entityName: 'rendez-vous', sanitizer: sanitizeAppointments, clearer: dbClearAppointments },
-    { name: 'suggestions', storeName: 'suggestions', entityName: 'suggestions', sanitizer: sanitizeSuggestions, clearer: dbClearSuggestions },
-    { name: 'factures', storeName: 'factures', entityName: 'factures', sanitizer: sanitizeFactures, clearer: dbClearFactures },
-    { name: 'proformas', storeName: 'proformas', entityName: 'proformas', sanitizer: sanitizeProformas, clearer: dbClearProformas },
-    { name: 'commandes', storeName: 'commandes', entityName: 'commandes', sanitizer: sanitizeCommandes, clearer: dbClearCommandes },
-    { name: 'simpleDocuments', storeName: 'simpleDocuments', entityName: 'courriers', sanitizer: sanitizeSimpleDocuments, clearer: dbClearSimpleDocuments },
-    { name: 'storedDocuments', storeName: 'knowledge_files', entityName: 'base de fichiers', sanitizer: sanitizeStoredDocuments, clearer: dbClearStoredDocuments },
-];
-
-export const restoreFullDatabase = async (data: BackupData, onProgress?: (message: string) => void) => {
-    const totalSteps = 2 + (storesToProcess.length * 2);
-    let step = 0;
-    const report = (msg: string) => {
-        step++;
-        onProgress && onProgress(`${msg} (${step}/${totalSteps})`);
-    };
-
-    try {
-        report('Vidage de la file de synchronisation...');
-        await dbClearSyncQueue();
-        
-        report('Vidage des journaux...');
-        await dbClearLogs();
-        
-        await dbRunRestoreTransaction(data, storesToProcess, report);
-        
-        localStorage.setItem('mac-repair-app-lastRestoreDate', new Date().toISOString());
-
-    } catch (error) {
-        console.error("An error occurred during the database restore process:", error);
-        throw new Error("La restauration a échoué. Veuillez vérifier le fichier et réessayer.");
-    }
-};
-
-export const mergeDatabaseFromFile = async (data: BackupData, onProgress?: (message: string) => void) => {
-    const totalSteps = storesToProcess.length;
-    let step = 0;
-    const report = (msg: string) => onProgress && onProgress(`${msg} (${++step}/${totalSteps})`);
-
-    try {
-        for (const store of storesToProcess) {
-            const remoteItems = data[store.name] || [];
-            
-            if (!Array.isArray(remoteItems) || remoteItems.length === 0) {
-                report(`Aucune donnée pour ${store.entityName} dans le fichier.`);
-                continue;
-            }
-
-            report(`Fusion de ${remoteItems.length} entrées pour ${store.entityName}...`);
-            const sanitizedRemoteItems = store.sanitizer(remoteItems);
-            
-            const itemsToPut = [];
-            for (const remoteItem of sanitizedRemoteItems) {
-                const keyPath = store.name === 'suggestions' ? 'category' : 'id';
-                if (!remoteItem[keyPath]) continue;
-                
-                const localItem = await dbGet(store.storeName, remoteItem[keyPath]);
-                const finalItem = mergeUpdates(store.name as EntityType, localItem, remoteItem);
-                itemsToPut.push(finalItem);
-            }
-
-            if (itemsToPut.length > 0) {
-                switch(store.name) {
-                    case 'tickets': await dbBulkPutTickets(itemsToPut as RepairTicket[]); break;
-                    case 'stock': await dbBulkPutStock(itemsToPut as StockItem[]); break;
-                    case 'services': await dbBulkPutServices(itemsToPut as RepairServiceItem[]); break;
-                    case 'appointments': await dbBulkPutAppointments(itemsToPut as Appointment[]); break;
-                    case 'suggestions': await dbBulkPutSuggestions(itemsToPut as SuggestionRecord[]); break;
-                    case 'factures': await dbBulkPutFactures(itemsToPut as Facture[]); break;
-                    case 'proformas': await dbBulkPutProformas(itemsToPut as Proforma[]); break;
-                    case 'commandes': await dbBulkPutCommandes(itemsToPut as Commande[]); break;
-                    case 'simpleDocuments': await dbBulkPutSimpleDocuments(itemsToPut as SimpleDocument[]); break;
-                    case 'storedDocuments': await dbBulkPutStoredDocuments(itemsToPut as StoredDocument[]); break;
-                    default: await bulkPut(store.storeName, itemsToPut);
-                }
-            }
+    return {
+        identite_export: {
+            application_nom: appIdentifier,
+            type_sauvegarde: `Sauvegarde ${appIdentifier}`,
+            logiciel: `TGS-CI Repair Management Pro (${appIdentifier})`,
+            version_schema: "4.0",
+            date_generation: new Date().toISOString(),
+            origine_systeme: navigator.userAgent,
+            encodage: "UTF-8"
+        },
+        registre_technique: {
+            fiches_reparation: tickets,
+            journal_interventions: tickets.flatMap(t => t.history.map(h => ({ ...h, ticket_id: t.id }))),
+            expertises_electroniques: tickets.filter(t => t.diagnosticSheetB).map(t => ({ ticket_id: t.id, ...t.diagnosticSheetB })),
+            engagements_sav: engagementsSav
+        },
+        comptabilite_flux: {
+            factures_clients: factures,
+            devis_proforma: proformas,
+            bons_commande: commandes,
+            achats_confreres_1h: externalPurchases
+        },
+        inventaire_materiel: {
+            catalogue_stock: stock,
+            historique_sorties: stockUsage,
+            prestations_services: services
+        },
+        archives_et_memoire: {
+            base_connaissance_fichiers: storedDocs,
+            courriers_generes: simpleDocs,
+            rendez_vous: appointments,
+            lexique_ia: suggestions,
+            configuration_interface: appSettings
         }
-        localStorage.setItem('mac-repair-app-lastRestoreDate', new Date().toISOString());
+    };
+};
+
+/**
+ * Déclenche le téléchargement du fichier JSON
+ */
+export const backupData = async (type: 'FULL' | 'FINANCE' | 'TECH' = 'FULL') => {
+    try {
+        const fullStructuredData = await compileFullBackupData();
+        const fileName = generateSortableFileName(type);
+        
+        const dataStr = JSON.stringify(fullStructuredData, null, 2); 
+        const blob = new Blob([dataStr], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = fileName;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+
+        return fullStructuredData;
     } catch (error) {
-        console.error("An error occurred during the database merge process:", error);
-        throw new Error("La fusion des données a échoué.");
+        console.error("Échec sauvegarde:", error);
+        throw error;
     }
+};
+
+interface V4Backup {
+    identite_export: unknown;
+    registre_technique?: {
+        fiches_reparation?: unknown[];
+    };
+    inventaire_materiel?: {
+        catalogue_stock?: unknown[];
+        prestations_services?: unknown[];
+    };
+    comptabilite_flux?: {
+        factures_clients?: unknown[];
+        devis_proforma?: unknown[];
+        bons_commande?: unknown[];
+        achats_confreres_1h?: unknown[];
+    };
+    archives_et_memoire?: {
+        courriers_generes?: unknown[];
+        base_connaissance_fichiers?: unknown[];
+        rendez_vous?: unknown[];
+        lexique_ia?: unknown[];
+        configuration_interface?: SerializedAppSettings;
+    };
 }
 
+/**
+ * Normalise les données pour supporter l'ancien et le nouveau format (V4)
+ */
+const normalizeImportData = (rawInput: unknown): Partial<BackupData> => {
+    const raw = rawInput as V4Backup;
+    if (raw && raw.identite_export) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const rawAny = raw as any;
+        return {
+            tickets: raw.registre_technique?.fiches_reparation || [],
+            stock: raw.inventaire_materiel?.catalogue_stock || [],
+            services: raw.inventaire_materiel?.prestations_services || [],
+            factures: raw.comptabilite_flux?.factures_clients || [],
+            proformas: raw.comptabilite_flux?.devis_proforma || [],
+            commandes: raw.comptabilite_flux?.bons_commande || [],
+            externalPurchases: raw.comptabilite_flux?.achats_confreres_1h || [],
+            simpleDocuments: raw.archives_et_memoire?.courriers_generes || [],
+            storedDocuments: raw.archives_et_memoire?.base_connaissance_fichiers || [],
+            appointments: raw.archives_et_memoire?.rendez_vous || [],
+            suggestions: raw.archives_et_memoire?.lexique_ia || [],
+            appSettings: raw.archives_et_memoire?.configuration_interface,
+            engagementsSav: raw.registre_technique?.engagements_sav || rawAny.engagementsSav || []
+        };
+    }
+    return rawInput as Partial<BackupData>;
+};
 
-export const restoreFromLocalBackup = async (backupId: number) => {
-    if(window.confirm("Êtes-vous sûr de vouloir restaurer cette sauvegarde ? L'état actuel sera écrasé.")) {
-        try {
-            const backups = await dbGetBackups();
-            const backupToRestore = backups.find(b => b.id === backupId);
+/**
+ * Fusion complémentaire : ajoute les éléments manquants et met à jour les existants si plus récents
+ */
+export const mergeDatabaseFromFile = async (raw: unknown, onProgress?: (msg: string) => void) => {
+    const data = normalizeImportData(raw);
+    
+    const storeConfigs: {key: keyof BackupData, store: string, label: string}[] = [
+        {key: 'tickets', store: 'tickets', label: 'Fiches Techniques'},
+        {key: 'stock', store: 'stock', label: 'Catalogue Stock'},
+        {key: 'factures', store: 'factures', label: 'Facturations'},
+        {key: 'commandes', store: 'commandes', label: 'Bons de Commande'},
+        {key: 'services', store: 'services', label: 'Grille Tarifaire'},
+        {key: 'appointments', store: 'appointments', label: 'Rendez-vous'},
+        {key: 'simpleDocuments', store: 'simpleDocuments', label: 'Courriers'},
+        {key: 'engagementsSav', store: 'engagementsSav', label: 'Engagements SAV'}
+    ];
 
-            if (backupToRestore) {
-                await restoreFullDatabase(backupToRestore.data);
-                alert("Restauration terminée avec succès ! L'application va maintenant se recharger.");
-                window.location.reload();
-            } else {
-                alert("La sauvegarde sélectionnée n'a pas pu être trouvée.");
+    for (const config of storeConfigs) {
+        const items = data[config.key] as unknown[];
+        if (items && Array.isArray(items)) {
+            onProgress?.(`Fusion : ${config.label}...`);
+            for (const item of items) {
+                const localItem = await dbGet(config.store, item.id);
+                // mergeUpdates compare les timestamps pour éviter de régresser
+                const merged = mergeUpdates(config.key === 'tickets' ? 'ticket' : (config.key as EntityType), localItem, item);
+                await dbPutDirect(config.store, merged);
             }
-        } catch (error) {
-            console.error("Failed to restore from local backup:", error);
-            const errorMessage = error instanceof Error ? error.message : "Une erreur inconnue est survenue.";
-            alert(`La restauration a échoué : ${errorMessage}`);
         }
     }
 };
 
-export const compileFinanceBackupData = async (): Promise<Partial<BackupData>> => {
-    const factures = await dbGetFactures();
-    const proformas = await dbGetProformas();
-    const commandes = await dbGetCommandes();
-    return { factures, proformas, commandes };
+/**
+ * Restauration totale (Écrase la base actuelle)
+ */
+export const restoreFullDatabase = async (raw: unknown, onProgress?: (message: string) => void) => {
+    const data = normalizeImportData(raw);
+    
+    await dbClearSyncQueue();
+    await dbClearLogs();
+    
+    const config = [
+        { name: 'tickets', storeName: 'tickets', entityName: 'fiches' },
+        { name: 'stock', storeName: 'stock', entityName: 'stock' },
+        { name: 'services', storeName: 'services', entityName: 'tarifs' },
+        { name: 'factures', storeName: 'factures', entityName: 'factures' },
+        { name: 'proformas', storeName: 'proformas', entityName: 'devis' },
+        { name: 'commandes', storeName: 'commandes', entityName: 'commandes' },
+        { name: 'simpleDocuments', storeName: 'simpleDocuments', entityName: 'courriers' },
+        { name: 'storedDocuments', storeName: 'knowledge_files', entityName: 'fichiers' },
+        { name: 'appointments', storeName: 'appointments', entityName: 'RDV' },
+        { name: 'externalPurchases', storeName: 'externalPurchases', entityName: 'achats_confrères' },
+        { name: 'engagementsSav', storeName: 'engagementsSav', entityName: 'SAV' }
+    ];
+
+    await dbRunRestoreTransaction(data, config, onProgress);
+
+    if (data.appSettings) {
+        localStorage.setItem(SETTINGS_LS_KEY, JSON.stringify(data.appSettings));
+    }
 };
 
-export const backupFinanceData = async (fileName: string) => {
+export const getDatabaseSummary = async () => {
+    const raw = await compileFullBackupData();
+    const data = normalizeImportData(raw);
+
+    return {
+        tickets: data.tickets?.length || 0,
+        stock: data.stock?.length || 0,
+        finance: (data.factures?.length || 0) + (data.commandes?.length || 0),
+        documents: (data.simpleDocuments?.length || 0),
+        v4: !!raw.identite_export
+    };
+};
+
+export const validateBackupSchema = (data: unknown): { valid: boolean; errors: string[] } => {
+    const raw = data as Record<string, unknown>;
+    if (!raw) return { valid: false, errors: ['Fichier vide.'] };
+    const errors: string[] = [];
+    if (!raw.identite_export && !raw.tickets) errors.push("Format non reconnu.");
+    return { valid: errors.length === 0, errors };
+};
+
+export const backupFinanceData = async () => backupData('FINANCE');
+export const restoreFinanceDatabase = restoreFullDatabase;
+export const mergeFinanceDatabaseFromFile = mergeDatabaseFromFile;
+
+export const backupEditorData = async () => backupData('TECH');
+export const restoreEditorDatabase = restoreFullDatabase;
+export const mergeEditorDatabaseFromFile = mergeDatabaseFromFile;
+
+/**
+ * Automap and run a fully structured automatic daily backup to Firestore
+ * after the designated closing hour (e.g. 18h00 / 6 PM).
+ */
+export const checkAndTriggerAutoDailyBackup = async (closingHour = 18): Promise<boolean> => {
     try {
-        const data = await compileFinanceBackupData();
-        const dataStr = JSON.stringify(data, null, 2);
-        const dataUri = 'data:application/json;charset=utf-8,'+ encodeURIComponent(dataStr);
-        
-        const linkElement = document.createElement('a');
-        linkElement.setAttribute('href', dataUri);
-        linkElement.setAttribute('download', fileName);
-        document.body.appendChild(linkElement);
-        linkElement.click();
-        document.body.removeChild(linkElement);
-        alert(`Export Finance réussi : ${data.factures?.length} factures et ${data.commandes?.length} commandes.`);
-    } catch (error) {
-        console.error("Failed to backup finance data", error);
-        alert("Erreur lors de la création du fichier de sauvegarde.");
-    }
-};
-
-export const restoreFinanceDatabase = async (data: Partial<BackupData>, onProgress?: (message: string) => void) => {
-    const financeStores = storesToProcess.filter(s => ['factures', 'proformas', 'commandes'].includes(s.name));
-    await dbRunRestoreTransaction(data as BackupData, financeStores, onProgress);
-};
-
-export const mergeFinanceDatabaseFromFile = async (data: Partial<BackupData>, onProgress?: (message: string) => void) => {
-    const financeStores = storesToProcess.filter(s => ['factures', 'proformas', 'commandes'].includes(s.name));
-    const totalSteps = financeStores.length;
-    let step = 0;
-    const report = (msg: string) => onProgress && onProgress(`${msg} (${++step}/${totalSteps})`);
-
-    try {
-        for (const store of financeStores) {
-            const remoteItems = data[store.name] || [];
-            if (!Array.isArray(remoteItems) || remoteItems.length === 0) continue;
-
-            const sanitizedRemoteItems = store.sanitizer(remoteItems);
-            const itemsToPut = [];
-            for (const remoteItem of sanitizedRemoteItems) {
-                const localItem = await dbGet(store.storeName, remoteItem.id);
-                const finalItem = mergeUpdates(store.name as EntityType, localItem, remoteItem);
-                itemsToPut.push(finalItem);
-            }
-
-            if (itemsToPut.length > 0) {
-                 switch(store.name) {
-                    case 'factures': await dbBulkPutFactures(itemsToPut as Facture[]); break;
-                    case 'proformas': await dbBulkPutProformas(itemsToPut as Proforma[]); break;
-                    case 'commandes': await dbBulkPutCommandes(itemsToPut as Commande[]); break;
-                }
-            }
-        }
-    } catch (error) {
-        console.error("Error merging finance data:", error);
-        throw new Error("La fusion des données financières a échoué.");
-    }
-};
-
-export const compileEditorBackupData = async (): Promise<Partial<BackupData>> => {
-    const tickets = await dbGetTickets(); 
-    const stock = await dbGetStock();
-    const services = await dbGetServices();
-    const suggestions = await dbGetSuggestions();
-    return { tickets, stock, services, suggestions };
-};
-
-export const backupEditorData = async (fileName: string) => {
-    try {
-        const data = await compileEditorBackupData();
-        const dataStr = JSON.stringify(data, null, 2);
-        const dataUri = 'data:application/json;charset=utf-8,'+ encodeURIComponent(dataStr);
-        
-        const linkElement = document.createElement('a');
-        linkElement.setAttribute('href', dataUri);
-        linkElement.setAttribute('download', fileName);
-        document.body.appendChild(linkElement);
-        linkElement.click();
-        document.body.removeChild(linkElement);
-        alert(`Export Éditeur réussi : ${data.tickets?.length} fiches et ${data.stock?.length} articles de stock.`);
-    } catch (error) {
-        console.error("Failed to backup editor data", error);
-        alert("Erreur lors de la création du fichier de sauvegarde.");
-    }
-};
-
-export const restoreEditorDatabase = async (data: Partial<BackupData>, onProgress?: (message: string) => void) => {
-    const editorStores = storesToProcess.filter(s => ['tickets', 'stock', 'services', 'suggestions'].includes(s.name));
-    await dbRunRestoreTransaction(data as BackupData, editorStores, onProgress);
-};
-
-export const mergeEditorDatabaseFromFile = async (data: Partial<BackupData>, onProgress?: (message: string) => void) => {
-    const editorStores = storesToProcess.filter(s => ['tickets', 'stock', 'services', 'suggestions'].includes(s.name));
-    for (const store of editorStores) {
-        const remoteItems = data[store.name] || [];
-        if (!Array.isArray(remoteItems) || remoteItems.length === 0) continue;
-
-        const sanitizedRemoteItems = store.sanitizer(remoteItems);
-        const itemsToPut = [];
-        for (const remoteItem of sanitizedRemoteItems) {
-            const keyPath = store.name === 'suggestions' ? 'category' : 'id';
-            const localItem = await dbGet(store.storeName, remoteItem[keyPath]);
-            const finalItem = mergeUpdates(store.name as EntityType, localItem, remoteItem);
-            itemsToPut.push(finalItem);
+        if (!navigator.onLine) {
+            console.log("No connection: Skipping auto daily backup verification.");
+            return false;
         }
 
-        if (itemsToPut.length > 0) {
-             switch(store.name) {
-                case 'tickets': await dbBulkPutTickets(itemsToPut as RepairTicket[]); break;
-                case 'stock': await dbBulkPutStock(itemsToPut as StockItem[]); break;
-                case 'services': await dbBulkPutServices(itemsToPut as RepairServiceItem[]); break;
-                case 'suggestions': await dbBulkPutSuggestions(itemsToPut as SuggestionRecord[]); break;
-            }
+        if (!auth.currentUser) {
+            console.log("Not authenticated in Firebase: Skipping auto daily backup.");
+            return false;
         }
+
+        const now = new Date();
+        const currentHour = now.getHours();
+
+        if (currentHour < closingHour) {
+            console.log(`Auto Backup skipped: current hour (${currentHour}h) is before the closing hour (${closingHour}h)`);
+            return false;
+        }
+
+        const todayStr = now.toISOString().split('T')[0];
+
+        // Cache daily check to avoid Firestore reads on every reload/refresh
+        const cachedBackupCheck = localStorage.getItem('tgs_last_auto_backup_checked');
+        if (cachedBackupCheck === todayStr) {
+            console.log(`Auto Backup check skipped: already verified/created today (${todayStr}) in cache.`);
+            return false;
+        }
+
+        const docRef = doc(db, 'dailyBackups', todayStr);
+
+        const docSnap = await getDoc(docRef);
+        localStorage.setItem('tgs_last_auto_backup_checked', todayStr);
+        if (docSnap.exists()) {
+            console.log(`Auto Backup already exists in Firestore for today ${todayStr}.`);
+            return false;
+        }
+
+        console.log(`Executing automatic closing-hour daily backup for: ${todayStr}`);
+        const fullBackupPayload = await compileFullBackupData();
+
+        await setDoc(docRef, {
+            id: todayStr,
+            date: todayStr,
+            createdAt: now.toISOString(),
+            payload: JSON.stringify(fullBackupPayload)
+        });
+
+        console.log(`Successfully completed daily auto-backup for ${todayStr}.`);
+        return true;
+    } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        if (errMsg.includes('the client is offline') || errMsg.includes('offline')) {
+            console.log(`Failed to verify or trigger automatic closing-hour backup (Client is Offline): ${errMsg}`);
+        } else {
+            console.error("Failed to verify or trigger automatic closing-hour backup:", err);
+        }
+        return false;
     }
 };
+

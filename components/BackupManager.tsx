@@ -1,244 +1,246 @@
 
-import React, { useState, useRef, ChangeEvent } from 'react';
-import { BackupData } from '../types.ts';
-import { backupData, restoreFullDatabase, mergeDatabaseFromFile, compileFullBackupData } from '../services/backupService.ts';
-import { saveDataToServer } from '../services/serverService.ts';
+import React, { useState, useRef, ChangeEvent, useEffect } from 'react';
+import { backupData, restoreFullDatabase, mergeDatabaseFromFile, getDatabaseSummary, validateBackupSchema } from '../services/backupService.ts';
+import { dbGetStorageEstimate, dbRequestPersistentStorage } from '../services/dbService.ts';
 import { 
     ArrowDownTrayIcon, ArrowUpTrayIcon, ArrowPathIcon, 
-    ExclamationTriangleIcon, BanknotesIcon, WrenchScrewdriverIcon, 
-    UserGroupIcon, DocumentDuplicateIcon, ShieldCheckIcon 
+    ShieldCheckIcon, XCircleIcon as XIcon,
+    ExclamationTriangleIcon, CheckCircleIcon
 } from './icons.tsx';
-
-type RestoreAnalysis = {
-    summary: {
-        tickets: number;
-        stock: number;
-        finance: number;
-        documents: number;
-    };
-    data: BackupData;
-};
+import { useToastContext } from '../context/ToastContext.tsx';
+import ConfirmationModal from './ConfirmationModal.tsx';
 
 const BackupManager: React.FC = () => {
+    const { showToast } = useToastContext();
     const [actionProgress, setActionProgress] = useState({ loading: false, message: '' });
-    const [restorePreview, setRestorePreview] = useState<RestoreAnalysis | null>(null);
+    const [restorePreview, setRestorePreview] = useState<{ fileName: string; version: string; count: number; data: Record<string, unknown> } | null>(null);
+    const [importMode, setImportMode] = useState<'merge' | 'overwrite' | null>(null);
+    const [localStats, setLocalStats] = useState<{ tickets: number; stock: number; finance: number; documents: number }>({ tickets: 0, stock: 0, finance: 0, documents: 0 });
+    const [storageInfo, setStorageInfo] = useState<{ usage: number; quota: number; percent: number; isPersistent: boolean } | null>(null);
     const restoreInputRef = useRef<HTMLInputElement>(null);
 
-    const handleForceServerBackup = async () => {
-        setActionProgress({ loading: true, message: 'Initialisation de la liaison Cloud Google...' });
-        try {
-            const storeId = sessionStorage.getItem('mac-repair-app-storeId');
-            if (!storeId) throw new Error("ID du magasin manquant.");
-            
-            setActionProgress({ loading: true, message: 'Compilation universelle des données...' });
-            const fullData = await compileFullBackupData();
-            
-            setActionProgress({ loading: true, message: 'Transfert sécurisé vers le serveur Cloud...' });
-            await saveDataToServer(storeId, fullData);
-            
-            const now = new Date().toISOString();
-            localStorage.setItem('mac-repair-app-lastBackupDate', now);
-            window.dispatchEvent(new CustomEvent('backupCompleted', { detail: now }));
-            
-            setActionProgress({ loading: false, message: '✅ Synchronisation Cloud réussie !' });
-        } catch (error) {
-             setActionProgress({ loading: false, message: `❌ Erreur Cloud: ${error instanceof Error ? error.message : 'Inconnue'}` });
-        } finally {
-            setTimeout(() => setActionProgress({ loading: false, message: '' }), 4000);
+    useEffect(() => { 
+        refreshStats();
+        checkStorage();
+    }, []);
+
+    const checkStorage = async () => {
+        const estimate = await dbGetStorageEstimate();
+        const isPersistent = await (navigator.storage && navigator.storage.persisted ? navigator.storage.persisted() : Promise.resolve(false));
+        if (estimate) {
+            setStorageInfo({ ...estimate, isPersistent });
         }
     };
 
-    const handleDownloadFullBackup = async () => {
-        const dateStr = new Date().toISOString().split('T')[0];
-        await backupData(`TGS_Local_Save_${dateStr}.json`);
+    const handleRequestPersistence = async () => {
+        const granted = await dbRequestPersistentStorage();
+        if (granted) {
+            showToast("Stockage persistant activé.", "success");
+            checkStorage();
+        } else {
+            showToast("Le navigateur a refusé la persistance.", "warning");
+        }
     };
 
-    const handleRestoreFileSelect = async (event: ChangeEvent<HTMLInputElement>) => {
+    const refreshStats = async () => {
+        const stats = await getDatabaseSummary();
+        setLocalStats(stats);
+    };
+
+    const handleFileSelect = async (event: ChangeEvent<HTMLInputElement>) => {
       const file = event.target.files?.[0];
       if (!file) return;
 
-      setActionProgress({ loading: true, message: 'Analyse de l\'archive locale...' });
-
+      setActionProgress({ loading: true, message: 'Audit du fichier...' });
       const reader = new FileReader();
       reader.onload = async (e) => {
           try {
-              const text = e.target?.result;
-              if (typeof text !== 'string') throw new Error("Fichier illisible.");
+              const raw = JSON.parse(e.target?.result as string);
+              const validation = validateBackupSchema(raw);
               
-              const data = JSON.parse(text) as BackupData;
+              if (!validation.valid) throw new Error(validation.errors[0]);
+
+              const isV4 = !!raw.identite_export;
+              const tickets = isV4 ? raw.registre_technique?.fiches_reparation : raw.tickets;
               
               setRestorePreview({
-                  summary: {
-                      tickets: (data.tickets || []).length,
-                      stock: (data.stock || []).length,
-                      finance: (data.factures || []).length + (data.commandes || []).length + (data.proformas || []).length,
-                      documents: (data.simpleDocuments || []).length + (data.storedDocuments || []).length,
-                  },
-                  data
+                  fileName: file.name,
+                  version: isV4 ? "V4 Pro (Hautement organisé)" : "Legacy",
+                  count: (tickets as unknown[])?.length || 0,
+                  data: raw as Record<string, unknown>
               });
-              setActionProgress({ loading: false, message: '' });
-          } catch (error) {
-              alert("Format de sauvegarde invalide.");
+          } catch {
+              showToast("Format incompatible.", "error");
+          } finally {
               setActionProgress({ loading: false, message: '' });
           }
       };
       reader.readAsText(file);
     };
 
-    const executeRestore = async (mode: 'merge' | 'overwrite') => {
-        if (!restorePreview) return;
-        
-        const confirmMsg = mode === 'merge' 
-            ? "FUSION : Vos données actuelles seront conservées et complétées. Continuer ?"
-            : "ATTENTION : TOUTES vos données actuelles seront supprimées et remplacées. Cette action est irréversible. Continuer ?";
+    const handleImport = async (mode: 'merge' | 'overwrite') => {
+        setImportMode(mode);
+    };
 
-        if (!window.confirm(confirmMsg)) return;
+    const confirmImport = async () => {
+        if (!restorePreview || !importMode) return;
+        const mode = importMode;
+        setImportMode(null);
 
-        setActionProgress({ loading: true, message: 'Démarrage de la restauration...' });
-        const operation = mode === 'merge' ? mergeDatabaseFromFile : restoreFullDatabase;
-
+        setActionProgress({ loading: true, message: mode === 'merge' ? 'Fusion Delta...' : 'Écriture complète...' });
         try {
-            await operation(restorePreview.data, (msg) => setActionProgress({ loading: true, message: msg }));
-            alert("Restauration système terminée.");
+            const operation = mode === 'merge' ? mergeDatabaseFromFile : restoreFullDatabase;
+            await operation(restorePreview.data, (m) => setActionProgress({ loading: true, message: m }));
+            showToast("Opération terminée.", "success");
             window.location.reload();
-        } catch (error) {
-            setActionProgress({ loading: false, message: "Échec critique de la restauration." });
+        } catch {
+            showToast("Échec de l'import.", "error");
+        } finally {
+            setActionProgress({ loading: false, message: '' });
         }
     };
 
     return (
-        <div className="max-w-5xl mx-auto space-y-8 animate-fade-in pb-20">
-            {/* Header Pro */}
-            <div className="flex flex-col md:flex-row justify-between items-start md:items-end gap-4 border-b border-white/5 pb-6">
-                <div>
-                    <h2 className="text-3xl font-black text-white uppercase tracking-tighter flex items-center gap-3">
-                        <ShieldCheckIcon className="w-10 h-10 text-blue-500"/>
-                        Console de Synchronisation
-                    </h2>
-                    <p className="text-slate-400 font-medium">Sécurisez votre activité : Cloud Google & Archives Locales.</p>
-                </div>
-                {actionProgress.message && (
-                    <div className="px-4 py-2 bg-blue-600/10 border border-blue-500/20 text-blue-400 text-xs font-black uppercase rounded-xl animate-pulse">
-                        {actionProgress.message}
+        <div className="max-w-5xl mx-auto space-y-8 pb-20 animate-fade-in">
+            <header className="flex flex-col md:flex-row justify-between items-end gap-6 bg-white/[0.02] p-8 rounded-[40px] border border-white/5 shadow-2xl">
+                <div className="flex-1">
+                    <div className="flex items-center gap-4 mb-2">
+                        <div className="p-3 bg-blue-600 rounded-2xl shadow-xl">
+                            <ShieldCheckIcon className="w-8 h-8 text-white"/>
+                        </div>
+                        <h2 className="text-4xl font-black text-white uppercase tracking-tighter italic">Centre de Sauvegarde</h2>
                     </div>
-                )}
+                    <p className="text-slate-500 font-bold uppercase tracking-widest text-[10px]">Standard TGS-CI : Export Interopérable & Fusion Intelligente</p>
+                </div>
+                
+                <div className="bg-blue-600/10 px-6 py-4 rounded-3xl border border-blue-500/20 text-center">
+                    <p className="text-[9px] font-black text-blue-500 uppercase tracking-widest mb-1">Base Active</p>
+                    <p className="text-sm font-black text-white">{localStats.tickets} Fiches</p>
+                </div>
+            </header>
+
+            {/* STORAGE HEALTH */}
+            <div className="apple-card p-8 bg-white/[0.02] border border-white/5">
+                <div className="flex flex-col md:flex-row justify-between items-center gap-6">
+                    <div className="flex items-center gap-4">
+                        <div className={`p-3 rounded-2xl ${storageInfo?.isPersistent ? 'bg-emerald-600' : 'bg-amber-600'} shadow-xl`}>
+                            {storageInfo?.isPersistent ? <CheckCircleIcon className="w-6 h-6 text-white"/> : <ExclamationTriangleIcon className="w-6 h-6 text-white"/>}
+                        </div>
+                        <div>
+                            <h3 className="text-lg font-black text-white uppercase tracking-tight">Santé du Stockage Local</h3>
+                            <p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest">
+                                {storageInfo?.isPersistent ? 'Stockage Persistant Activé' : 'Stockage Temporaire (Risque de suppression)'}
+                            </p>
+                        </div>
+                    </div>
+                    
+                    <div className="flex-1 max-w-md w-full">
+                        <div className="flex justify-between text-[10px] font-black uppercase tracking-widest mb-2">
+                            <span className="text-slate-400">Utilisation : {((storageInfo?.usage || 0) / (1024 * 1024 * 1024)).toFixed(2)} Go</span>
+                            <span className="text-blue-400">Quota : {((storageInfo?.quota || 0) / (1024 * 1024 * 1024)).toFixed(0)} Go</span>
+                        </div>
+                        <div className="h-3 bg-white/5 rounded-full overflow-hidden border border-white/5">
+                            <div 
+                                className={`h-full transition-all duration-1000 ${storageInfo?.percent && storageInfo.percent > 80 ? 'bg-red-500' : 'bg-blue-500'}`} 
+                                style={{ width: `${storageInfo?.percent || 0}%` }}
+                            ></div>
+                        </div>
+                    </div>
+
+                    {!storageInfo?.isPersistent && (
+                        <button 
+                            onClick={handleRequestPersistence}
+                            className="px-6 py-3 bg-amber-600 hover:bg-amber-500 text-white rounded-2xl font-black text-[10px] uppercase tracking-widest transition-all shadow-xl shadow-amber-900/40"
+                        >
+                            Activer Persistance
+                        </button>
+                    )}
+                </div>
+                <p className="mt-4 text-[9px] text-slate-500 font-bold uppercase leading-relaxed max-w-3xl">
+                    L'application peut stocker plus de 100 Go de données (fiches, photos, documents) directement dans votre navigateur. 
+                    L'activation de la persistance empêche le système de supprimer vos données en cas de manque d'espace disque.
+                </p>
             </div>
 
             {!restorePreview ? (
-                <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-                    {/* Colonne Cloud (Mise en avant) */}
-                    <div className="lg:col-span-7">
-                        <div className="glass p-8 rounded-3xl border-t-4 border-blue-600 shadow-2xl space-y-6 bg-gradient-to-br from-blue-600/5 to-transparent">
-                            <div className="flex items-center gap-4">
-                                <div className="p-4 bg-blue-600 rounded-2xl shadow-lg shadow-blue-900/40">
-                                    <ArrowPathIcon className="w-8 h-8 text-white" />
-                                </div>
-                                <div>
-                                    <h3 className="text-xl font-black text-white uppercase">Cloud Google TGS-CI</h3>
-                                    <p className="text-xs text-slate-500 font-bold uppercase tracking-widest">Synchronisation Serveur Temps Réel</p>
-                                </div>
-                            </div>
-                            
-                            <p className="text-sm text-slate-300 leading-relaxed">
-                                Le système synchronise automatiquement vos modifications. Utilisez ce bouton pour <strong>forcer une mise à jour complète</strong> vers votre serveur distant. Cela garantit que tous les postes de l'atelier disposent de la même version.
-                            </p>
-
-                            <button 
-                                onClick={handleForceServerBackup} 
-                                disabled={actionProgress.loading}
-                                className="w-full py-5 bg-blue-600 hover:bg-blue-500 disabled:bg-slate-700 text-white rounded-2xl font-black uppercase tracking-widest text-sm shadow-xl shadow-blue-900/30 transition-all transform active:scale-95 flex items-center justify-center gap-3"
-                            >
-                                <ArrowPathIcon className={`w-5 h-5 ${actionProgress.loading ? 'animate-spin' : ''}`} />
-                                {actionProgress.loading ? 'Synchronisation...' : 'Synchroniser tout vers le Cloud'}
-                            </button>
-                            
-                            <div className="p-4 bg-slate-900/60 rounded-xl border border-white/5">
-                                <div className="flex items-center gap-2 text-[10px] font-black text-blue-400 uppercase mb-2">
-                                    <ShieldCheckIcon className="w-3 h-3"/> État de protection
-                                </div>
-                                <p className="text-[11px] text-slate-500 italic">
-                                    Les données sont chiffrées avant le transfert vers le serveur cloud Google. Les pièces jointes et rapports techniques sont inclus dans la sauvegarde globale.
-                                </p>
-                            </div>
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                    <div className="group bg-white/[0.03] p-10 rounded-[48px] border border-white/5 hover:border-blue-500/30 transition-all">
+                        <div className="w-16 h-16 bg-blue-600 rounded-2xl flex items-center justify-center mb-8">
+                            <ArrowDownTrayIcon className="w-10 h-10 text-white" />
                         </div>
+                        <h3 className="text-2xl font-black text-white uppercase mb-3">Exporter l'Atelier</h3>
+                        <p className="text-sm text-slate-400 mb-8 leading-relaxed">Fichier JSON structuré (V4) classable par date. Contient fiches, stock, services et historique.</p>
+                        <button onClick={() => backupData('FULL')} className="w-full py-5 bg-blue-600 hover:bg-blue-500 text-white rounded-3xl font-black uppercase text-xs tracking-widest transition-all">
+                            Générer Archive .JSON
+                        </button>
                     </div>
 
-                    {/* Colonne Archives Locales */}
-                    <div className="lg:col-span-5 space-y-6">
-                        <div className="glass p-6 rounded-3xl border border-white/10 space-y-6">
-                            <h3 className="text-xs font-black text-slate-500 uppercase tracking-widest flex items-center gap-2">
-                                <DocumentDuplicateIcon className="w-4 h-4" /> Archives Manuelles
-                            </h3>
-                            
-                            <div className="space-y-4">
-                                <button 
-                                    onClick={handleDownloadFullBackup}
-                                    className="w-full py-4 bg-slate-800 hover:bg-slate-700 text-white rounded-xl font-bold transition-all text-xs uppercase flex items-center justify-center gap-2 border border-white/5"
-                                >
-                                    <ArrowDownTrayIcon className="w-4 h-4" /> Sauvegarde locale (.json)
-                                </button>
-
-                                <button 
-                                    onClick={() => restoreInputRef.current?.click()}
-                                    className="w-full py-4 bg-transparent border-2 border-dashed border-slate-700 hover:border-blue-500/50 text-slate-500 hover:text-blue-400 rounded-xl font-bold transition-all text-xs uppercase flex items-center justify-center gap-2"
-                                >
-                                    <ArrowUpTrayIcon className="w-4 h-4" /> Restaurer un fichier
-                                </button>
-                                <input type="file" ref={restoreInputRef} className="hidden" accept=".json" onChange={handleRestoreFileSelect} />
-                            </div>
+                    <div className="group bg-white/[0.03] p-10 rounded-[48px] border border-white/5 hover:border-emerald-500/30 transition-all">
+                        <div className="w-16 h-16 bg-emerald-600 rounded-2xl flex items-center justify-center mb-8">
+                            <ArrowUpTrayIcon className="w-10 h-10 text-white" />
                         </div>
+                        <h3 className="text-2xl font-black text-white uppercase mb-3">Importer / Fusionner</h3>
+                        <p className="text-sm text-slate-400 mb-8 leading-relaxed">Chargez un fichier pour enrichir votre base actuelle ou restaurer un poste complet.</p>
+                        <button onClick={() => restoreInputRef.current?.click()} className="w-full py-5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-3xl font-black uppercase text-xs tracking-widest transition-all">
+                            Sélectionner un fichier
+                        </button>
+                        <input type="file" ref={restoreInputRef} className="hidden" accept=".json" onChange={handleFileSelect} />
                     </div>
                 </div>
             ) : (
-                <div className="glass p-8 rounded-3xl border-2 border-blue-500/50 shadow-2xl animate-scale-up">
-                    <div className="flex justify-between items-center mb-8">
-                        <h3 className="text-2xl font-black text-blue-400 uppercase flex items-center gap-3">
-                            <ExclamationTriangleIcon className="w-8 h-8"/> Analyse de l'Archive
-                        </h3>
-                        <button onClick={() => setRestorePreview(null)} className="px-4 py-2 bg-slate-800 text-slate-400 hover:text-white rounded-lg text-xs font-black uppercase">Annuler</button>
+                <div className="bg-slate-900 rounded-[48px] border-2 border-blue-500/50 p-10 animate-slide-up shadow-3xl">
+                    <div className="flex justify-between items-center mb-10">
+                        <div>
+                            <h3 className="text-3xl font-black text-white uppercase tracking-tighter">Audit avant Import</h3>
+                            <p className="text-blue-400 font-mono text-sm">{restorePreview.fileName}</p>
+                        </div>
+                        <button onClick={() => setRestorePreview(null)} className="p-3 hover:bg-white/10 rounded-full"><XIcon className="w-8 h-8 text-slate-500" /></button>
                     </div>
-
-                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-10">
-                        <div className="bg-slate-900 p-4 rounded-2xl text-center border border-white/5">
-                            <UserGroupIcon className="w-6 h-6 mx-auto mb-2 text-blue-400"/>
-                            <p className="text-2xl font-black text-white">{restorePreview.summary.tickets}</p>
-                            <p className="text-[9px] text-slate-500 font-black uppercase tracking-widest">Fiches</p>
+                    
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-12">
+                        <div className="bg-black/40 p-6 rounded-3xl border border-white/5">
+                            <p className="text-[10px] font-black text-slate-500 uppercase mb-2">Version Archive</p>
+                            <p className="text-lg font-black text-white">{restorePreview.version}</p>
                         </div>
-                        <div className="bg-slate-900 p-4 rounded-2xl text-center border border-white/5">
-                            <WrenchScrewdriverIcon className="w-6 h-6 mx-auto mb-2 text-yellow-400"/>
-                            <p className="text-2xl font-black text-white">{restorePreview.summary.stock}</p>
-                            <p className="text-[9px] text-slate-500 font-black uppercase tracking-widest">Stock</p>
-                        </div>
-                        <div className="bg-slate-900 p-4 rounded-2xl text-center border border-white/5">
-                            <BanknotesIcon className="w-6 h-6 mx-auto mb-2 text-green-400"/>
-                            <p className="text-2xl font-black text-white">{restorePreview.summary.finance}</p>
-                            <p className="text-[9px] text-slate-500 font-black uppercase tracking-widest">Finance</p>
-                        </div>
-                        <div className="bg-slate-900 p-4 rounded-2xl text-center border border-white/5">
-                            <DocumentDuplicateIcon className="w-6 h-6 mx-auto mb-2 text-purple-400"/>
-                            <p className="text-2xl font-black text-white">{restorePreview.summary.documents}</p>
-                            <p className="text-[9px] text-slate-500 font-black uppercase tracking-widest">Docs</p>
+                        <div className="bg-black/40 p-6 rounded-3xl border border-white/5">
+                            <p className="text-[10px] font-black text-slate-500 uppercase mb-2">Contenu Détecté</p>
+                            <p className="text-lg font-black text-white">{restorePreview.count} Fiches de réparation</p>
                         </div>
                     </div>
 
-                    <div className="flex flex-col sm:flex-row gap-4">
-                        <button 
-                            onClick={() => executeRestore('merge')} 
-                            className="flex-1 py-5 bg-blue-600 hover:bg-blue-500 text-white font-black uppercase tracking-widest rounded-2xl shadow-xl transition-all flex flex-col items-center justify-center"
-                        >
-                            <span>Fusionner</span>
-                            <span className="text-[10px] font-medium opacity-60">Ajouter sans supprimer</span>
+                    <div className="flex flex-col md:flex-row gap-6">
+                        <button onClick={() => handleImport('merge')} className="flex-1 py-6 bg-blue-600 hover:bg-blue-500 text-white rounded-3xl font-black uppercase tracking-widest text-sm transition-all shadow-2xl flex flex-col items-center gap-1">
+                            <span>Fusion Complémentaire</span>
+                            <span className="text-[9px] opacity-60 font-bold">(Sûr : n'efface rien)</span>
                         </button>
-                        <button 
-                            onClick={() => executeRestore('overwrite')} 
-                            className="flex-1 py-5 bg-red-600/10 hover:bg-red-600 text-red-500 hover:text-white border border-red-600/30 rounded-2xl font-black uppercase tracking-widest transition-all flex flex-col items-center justify-center"
-                        >
-                            <span>Tout Écraser</span>
-                            <span className="text-[10px] font-medium opacity-60">Remplacer la base actuelle</span>
+                        <button onClick={() => handleImport('overwrite')} className="flex-1 py-6 bg-white/5 hover:bg-red-600/20 text-slate-400 hover:text-red-400 rounded-3xl font-black uppercase tracking-widest text-sm border border-white/10 transition-all flex flex-col items-center gap-1">
+                            <span>Remplacer tout</span>
+                            <span className="text-[9px] opacity-60 font-bold">(Attention : écrase la base actuelle)</span>
                         </button>
                     </div>
                 </div>
             )}
+
+            {actionProgress.loading && (
+                <div className="fixed inset-0 z-[200] bg-black/90 flex items-center justify-center p-10 text-center backdrop-blur-xl">
+                    <div className="space-y-6">
+                        <ArrowPathIcon className="w-16 h-16 text-blue-500 animate-spin mx-auto" />
+                        <p className="text-2xl font-black text-white uppercase tracking-tighter animate-pulse">{actionProgress.message}</p>
+                    </div>
+                </div>
+            )}
+
+            <ConfirmationModal
+                isOpen={importMode !== null}
+                onClose={() => setImportMode(null)}
+                onConfirm={confirmImport}
+                title={importMode === 'merge' ? "Fusionner les bases ?" : "Restaurer l'archive ?"}
+                message={importMode === 'merge' 
+                    ? "FUSION : Vos données actuelles seront conservées. Les éléments manquants seront ajoutés. Confirmer ?" 
+                    : "ATTENTION : RESTAURATION TOTALE. TOUTE la base locale sera remplacée par le contenu de ce fichier. Confirmer ?"}
+                confirmText={importMode === 'merge' ? "Fusionner" : "Tout Remplacer"}
+                confirmBtnClassName={importMode === 'merge' ? "bg-blue-600" : "bg-red-600"}
+            />
         </div>
     );
 };

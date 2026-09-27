@@ -3,12 +3,6 @@ import React, { useMemo, useState } from 'react';
 import { RepairTicket } from '../types.ts';
 import { MacbookIcon, ExclamationTriangleIcon } from './icons.tsx';
 
-interface MatrixEntry {
-    model: string;
-    problem: string;
-    count: number;
-}
-
 interface ProblemModelMatrixProps {
     tickets: RepairTicket[];
 }

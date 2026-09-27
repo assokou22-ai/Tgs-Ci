@@ -1,9 +1,12 @@
 
 import React, { useState, useMemo } from 'react';
-import { RepairTicket, RepairStatus, DiagnosticCheck, DiagnosticSheetBData } from '../types.ts';
-import { DocumentMagnifyingGlassIcon, ClipboardDocumentListIcon, ExclamationTriangleIcon, MacbookIcon } from './icons.tsx';
+import { RepairTicket, RepairStatus, DiagnosticCheck, DiagnosticSheetBData, EntryCondition } from '../types.ts';
+import { DocumentMagnifyingGlassIcon, ClipboardDocumentListIcon, MacbookIcon } from './icons.tsx';
 import DiagnosticFormModal from './DiagnosticFormModal.tsx';
 import DiagnosticSheetBModal from './DiagnosticSheetBModal.tsx';
+import { getStatusStyle } from '../utils/statusStyles.ts';
+import { Camera } from 'lucide-react';
+import QrScannerModal from './QrScannerModal.tsx';
 
 interface DiagnosticWorkboardProps {
     tickets: RepairTicket[];
@@ -13,10 +16,10 @@ interface DiagnosticWorkboardProps {
 
 const DiagnosticWorkboard: React.FC<DiagnosticWorkboardProps> = ({ tickets, onSelectTicket, onUpdateTicket }) => {
     const [filter, setFilter] = useState('');
+    const [isQrOpen, setIsQrOpen] = useState(false);
     const [activeTicketForDiag, setActiveTicketForDiag] = useState<RepairTicket | null>(null);
     const [activeTicketForSheetB, setActiveTicketForSheetB] = useState<RepairTicket | null>(null);
 
-    // Filter tickets that need diagnostic attention
     const diagnosticTickets = useMemo(() => {
         const statusesNeedingDiag = [
             RepairStatus.A_DIAGNOSTIQUER,
@@ -39,17 +42,29 @@ const DiagnosticWorkboard: React.FC<DiagnosticWorkboardProps> = ({ tickets, onSe
         return filtered.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
     }, [tickets, filter]);
 
-    const handleSaveDiagnostic = async (report: DiagnosticCheck[], images: string[]) => {
+    const handleSaveDiagnostic = async (report: DiagnosticCheck[], images: string[], selectedScenario: EntryCondition) => {
         if (!activeTicketForDiag) return;
         
+        const now = new Date().toISOString();
         const updatedTicket = { 
             ...activeTicketForDiag, 
             diagnosticReport: report,
             diagnosticImages: images,
+            diagnosticCreatedAt: activeTicketForDiag.diagnosticCreatedAt || now,
             status: activeTicketForDiag.status === RepairStatus.A_DIAGNOSTIQUER ? RepairStatus.DIAGNOSTIC_EN_COURS : activeTicketForDiag.status,
+            diagnosticSheetB: {
+                ...(activeTicketForDiag.diagnosticSheetB || {
+                    testDuration: '',
+                    repairDelay: '',
+                    diagnosticPoints: [],
+                    tensionValues: [],
+                    visualInspection: ''
+                }),
+                entryCondition: selectedScenario
+            },
             history: [
                 ...activeTicketForDiag.history,
-                { timestamp: new Date().toISOString(), user: 'Technicien' as any, action: 'Mise à jour du rapport de diagnostic standard avec photos.' }
+                { timestamp: now, user: 'Technicien', action: 'Validation du diagnostic technique standard (Expertise A).' }
             ]
         };
         
@@ -60,13 +75,15 @@ const DiagnosticWorkboard: React.FC<DiagnosticWorkboardProps> = ({ tickets, onSe
     const handleSaveSheetB = async (data: DiagnosticSheetBData) => {
         if (!activeTicketForSheetB) return;
 
+        const now = new Date().toISOString();
         const updatedTicket = { 
             ...activeTicketForSheetB, 
             diagnosticSheetB: data,
+            diagnosticCreatedAt: activeTicketForSheetB.diagnosticCreatedAt || now,
             status: activeTicketForSheetB.status === RepairStatus.A_DIAGNOSTIQUER ? RepairStatus.DIAGNOSTIC_EN_COURS : activeTicketForSheetB.status,
             history: [
                 ...activeTicketForSheetB.history,
-                { timestamp: new Date().toISOString(), user: 'Technicien' as any, action: 'Mise à jour de l\'expertise électronique (Fiche B) avec photos.' }
+                { timestamp: now, user: 'Technicien', action: 'Validation de l\'expertise électronique (Expertise B).' }
             ]
         };
 
@@ -82,16 +99,26 @@ const DiagnosticWorkboard: React.FC<DiagnosticWorkboardProps> = ({ tickets, onSe
                         <DocumentMagnifyingGlassIcon className="w-6 h-6 text-blue-400"/>
                         Centre de Diagnostic Technique
                     </h2>
-                    <p className="text-sm text-gray-400">Gérez et rédigez les expertises pour les machines en attente.</p>
+                    <p className="text-sm text-gray-400">Rédigez les expertises. L'heure précise de validation sera enregistrée pour chaque dossier.</p>
                 </div>
-                <div className="w-64">
-                    <input 
-                        type="text" 
-                        placeholder="Rechercher une fiche..." 
-                        value={filter}
-                        onChange={(e) => setFilter(e.target.value)}
-                        className="w-full p-2 bg-gray-700 text-white rounded border border-gray-600 text-sm outline-none focus:border-blue-500"
-                    />
+                <div className="flex items-center gap-2">
+                    <div className="w-64">
+                        <input 
+                            type="text" 
+                            placeholder="Rechercher une fiche..." 
+                            value={filter}
+                            onChange={(e) => setFilter(e.target.value)}
+                            className="w-full p-2 bg-gray-700 text-white rounded border border-gray-600 text-sm outline-none focus:border-blue-500 font-bold"
+                        />
+                    </div>
+                    <button
+                        onClick={() => setIsQrOpen(true)}
+                        className="flex items-center justify-center gap-1.5 px-3 py-2 bg-blue-600 hover:bg-blue-500 border border-blue-500 rounded text-white text-xs font-black uppercase tracking-wider transition-all active:scale-95 shrink-0"
+                        title="Scanner le QR code de l'étiquette matériel"
+                    >
+                        <Camera className="w-3.5 h-3.5" />
+                        <span className="hidden sm:inline">Scanner QR</span>
+                    </button>
                 </div>
             </div>
 
@@ -112,7 +139,7 @@ const DiagnosticWorkboard: React.FC<DiagnosticWorkboardProps> = ({ tickets, onSe
                                     <div className="flex justify-between items-start mb-2">
                                         <span className="text-[10px] font-bold bg-gray-700 text-gray-400 px-2 py-0.5 rounded-full uppercase">{ticket.id}</span>
                                         <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
-                                            ticket.status === RepairStatus.A_DIAGNOSTIQUER ? 'bg-red-900/50 text-red-300' : 'bg-blue-900/50 text-blue-300'
+                                            getStatusStyle(ticket.status).badge
                                         }`}>
                                             {ticket.status}
                                         </span>
@@ -177,6 +204,12 @@ const DiagnosticWorkboard: React.FC<DiagnosticWorkboardProps> = ({ tickets, onSe
                     ticket={activeTicketForSheetB} 
                 />
             )}
+
+            <QrScannerModal
+                isOpen={isQrOpen}
+                onClose={() => setIsQrOpen(false)}
+                onSelectTicket={onSelectTicket}
+            />
         </div>
     );
 };

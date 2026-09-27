@@ -1,11 +1,10 @@
-import { EntityType, RepairTicket, HistoryEntry } from '../types.ts';
 
-// Helper pour fusionner et dédoublonner des tableaux d'objets par une clé unique (ex: timestamp)
-const mergeArrayByKey = <T extends Record<string, any>>(a: T[], b: T[], key: keyof T): T[] => {
-    const map = new Map<any, T>();
-    // On charge le premier tableau
+import { EntityType, RepairTicket, HistoryEntry, SuggestionRecord } from '../types.ts';
+
+// Helper pour fusionner et dédoublonner des tableaux d'objets par une clé unique (ex: timestamp ou id)
+const mergeArrayByKey = <T extends Record<string, unknown>>(a: T[], b: T[], key: keyof T): T[] => {
+    const map = new Map<unknown, T>();
     (a || []).forEach(item => map.set(item[key], item));
-    // On fusionne avec le deuxième (les doublons de clé seront écrasés par 'b')
     (b || []).forEach(item => map.set(item[key], item));
     return Array.from(map.values());
 };
@@ -14,42 +13,61 @@ const mergeRepairTicket = (local: RepairTicket, remote: RepairTicket): RepairTic
     const localDate = new Date(local.updatedAt || 0).getTime();
     const remoteDate = new Date(remote.updatedAt || 0).getTime();
 
-    // La version la plus récente sert de base structurelle
-    const newest = remoteDate > localDate ? remote : local;
-    const oldest = remoteDate > localDate ? local : remote;
+    // La version la plus récente sert de base structurelle, avec un tie-breaker sur la richesse du contenu si les dates sont identiques
+    let newest = local;
+    let oldest = remote;
+    if (remoteDate > localDate) {
+        newest = remote;
+        oldest = local;
+    } else if (localDate > remoteDate) {
+        newest = local;
+        oldest = remote;
+    } else {
+        const localLen = JSON.stringify(local).length;
+        const remoteLen = JSON.stringify(remote).length;
+        if (remoteLen >= localLen) {
+            newest = remote;
+            oldest = local;
+        } else {
+            newest = local;
+            oldest = remote;
+        }
+    }
 
-    // FUSION DE L'HISTORIQUE : On combine tout et on trie par date
+    // Fusion de l'historique : On combine tout chronologiquement sans perte
     const combinedHistory = mergeArrayByKey<HistoryEntry>(local.history || [], remote.history || [], 'timestamp')
         .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
 
     const merged: RepairTicket = {
         ...newest,
         history: combinedHistory,
-        // On garde les données techniques les plus complètes si l'un des deux est vide
+        // On conserve toujours les blocs de données les plus complets (si l'ancien a un diag et pas le nouveau)
         diagnosticSheetB: newest.diagnosticSheetB || oldest.diagnosticSheetB,
         diagnosticReport: (newest.diagnosticReport?.length || 0) >= (oldest.diagnosticReport?.length || 0) 
             ? newest.diagnosticReport 
             : oldest.diagnosticReport,
+        diagnosticImages: (newest.diagnosticImages?.length || 0) >= (oldest.diagnosticImages?.length || 0)
+            ? newest.diagnosticImages
+            : oldest.diagnosticImages,
         clientSignature: newest.clientSignature || oldest.clientSignature,
+        attachments: mergeArrayByKey(local.attachments || [], remote.attachments || [], 'id'),
+        isReopenedAfterCancellation: newest.isReopenedAfterCancellation !== undefined ? newest.isReopenedAfterCancellation : oldest.isReopenedAfterCancellation,
+        cancellationReturnDate: newest.cancellationReturnDate || oldest.cancellationReturnDate,
+        cancellationReturnNotes: newest.cancellationReturnNotes || oldest.cancellationReturnNotes,
     };
 
-    // FUSION INTELLIGENTE DES NOTES TECHNIQUES
+    // Fusion intelligente des notes techniques pour éviter d'effacer des commentaires
     const localNotes = (local.technicianNotes || "").trim();
     const remoteNotes = (remote.technicianNotes || "").trim();
     
     if (localNotes !== remoteNotes && localNotes && remoteNotes) {
-        // Si les deux versions ont des notes différentes, on les concatène pour ne rien perdre
-        // mais seulement si l'une ne contient pas déjà l'autre
         if (!localNotes.includes(remoteNotes) && !remoteNotes.includes(localNotes)) {
-            merged.technicianNotes = `[NOTE LOCALE]:\n${localNotes}\n\n[NOTE IMPORTÉE]:\n${remoteNotes}`;
+            merged.technicianNotes = `[Dépôt local]:\n${localNotes}\n\n[Import distant]:\n${remoteNotes}`;
         } else {
             merged.technicianNotes = localNotes.length >= remoteNotes.length ? localNotes : remoteNotes;
         }
-    } else {
-        merged.technicianNotes = localNotes || remoteNotes;
     }
 
-    // Fusion des champs personnalisés pour ne pas perdre de métadonnées spécifiques
     merged.customFields = { ...(oldest.customFields || {}), ...(newest.customFields || {}) };
     merged.client.customFields = { ...(oldest.client.customFields || {}), ...(newest.client.customFields || {}) };
 
@@ -57,23 +75,43 @@ const mergeRepairTicket = (local: RepairTicket, remote: RepairTicket): RepairTic
 };
 
 /**
- * Fusionne intelligemment les mises à jour d'une source (fichier ou serveur) avec les données locales.
+ * Fusionne intelligemment les mises à jour en garantissant l'intégrité des données complexes.
  */
-export const mergeUpdates = (entity: EntityType, local: any, remote: any): any => {
+export const mergeUpdates = (entity: EntityType, local: unknown, remote: unknown): unknown => {
     if (!local) return remote; 
     if (!remote) return local; 
 
-    // Logique ultra-précise pour les fiches clients
     if (entity === 'ticket') {
         return mergeRepairTicket(local as RepairTicket, remote as RepairTicket);
     }
     
-    // Pour les autres entités (Stock, Services), on utilise la date de modification
-    if (local.updatedAt && remote.updatedAt) {
-        const localDate = new Date(local.updatedAt).getTime();
-        const remoteDate = new Date(remote.updatedAt).getTime();
-        return remoteDate >= localDate ? remote : local;
+    if (entity === 'suggestions') {
+        const lS = local as SuggestionRecord;
+        const rS = remote as SuggestionRecord;
+        return {
+            category: lS.category,
+            // Union des suggestions sans doublons
+            values: Array.from(new Set([
+                ...(Array.isArray(lS.values) ? lS.values : []), 
+                ...(Array.isArray(rS.values) ? rS.values : [])
+            ])).sort()
+        };
     }
-    
-    return remote;
+
+    // Gestion des dates de modification pour les autres entités
+    const localTyped = local as Record<string, unknown>;
+    const remoteTyped = remote as Record<string, unknown>;
+
+    const localTS = new Date((localTyped.updatedAt || localTyped.date || localTyped.uploadDate || 0) as string).getTime();
+    const remoteTS = new Date((remoteTyped.updatedAt || remoteTyped.date || remoteTyped.uploadDate || 0) as string).getTime();
+
+    // En cas d'égalité de date ou d'absence de date, on garde la version la plus "riche" en contenu
+    if (localTS === remoteTS) {
+        const localLen = JSON.stringify(local).length;
+        const remoteLen = JSON.stringify(remote).length;
+        return remoteLen >= localLen ? remote : local;
+    }
+
+    // Priorité à la donnée la plus récente (le "Delta" positif)
+    return remoteTS > localTS ? remote : local;
 };

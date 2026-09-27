@@ -15,8 +15,8 @@ const StoreSelection: React.FC<StoreSelectionProps> = ({ onSelectStore }) => {
         <BackgroundAnimation />
         <main className="flex-grow flex flex-col justify-center items-center w-full py-8">
             <div className="text-center mb-12 z-10">
-                <h1 className="text-5xl font-bold">RéparerMonMac</h1>
-                <p className="mt-4 text-lg text-gray-300">Veuillez sélectionner votre magasin</p>
+                <h1 className="text-3xl md:text-5xl font-bold">RéparerMonMac</h1>
+                <p className="mt-4 text-sm md:text-lg text-gray-300">Veuillez sélectionner votre magasin</p>
             </div>
             <div className="w-full max-w-2xl flex justify-center z-10">
                 <button

@@ -1,12 +1,11 @@
 import React, { useMemo } from 'react';
-import { RepairTicket, RepairServiceItem, RepairStatus } from '../types.ts';
+import { RepairTicket, RepairStatus } from '../types.ts';
 import Modal from './Modal.tsx';
 
 interface GlobalPerformanceModalProps {
   isOpen: boolean;
   onClose: () => void;
   tickets: RepairTicket[];
-  services: RepairServiceItem[];
 }
 
 const StatCard: React.FC<{ title: string; value: string | number; description?: string }> = ({ title, value, description }) => (
@@ -23,7 +22,7 @@ const getTicketTotal = (ticket: RepairTicket) => {
     return diagnosticCost + repairCost;
 };
 
-const GlobalPerformanceModal: React.FC<GlobalPerformanceModalProps> = ({ isOpen, onClose, tickets, services }) => {
+const GlobalPerformanceModal: React.FC<GlobalPerformanceModalProps> = ({ isOpen, onClose, tickets }) => {
     const stats = useMemo(() => {
         if (!tickets || tickets.length === 0) {
             return {
@@ -36,9 +35,10 @@ const GlobalPerformanceModal: React.FC<GlobalPerformanceModalProps> = ({ isOpen,
             };
         }
 
-        const totalRevenue = tickets.reduce((sum, ticket) => sum + getTicketTotal(ticket), 0);
+        const activeTicketsForRevenue = tickets.filter(t => t.status !== RepairStatus.ANNULE);
+        const totalRevenue = activeTicketsForRevenue.reduce((sum, ticket) => sum + getTicketTotal(ticket), 0);
         const totalTickets = tickets.length;
-        const averageCost = totalRevenue / totalTickets;
+        const averageCost = totalRevenue / (activeTicketsForRevenue.length || 1);
 
         const statusCounts = tickets.reduce((acc, ticket) => {
             acc[ticket.status] = (acc[ticket.status] || 0) + 1;
@@ -47,6 +47,7 @@ const GlobalPerformanceModal: React.FC<GlobalPerformanceModalProps> = ({ isOpen,
 
         const serviceAnalytics = new Map<string, { name: string, count: number, revenue: number }>();
         tickets.forEach(ticket => {
+            if (ticket.status === RepairStatus.ANNULE) return;
             ticket.services?.forEach(service => {
                 const existing = serviceAnalytics.get(service.name) || { name: service.name, count: 0, revenue: 0 };
                 existing.count += 1;
@@ -67,7 +68,7 @@ const GlobalPerformanceModal: React.FC<GlobalPerformanceModalProps> = ({ isOpen,
             topServicesByRevenue,
             topServicesByFrequency,
         };
-    }, [tickets, services]);
+    }, [tickets]);
     
     const ListItem: React.FC<{ label: string; value: string | number; index: number }> = ({ label, value, index }) => (
         <li className="flex justify-between items-center p-2 rounded-md bg-gray-700/50">

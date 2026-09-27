@@ -1,8 +1,9 @@
 
-import React, { useRef } from 'react';
+import React, { useRef, useState, useEffect } from 'react';
 import Modal from './Modal.tsx';
 import { exportElementToPdf } from '../services/exportService.ts';
 import { ArrowDownTrayIcon, XCircleIcon, PrinterIcon } from './icons.tsx';
+import { useToastContext } from '../context/ToastContext.tsx';
 
 interface PreviewModalProps {
   isOpen: boolean;
@@ -12,71 +13,181 @@ interface PreviewModalProps {
 }
 
 const PreviewModal: React.FC<PreviewModalProps> = ({ isOpen, onClose, children, fileName }) => {
+  const { showToast } = useToastContext();
   const contentRef = useRef<HTMLDivElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [scale, setScale] = useState(1);
 
-  const handleDownload = () => {
+  useEffect(() => {
+    const updateScale = () => {
+      if (containerRef.current) {
+        const containerWidth = containerRef.current.offsetWidth;
+        const padding = 32;
+        const availableWidth = containerWidth - padding;
+        const a4WidthPx = 793.7; 
+        
+        if (availableWidth < a4WidthPx) {
+          setScale(availableWidth / a4WidthPx);
+        } else {
+          setScale(1);
+        }
+      }
+    };
+
+    if (isOpen) {
+      updateScale();
+      window.addEventListener('resize', updateScale);
+    }
+    return () => window.removeEventListener('resize', updateScale);
+  }, [isOpen]);
+
+  const handleDownload = async () => {
     if (contentRef.current) {
-      exportElementToPdf(contentRef.current, fileName);
+        try {
+            await exportElementToPdf(contentRef.current, fileName);
+            showToast("PDF généré avec succès.", "success");
+        } catch (error) {
+            console.error("PDF Export failed:", error);
+            showToast("Erreur lors de la génération du PDF.", "error");
+        }
     }
   };
 
   const handlePrint = () => {
     if (contentRef.current) {
-      const printWindow = window.open('', '_blank', 'height=800,width=800');
+      const printWindow = window.open('', '_blank', 'height=900,width=850');
       if (printWindow) {
-        printWindow.document.write('<html><head><title>Impression - TGS CI</title>');
-        printWindow.document.write('<style>');
-        printWindow.document.write(`
-          @page { size: A4; margin: 0; }
-          body { margin: 0; padding: 0; background: white; -webkit-print-color-adjust: exact; }
-          * { box-sizing: border-box; }
-          @media print {
-            .no-print { display: none !important; }
-            body { width: 210mm; height: 297mm; }
-          }
-        `);
-        printWindow.document.write('</style></head><body>');
-        printWindow.document.write(contentRef.current.innerHTML);
-        printWindow.document.write('</body></html>');
-        printWindow.document.close();
+        const styleTags = Array.from(document.querySelectorAll('style, link[rel="stylesheet"]'))
+          .map(style => style.outerHTML)
+          .join('\n');
+
+        const content = contentRef.current.innerHTML;
         
-        printWindow.onload = () => {
-          printWindow.focus();
-          printWindow.print();
-          printWindow.close();
-        };
+        printWindow.document.write(`
+          <!DOCTYPE html>
+          <html>
+            <head>
+              <meta charset="UTF-8">
+              <title>Export TGS-CI - ${fileName}</title>
+              ${styleTags}
+              <style>
+                @page { 
+                  size: A4 portrait; 
+                  margin: 0 !important; 
+                }
+                body { 
+                  margin: 0 !important; 
+                  padding: 0 !important; 
+                  background: #fff !important; 
+                  -webkit-print-color-adjust: exact !important;
+                  print-color-adjust: exact !important;
+                }
+                .printable-page { 
+                  border: none !important; 
+                  box-shadow: none !important; 
+                  width: 210mm !important;
+                  height: auto !important;
+                  min-height: 297mm !important;
+                  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif !important;
+                  letter-spacing: 0.02em !important;
+                  word-spacing: normal !important;
+                }
+                .printable-page.ticket-single-page,
+                .printable-page.single-page-fit {
+                  height: 285mm !important;
+                  max-height: 285mm !important;
+                  min-height: 0 !important;
+                  padding: 5mm 7mm !important;
+                  overflow: hidden !important;
+                  page-break-after: avoid !important;
+                  page-break-inside: avoid !important;
+                  page-break-before: avoid !important;
+                  break-after: avoid !important;
+                  break-inside: avoid !important;
+                  break-before: avoid !important;
+                }
+                .printable-page * {
+                  letter-spacing: 0.02em !important;
+                }
+                * { box-sizing: border-box; }
+              </style>
+            </head>
+            <body>
+              ${content}
+              <script>
+                // Utilisation d'une approche plus directe pour déclencher l'impression
+                (function() {
+                  const checkReady = () => {
+                    if (document.readyState === 'complete') {
+                      setTimeout(() => {
+                        window.print();
+                        // Optionnel: fermer la fenêtre après impression
+                        // window.onafterprint = () => window.close();
+                      }, 1200);
+                    } else {
+                      setTimeout(checkReady, 100);
+                    }
+                  };
+                  checkReady();
+                })();
+              </script>
+            </body>
+          </html>
+        `);
+        printWindow.document.close();
       }
     }
   };
 
-  if (!isOpen) return null;
-
+  // Fix: Removed the undefined 'isRendered' check. The 'Modal' component handles its own mounting state and animation lifecycle via its own internal 'isRendered' state.
   return (
-    <Modal isOpen={isOpen} onClose={onClose} containerClassName="bg-gray-900 rounded-xl shadow-2xl w-full max-w-5xl m-4 h-[95vh] flex flex-col border border-gray-700">
-      <header className="flex justify-between items-center p-4 border-b border-gray-800 bg-gray-900 rounded-t-xl">
-        <div>
-            <h2 className="text-xl font-black text-white uppercase tracking-tighter">Édition Document</h2>
-            <p className="text-[10px] text-gray-500 font-bold uppercase tracking-widest">{fileName}</p>
+    <Modal isOpen={isOpen} onClose={onClose} containerClassName="bg-apple-surface rounded-2xl shadow-2xl w-full max-w-[98vw] h-[98vh] flex flex-col border border-white/10 overflow-hidden">
+      <header className="flex flex-col sm:flex-row justify-between items-center px-4 py-3 sm:px-6 sm:py-4 border-b border-white/5 glass z-10 gap-3">
+        <div className="text-center sm:text-left">
+            <h2 className="text-lg sm:text-xl font-black text-white tracking-tight">Aperçu Impression Certifiée</h2>
+            <p className="hidden sm:block text-[10px] text-apple-muted font-bold uppercase tracking-widest">{fileName}</p>
         </div>
-        <div className="flex items-center gap-3">
-          <button onClick={handlePrint} className="flex items-center gap-2 px-4 py-2 bg-gray-800 hover:bg-gray-700 text-white rounded-lg text-xs font-black uppercase transition-all border border-gray-700">
-            <PrinterIcon className="w-4 h-4" /> Imprimer
-          </button>
-          <button onClick={handleDownload} className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-black uppercase transition-all shadow-lg shadow-blue-900/40">
-            <ArrowDownTrayIcon className="w-4 h-4" /> PDF
-          </button>
-          <button onClick={onClose} className="p-1.5 rounded-full hover:bg-gray-800 transition-colors ml-2">
-            <XCircleIcon className="w-6 h-6 text-gray-500" />
-          </button>
-        </div>
+        <button onClick={onClose} className="p-1.5 rounded-full hover:bg-white/5 transition-colors">
+          <XCircleIcon className="w-6 h-6 sm:w-8 sm:h-8 text-apple-muted hover:text-white" />
+        </button>
       </header>
-      <main className="flex-grow overflow-y-auto p-12 bg-gray-950/50 flex justify-center custom-scrollbar">
+
+      {/* Floating Action Bar - Fixed at bottom right for desktop, full width bottom for mobile */}
+      <div className="fixed bottom-0 left-0 right-0 md:bottom-8 md:right-8 md:left-auto p-4 md:p-0 bg-black/80 md:bg-transparent backdrop-blur-xl md:backdrop-blur-none border-t md:border-none border-white/10 z-[210] flex flex-row md:flex-col gap-3 pb-[calc(env(safe-area-inset-bottom,0px)+1rem)] md:pb-0 justify-center md:justify-end pointer-events-auto">
+          <button 
+              onClick={handlePrint}
+              className="flex-1 md:flex-none flex items-center justify-center gap-3 px-6 py-4 bg-white text-black rounded-2xl text-[11px] md:text-xs font-black uppercase tracking-widest transition-all shadow-2xl shadow-white/10 group min-h-[48px] md:min-w-[180px] active:scale-95"
+          >
+              <PrinterIcon className="w-5 h-5 group-hover:scale-110 transition-transform" />
+              <span>Imprimer</span>
+          </button>
+          <button 
+              onClick={handleDownload}
+              className="flex-1 md:flex-none flex items-center justify-center gap-3 px-6 py-4 bg-apple-blue text-white rounded-2xl text-[11px] md:text-xs font-black uppercase tracking-widest transition-all shadow-2xl shadow-blue-900/40 group min-h-[48px] md:min-w-[180px] active:scale-95"
+          >
+              <ArrowDownTrayIcon className="w-5 h-5 group-hover:translate-y-0.5 transition-transform" />
+              <span>Générer PDF</span>
+          </button>
+      </div>
+
+      <main 
+        ref={containerRef}
+        className="flex-1 overflow-auto p-2 sm:p-8 bg-[#0a0a0a] flex justify-center items-start custom-scrollbar pb-32 md:pb-8"
+      >
         <div 
-            ref={contentRef} 
-            className="shadow-[0_0_50px_rgba(0,0,0,0.5)] bg-white" 
-            style={{ width: '210mm', minHeight: '297mm', boxSizing: 'border-box' }}
+            style={{ 
+                transform: `scale(${scale})`, 
+                transformOrigin: 'top center',
+                transition: 'transform 0.15s ease-out'
+            }}
         >
-          {children}
+            <div 
+                ref={contentRef} 
+                className="bg-white shadow-[0_0_100px_rgba(0,0,0,0.9)] border border-white/5" 
+                style={{ width: '210mm', minHeight: '297mm', position: 'relative' }}
+            >
+              {children}
+            </div>
         </div>
       </main>
     </Modal>

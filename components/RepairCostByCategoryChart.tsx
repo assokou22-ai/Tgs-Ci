@@ -9,6 +9,18 @@ interface RepairCostByCategoryChartProps {
 
 const COLORS = ['#4299E1', '#48BB78', '#ECC94B', '#ED8936', '#9F7AEA', '#F56565'];
 
+const CustomTooltip = ({ active, payload, label }: { active?: boolean; payload?: { value: number }[]; label?: string }) => {
+    if (active && payload && payload.length) {
+        return (
+        <div className="p-2 bg-gray-800 border border-gray-700 rounded-md shadow-lg z-50">
+            <p className="label text-white font-semibold">{label}</p>
+            <p className="intro text-blue-300">{`Total : ${payload[0].value.toLocaleString('fr-FR')} F`}</p>
+        </div>
+        );
+    }
+    return null;
+};
+
 const RepairCostByCategoryChart: React.FC<RepairCostByCategoryChartProps> = ({ tickets }) => {
   const data = useMemo(() => {
     const categoryMap: Record<string, number> = {};
@@ -46,18 +58,6 @@ const RepairCostByCategoryChart: React.FC<RepairCostByCategoryChartProps> = ({ t
       </div>
     );
   }
-
-  const CustomTooltip = ({ active, payload, label }: any) => {
-    if (active && payload && payload.length) {
-        return (
-        <div className="p-2 bg-gray-800 border border-gray-700 rounded-md shadow-lg z-50">
-            <p className="label text-white font-semibold">{label}</p>
-            <p className="intro text-blue-300">{`Total : ${payload[0].value.toLocaleString('fr-FR')} F`}</p>
-        </div>
-        );
-    }
-    return null;
-  };
 
   return (
     <div className="bg-white/50 dark:bg-gray-800/50 p-4 rounded-lg shadow-lg h-96 backdrop-blur-sm border border-black/5 flex flex-col">

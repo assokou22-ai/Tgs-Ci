@@ -1,10 +1,22 @@
 import React, { useMemo } from 'react';
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { Facture } from '../types.ts';
 
 interface MonthlyRevenueChartProps {
   factures: Facture[];
 }
+
+const CustomTooltip = ({ active, payload, label }: { active?: boolean; payload?: { value: number }[]; label?: string }) => {
+    if (active && payload && payload.length) {
+        return (
+        <div className="p-2 bg-gray-700 border border-gray-600 rounded-md shadow-lg">
+            <p className="label text-white">{`${label}`}</p>
+            <p className="intro text-cyan-400">{`Revenu : ${payload[0].value.toLocaleString('fr-FR')} F`}</p>
+        </div>
+        );
+    }
+    return null;
+};
 
 const MonthlyRevenueChart: React.FC<MonthlyRevenueChartProps> = ({ factures }) => {
     const chartData = useMemo(() => {
@@ -39,19 +51,6 @@ const MonthlyRevenueChart: React.FC<MonthlyRevenueChartProps> = ({ factures }) =
 
     }, [factures]);
     
-    const CustomTooltip = ({ active, payload, label }: any) => {
-        if (active && payload && payload.length) {
-            return (
-            <div className="p-2 bg-gray-700 border border-gray-600 rounded-md shadow-lg">
-                <p className="label text-white">{`${label}`}</p>
-                <p className="intro text-cyan-400">{`Revenu : ${payload[0].value.toLocaleString('fr-FR')} F`}</p>
-            </div>
-            );
-        }
-        return null;
-    };
-
-
     return (
         <div className="bg-gray-800 p-4 rounded-lg shadow-lg h-96">
             <h3 className="text-lg font-bold text-white mb-4">Revenus Mensuels (12 derniers mois)</h3>

@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { GoogleGenAI, GenerateContentResponse } from "@google/genai";
+import { GoogleGenAI } from "@google/genai";
 import { RepairTicket, RepairStatus } from '../types.ts';
 import { ArrowLeftIcon } from './icons.tsx';
 
@@ -30,12 +30,13 @@ const AnalyticsReport: React.FC<AnalyticsReportProps> = ({ tickets, onBack }) =>
             case 'daily':
                 startDate.setHours(0, 0, 0, 0);
                 break;
-            case 'weekly':
+            case 'weekly': {
                 const dayOfWeek = now.getDay();
-                const diff = now.getDate() - dayOfWeek + (dayOfWeek === 0 ? -6 : 1); // Adjust for Monday start
+                const diff = now.getDate() - dayOfWeek + (dayOfWeek === 0 ? -6 : 1);
                 startDate = new Date(now.getFullYear(), now.getMonth(), diff);
                 startDate.setHours(0, 0, 0, 0);
                 break;
+            }
             case 'monthly':
                 startDate = new Date(now.getFullYear(), now.getMonth(), 1);
                 startDate.setHours(0, 0, 0, 0);
@@ -47,15 +48,12 @@ const AnalyticsReport: React.FC<AnalyticsReportProps> = ({ tickets, onBack }) =>
         }
 
         const startDateISO = startDate.toISOString();
-
         const createdInPeriod = tickets.filter(t => t.createdAt >= startDateISO);
-        const updatedInPeriod = tickets.filter(t => t.updatedAt >= startDateISO && t.createdAt < startDateISO);
         const completedInPeriod = tickets.filter(t => (t.status === RepairStatus.TERMINE || t.status === RepairStatus.RENDU) && t.updatedAt >= startDateISO);
 
         return {
             created: createdInPeriod,
             completed: completedInPeriod,
-            updated: updatedInPeriod,
             periodName: periodNameMap[period]
         };
     }, [tickets, period]);
@@ -67,104 +65,75 @@ const AnalyticsReport: React.FC<AnalyticsReportProps> = ({ tickets, onBack }) =>
 
         const prompt = `
             Génère un rapport ${periodData.periodName} concis et professionnel pour un technicien en réparation de Mac. 
-            Le rapport doit être en français, structuré et facile à lire.
-            Voici les données brutes ${periodData.periodName} :
+            Voici les données :
             - Fiches créées: ${periodData.created.length}
-            - Fiches terminées (statut changé à "Terminé" ou "Rendu"): ${periodData.completed.length}
-            - Modèles de Mac enregistrés: ${[...new Set(periodData.created.map(t => t.macModel))].join(', ') || 'Aucun'}
-            - Problèmes signalés:
-            ${periodData.created.map(t => `- ${t.problemDescription}`).join('\n') || 'Aucun'}
-
-            Le rapport doit inclure les sections suivantes :
-            1.  **Résumé des Chiffres Clés**: Indique le nombre de nouvelles fiches et de réparations terminées.
-            2.  **Tendances**: Analyse brièvement les pannes et modèles récurrents sur la période. Si aucune tendance claire ne se dégage, mentionne-le.
-            3.  **Points d'Attention**: Propose des actions concrètes basées sur les données. Par exemple, si plusieurs problèmes de batterie sont signalés, suggère de vérifier le stock de batteries pour les modèles concernés.
+            - Fiches terminées: ${periodData.completed.length}
+            - Modèles: ${[...new Set(periodData.created.map(t => t.macModel))].join(', ') || 'Aucun'}
             
-            Adopte un ton informatif et utile. Commence le rapport par "Rapport ${periodData.periodName} du ${new Date().toLocaleDateString('fr-FR')}".
+            Structure : Chiffres clés, Tendances de pannes, Conseils stock.
         `;
 
         try {
-            // Fixed: Using process.env.API_KEY directly and using recommended model name
-            const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-            const response: GenerateContentResponse = await ai.models.generateContent({
-                model: 'gemini-3-flash-preview',
-                contents: prompt,
+            const ai = new GoogleGenAI({apiKey: process.env.API_KEY});
+            const response = await ai.models.generateContent({
+                model: 'gemini-1.5-flash',
+                contents: [{ role: 'user', parts: [{ text: prompt }] }],
             });
             setReport(response.text || '');
-        } catch (e: any) {
-            console.error("Erreur de génération du rapport IA :", e);
-            setError("Une erreur est survenue lors de la communication avec le service d'IA. Veuillez vérifier votre connexion et réessayer.");
+        } catch (e) {
+            console.error("Erreur IA:", e);
+            setError("Impossible de générer le rapport. Vérifiez votre connexion.");
         } finally {
             setLoading(false);
         }
     };
 
-    const periodOptions: { key: Period; label: string }[] = [
-        { key: 'daily', label: 'Journalier' },
-        { key: 'weekly', label: 'Hebdomadaire' },
-        { key: 'monthly', label: 'Mensuel' },
-        { key: 'yearly', label: 'Annuel' }
-    ];
-
-    const titleMap: Record<Period, string> = {
-        daily: 'Rapport Journalier',
-        weekly: 'Rapport Hebdomadaire',
-        monthly: 'Rapport Mensuel',
-        yearly: 'Rapport Annuel',
-    }
-
   return (
     <div className="p-4 max-w-4xl mx-auto">
-        <button onClick={onBack} className="flex items-center gap-2 text-blue-400 hover:underline mb-4">
-          <ArrowLeftIcon className="w-5 h-5" />
-          Retour au tableau de bord
+        <button onClick={onBack} className="flex items-center gap-2 text-apple-blue hover:underline mb-4 font-bold uppercase text-[10px] tracking-widest">
+          <ArrowLeftIcon className="w-5 h-5" /> Retour
         </button>
-      <div className="bg-gray-800 rounded-lg shadow-xl p-6">
-        <div className="flex justify-between items-center mb-4 flex-wrap gap-4">
-            <h1 className="text-2xl font-bold text-white">{titleMap[period]}</h1>
-            <div className="flex items-center gap-2 bg-gray-700 p-1 rounded-lg">
-                {periodOptions.map(option => (
+      <div className="apple-card p-6">
+        <div className="flex justify-between items-center mb-6 flex-wrap gap-4">
+            <h1 className="text-xl font-black text-white uppercase tracking-tighter">Analyse d'Activité</h1>
+            <div className="flex items-center gap-1 bg-white/5 p-1 rounded-xl">
+                {(['daily', 'weekly', 'monthly'] as Period[]).map(p => (
                     <button
-                        key={option.key}
-                        onClick={() => setPeriod(option.key)}
-                        className={`px-3 py-1 text-sm font-semibold rounded-md transition-colors ${period === option.key ? 'bg-blue-600 text-white' : 'text-gray-300 hover:bg-gray-600'}`}
+                        key={p}
+                        onClick={() => setPeriod(p)}
+                        className={`px-4 py-1.5 text-[10px] font-black uppercase rounded-lg transition-all ${period === p ? 'bg-apple-blue text-white shadow-lg' : 'text-apple-muted hover:text-white'}`}
                     >
-                        {option.label}
+                        {p === 'daily' ? 'Jour' : p === 'weekly' ? 'Semaine' : 'Mois'}
                     </button>
                 ))}
             </div>
         </div>
         
-        <div className="flex justify-center mb-6">
+        <div className="flex justify-center mb-8">
              <button 
                 onClick={generateReport}
                 disabled={loading}
-                className="px-6 py-3 bg-blue-600 text-white font-semibold rounded-lg hover:bg-blue-700 disabled:bg-gray-500 disabled:cursor-wait w-full md:w-auto"
+                className="px-8 py-4 bg-white text-black font-black rounded-2xl uppercase text-xs tracking-widest hover:bg-gray-200 transition-all shadow-xl disabled:opacity-50"
             >
-                {loading ? 'Génération en cours...' : `Générer le Rapport ${periodData.periodName} avec Gemini`}
+                {loading ? 'Consultation Gemini...' : `Générer le Rapport ${periodData.periodName}`}
             </button>
         </div>
 
-        {error && <p className="text-red-400 bg-red-900/50 p-3 rounded-md my-4">{error}</p>}
+        {error && <p className="text-red-400 bg-red-900/20 border border-red-900/30 p-4 rounded-xl text-xs font-bold uppercase text-center mb-6">{error}</p>}
         
-        <div className="mt-4 min-h-[300px]">
+        <div className="min-h-[200px]">
             {loading ? (
-                <div className="flex justify-center items-center h-full">
-                    <p className="text-gray-400 animate-pulse">Analyse des données...</p>
+                <div className="flex flex-col items-center justify-center h-40">
+                    <div className="w-8 h-8 border-2 border-apple-blue border-t-transparent rounded-full animate-spin mb-4"></div>
+                    <p className="text-apple-muted text-[10px] font-black uppercase tracking-widest">Calcul des probabilités...</p>
                 </div>
             ) : report ? (
-                <div className="prose prose-invert prose-p:text-gray-300 prose-headings:text-white prose-li:text-gray-300 whitespace-pre-wrap">
-                    {report.replace(/^#\s/gm, '### ')}
+                <div className="prose prose-invert max-w-none text-slate-300 text-sm leading-relaxed bg-black/20 p-6 rounded-2xl border border-white/5 whitespace-pre-wrap font-medium">
+                    {report}
                 </div>
             ) : (
-                <div className="text-gray-400">
-                    <h2 className="text-xl font-semibold text-white">Aperçu des données {periodData.periodName}</h2>
-                    <ul className="list-disc list-inside mt-2 space-y-1">
-                        <li>Nouvelles fiches: {periodData.created.length}</li>
-                        <li>Réparations terminées: {periodData.completed.length}</li>
-                        <li>Autres fiches mises à jour: {periodData.updated.length}</li>
-                    </ul>
-                    <p className="mt-4">Cliquez sur le bouton ci-dessus pour obtenir une analyse détaillée et des recommandations.</p>
+                <div className="text-center py-10 opacity-30">
+                    <p className="text-apple-muted text-xs font-black uppercase tracking-[0.2em]">Prêt pour l'analyse sémantique</p>
                 </div>
             )}
         </div>

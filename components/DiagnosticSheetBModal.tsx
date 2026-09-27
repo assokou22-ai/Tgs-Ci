@@ -1,10 +1,10 @@
 
-
-
 import React, { useState, useEffect, useRef } from 'react';
 import Modal from './Modal.tsx';
 import { RepairTicket, DiagnosticSheetBData, DiagnosticPoint, TensionValue, EntryCondition } from '../types.ts';
-import { PlusCircleIcon, TrashIcon, ExclamationTriangleIcon, CloudArrowDownIcon } from './icons.tsx';
+import { PlusCircleIcon, TrashIcon, ExclamationTriangleIcon, CloudArrowDownIcon, SparklesIcon, ArrowPathIcon } from './icons.tsx';
+import { useToastContext } from '../context/ToastContext.tsx';
+import { compressImageBase64 } from '../utils/imageCompression.ts';
 
 interface DiagnosticSheetBModalProps {
   isOpen: boolean;
@@ -13,13 +13,26 @@ interface DiagnosticSheetBModalProps {
   ticket: RepairTicket;
 }
 
+const calculateVoltageStatus = (measured: string, nominal?: number): 'Correct' | 'Anormal' | 'Absent' => {
+  if (!measured || measured.trim() === '') return 'Absent';
+  
+  const val = parseFloat(measured.replace(',', '.').replace(/[^\d.]/g, ''));
+  if (isNaN(val) || val <= 0.1) return 'Absent';
+  if (nominal === undefined) return 'Correct';
+
+  const diff = Math.abs(val - nominal);
+  const tolerance = nominal * 0.05;
+  if (diff <= tolerance) return 'Correct';
+  return 'Anormal';
+};
+
 const defaultVoltages: TensionValue[] = [
-    { line: 'DC IN (Adapter)', value: '', status: 'Correct' },
-    { line: 'PPBUS_G3H', value: '', status: 'Correct' },
-    { line: 'PP3V3_G3H (LDO)', value: '', status: 'Correct' },
-    { line: 'PP5V_S5 / S4', value: '', status: 'Correct' },
-    { line: 'PP3V3_S5 / S4', value: '', status: 'Correct' },
-    { line: 'PPVCC_S0 (CPU)', value: '', status: 'Correct' },
+    { line: 'DC IN (Adapter)', value: '', status: 'Absent', nominalValue: 20.0 },
+    { line: 'PPBUS_G3H', value: '', status: 'Absent', nominalValue: 12.6 },
+    { line: 'PP3V3_G3H (LDO)', value: '', status: 'Absent', nominalValue: 3.3 },
+    { line: 'PP5V_S5 / S4', value: '', status: 'Absent', nominalValue: 5.0 },
+    { line: 'PP3V3_S5 / S4', value: '', status: 'Absent', nominalValue: 3.3 },
+    { line: 'PPVCC_S0 (CPU)', value: '', status: 'Absent', nominalValue: 0.8 },
 ];
 
 const defaultSheetBData: DiagnosticSheetBData = {
@@ -38,19 +51,31 @@ const defaultSheetBData: DiagnosticSheetBData = {
 };
 
 const DiagnosticSheetBModal: React.FC<DiagnosticSheetBModalProps> = ({ isOpen, onClose, onSave, ticket }) => {
+  const { showToast } = useToastContext();
   const [data, setData] = useState<DiagnosticSheetBData>(defaultSheetBData);
+  const [deviceType, setDeviceType] = useState<'pro' | 'air'>(ticket.macModel.toLowerCase().includes('air') ? 'air' : 'pro');
+  const [isGeneratingAi, setIsGeneratingAi] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (isOpen) {
-      if (ticket.diagnosticSheetB) {
-          setData({ ...defaultSheetBData, ...ticket.diagnosticSheetB, images: ticket.diagnosticSheetB.images || [] });
-      } else {
-          const initialCondition = ticket.powersOn ? EntryCondition.BOOT_DISPLAY : EntryCondition.NO_POWER;
-          setData({ ...defaultSheetBData, entryCondition: initialCondition });
-      }
+      const timer = setTimeout(() => {
+        if (ticket.diagnosticSheetB) {
+            setData({ ...defaultSheetBData, ...ticket.diagnosticSheetB, images: ticket.diagnosticSheetB.images || [] });
+        } else {
+            const initialCondition = ticket.powersOn ? EntryCondition.BOOT_DISPLAY : EntryCondition.NO_POWER;
+            const initialVoltages = defaultVoltages.map(v => {
+                if (v.line === 'PPBUS_G3H') {
+                    return { ...v, nominalValue: deviceType === 'air' ? 8.6 : 12.6 };
+                }
+                return v;
+            });
+            setData({ ...defaultSheetBData, entryCondition: initialCondition, tensionValues: initialVoltages });
+        }
+      }, 0);
+      return () => clearTimeout(timer);
     }
-  }, [isOpen, ticket.diagnosticSheetB, ticket.powersOn]);
+  }, [isOpen, ticket.diagnosticSheetB, ticket.powersOn, deviceType]);
   
   const handleMainChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
       const { name, value } = e.target;
@@ -59,7 +84,15 @@ const DiagnosticSheetBModal: React.FC<DiagnosticSheetBModalProps> = ({ isOpen, o
 
   const handleTensionChange = (index: number, field: keyof TensionValue, value: string) => {
     const newTensions = [...data.tensionValues];
-    newTensions[index] = { ...newTensions[index], [field]: value };
+    const current = newTensions[index];
+    
+    const updated = { ...current, [field]: value };
+    
+    if (field === 'value') {
+        updated.status = calculateVoltageStatus(value, updated.nominalValue);
+    }
+    
+    newTensions[index] = updated;
     setData({ ...data, tensionValues: newTensions });
   };
 
@@ -69,21 +102,21 @@ const DiagnosticSheetBModal: React.FC<DiagnosticSheetBModalProps> = ({ isOpen, o
     setData({ ...data, diagnosticPoints: newPoints });
   };
 
-  const addTension = () => setData({...data, tensionValues: [...data.tensionValues, { line: '', value: '', status: 'Correct' }]});
+  const addTension = () => setData({...data, tensionValues: [...data.tensionValues, { line: '', value: '', status: 'Absent' }]});
   const removeTension = (index: number) => setData({...data, tensionValues: data.tensionValues.filter((_, i) => i !== index)});
 
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files) return;
 
-    // Fix: Explicitly typing 'file' as Blob to resolve "Argument of type 'unknown' is not assignable to parameter of type 'Blob'" error
     Array.from(files).forEach((file: Blob) => {
         const reader = new FileReader();
-        reader.onload = (event) => {
+        reader.onload = async (event) => {
             const base64 = event.target?.result as string;
+            const compressed = await compressImageBase64(base64);
             setData(prev => ({
                 ...prev, 
-                images: [...(prev.images || []), base64].slice(0, 6)
+                images: [...(prev.images || []), compressed].slice(0, 6)
             }));
         };
         reader.readAsDataURL(file);
@@ -95,6 +128,67 @@ const DiagnosticSheetBModal: React.FC<DiagnosticSheetBModalProps> = ({ isOpen, o
         ...prev,
         images: (prev.images || []).filter((_, i) => i !== index)
     }));
+  };
+
+  const generateAiConclusion = async () => {
+    if (isGeneratingAi) return;
+    setIsGeneratingAi(true);
+
+    try {
+        const voltagesContext = data.tensionValues
+            .filter(t => t.value)
+            .map(t => `${t.line}: ${t.value} (Cible: ${t.nominalValue}V) -> État: ${t.status}`)
+            .join('\n');
+
+        const technicalContext = data.diagnosticPoints
+            .filter(p => p.notes)
+            .map(p => `${p.item}: ${p.notes}`)
+            .join('\n');
+
+        const prompt = `
+            APPAREIL: ${ticket.macModel} (${deviceType.toUpperCase()})
+            SYMPTÔME D'ARRIVÉE: ${data.entryCondition}
+
+            RELEVÉS DE TENSIONS:
+            ${voltagesContext || 'Aucune tension mesurée.'}
+
+            VÉRIFICATIONS TECHNIQUES:
+            ${technicalContext || 'Aucune vérification technique saisie.'}
+
+            INSPECTION VISUELLE PRÉLIMINAIRE:
+            ${data.visualInspection || 'Non spécifiée.'}
+        `;
+
+        const response = await fetch('/api/gemini/generate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                prompt,
+                systemPrompt: `Tu es un expert senior en micro-soudure et diagnostic électronique MacBook (TGS-CI Logic Board specialist). 
+                Analyse RIGOUREUSEMENT les mesures de tensions et les points de vérification technique fournis.
+                Ton objectif est de générer une conclusion technique et des commentaires visuels structurés.
+                1. Analyse les anomalies de tensions (rails absents ou anormaux).
+                2. Fais le lien avec les vérifications techniques (SMC, Consommation, Oxydation).
+                3. Propose une conclusion technique précise (ex: Court-circuit sur PPBUS_G3H du à un condensateur, ou Problème de négociation USB-C CD3215).
+                Rédige en français, style professionnel, sans fioritures, maximum 150 mots.`,
+                responseMimeType: "text/plain"
+            })
+        });
+
+        if (!response.ok) throw new Error('Erreur lors de la génération AI');
+        const result = await response.json();
+        
+        setData(prev => ({ 
+            ...prev, 
+            visualInspection: (prev.visualInspection ? prev.visualInspection + "\n\n" : "") + "--- CONCLUSION IA ---\n" + result.text 
+        }));
+        showToast("Conclusion technique générée par IA", "success");
+    } catch (error) {
+        console.error('AI Generation Error:', error);
+        showToast("Échec de la génération automatique", "error");
+    } finally {
+        setIsGeneratingAi(false);
+    }
   };
 
   const handleSubmit = () => {
@@ -116,9 +210,25 @@ const DiagnosticSheetBModal: React.FC<DiagnosticSheetBModalProps> = ({ isOpen, o
         <div className="flex-grow overflow-y-auto pr-2 space-y-6 custom-scrollbar">
           {/* ÉTATS D'ARRIVÉE */}
           <div className="bg-gray-900/50 p-4 rounded-lg border border-blue-900/30">
-              <h3 className="text-blue-400 font-bold text-sm uppercase mb-3 flex items-center gap-2">
-                  <ExclamationTriangleIcon className="w-4 h-4"/> État d'Arrivée de l'Appareil
-              </h3>
+              <div className="flex justify-between items-center mb-3">
+                <h3 className="text-blue-400 font-bold text-sm uppercase flex items-center gap-2">
+                    <ExclamationTriangleIcon className="w-4 h-4"/> État d'Arrivée de l'Appareil
+                </h3>
+                <div className="flex gap-2">
+                  <button 
+                    onClick={() => setDeviceType('pro')}
+                    className={`px-3 py-1 rounded text-[10px] font-bold uppercase tracking-wider ${deviceType === 'pro' ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-400'}`}
+                  >
+                    MacBook Pro
+                  </button>
+                  <button 
+                    onClick={() => setDeviceType('air')}
+                    className={`px-3 py-1 rounded text-[10px] font-bold uppercase tracking-wider ${deviceType === 'air' ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-400'}`}
+                  >
+                    MacBook Air
+                  </button>
+                </div>
+              </div>
               <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                   {Object.values(EntryCondition).map(cond => (
                       <button
@@ -146,23 +256,31 @@ const DiagnosticSheetBModal: React.FC<DiagnosticSheetBModalProps> = ({ isOpen, o
                             <input 
                                 value={t.line} 
                                 onChange={e => handleTensionChange(idx, 'line', e.target.value)} 
-                                className="col-span-5 bg-transparent border-none focus:ring-0 text-white font-mono text-xs" 
+                                className="col-span-4 bg-transparent border-none focus:ring-0 text-white font-mono text-[10px]" 
                                 placeholder="Ligne"
                             />
-                            <input 
-                                value={t.value} 
-                                onChange={e => handleTensionChange(idx, 'value', e.target.value)} 
-                                className="col-span-3 bg-gray-800 border-gray-600 rounded text-center text-xs text-blue-300 font-bold" 
-                                placeholder="ex: 12.6V"
-                            />
+                            <div className="col-span-3">
+                                <input 
+                                    value={t.value} 
+                                    onChange={e => handleTensionChange(idx, 'value', e.target.value)} 
+                                    className="w-full bg-gray-800 border-gray-600 rounded text-center text-xs text-blue-300 font-bold p-1" 
+                                    placeholder="ex: 12.6V"
+                                />
+                                {t.nominalValue && (
+                                    <div className="text-[8px] text-gray-500 text-center mt-0.5">Cible: {t.nominalValue}V</div>
+                                )}
+                            </div>
                             <select 
                                 value={t.status} 
-                                onChange={e => handleTensionChange(idx, 'status', e.target.value as any)}
-                                className={`col-span-3 bg-transparent border-none text-[10px] ${t.status === 'Correct' ? 'text-green-400' : 'text-red-400'}`}
+                                onChange={e => handleTensionChange(idx, 'status', e.target.value as 'Correct' | 'Anormal' | 'Absent')}
+                                className={`col-span-4 bg-transparent border-none text-[10px] font-bold ${
+                                    t.status === 'Correct' ? 'text-green-400' : 
+                                    t.status === 'Absent' ? 'text-orange-400' : 'text-red-500'
+                                }`}
                             >
-                                <option value="Correct">Correct</option>
-                                <option value="Anormal">Anormal</option>
-                                <option value="Absent">Absent</option>
+                                <option value="Correct" className="bg-gray-800 text-green-400">Correct</option>
+                                <option value="Anormal" className="bg-gray-800 text-red-400">Anormal</option>
+                                <option value="Absent" className="bg-gray-800 text-orange-400">Absent</option>
                             </select>
                             <button onClick={() => removeTension(idx)} className="col-span-1 text-red-500 hover:text-red-400">&times;</button>
                         </div>
@@ -189,7 +307,6 @@ const DiagnosticSheetBModal: React.FC<DiagnosticSheetBModalProps> = ({ isOpen, o
              </div>
           </div>
 
-          {/* INSPECTION VISUELLE ET DÉTAILS */}
           <div className="space-y-4">
                 <h3 className="text-gray-300 font-bold text-sm uppercase border-b border-gray-700 pb-2">Rapport d'expertise et délais</h3>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -202,20 +319,32 @@ const DiagnosticSheetBModal: React.FC<DiagnosticSheetBModalProps> = ({ isOpen, o
                         <input name="repairDelay" value={data.repairDelay} onChange={handleMainChange} className={inputStyle} placeholder="ex: 3 à 5 jours"/>
                     </div>
                 </div>
-                <div>
+                <div className="flex justify-between items-end mb-1">
                     <label className="text-xs text-gray-400 font-bold">Commentaires visuels et conclusion technique</label>
-                    <textarea 
-                        name="visualInspection" 
-                        value={data.visualInspection} 
-                        onChange={handleMainChange} 
-                        rows={3} 
-                        className={inputStyle + " resize-none"} 
-                        placeholder="Détaillez ici toute trace d'oxydation, composants brûlés, ou interventions antérieures visibles..."
-                    />
+                    <button 
+                        type="button"
+                        onClick={generateAiConclusion}
+                        disabled={isGeneratingAi}
+                        className="flex items-center gap-1.5 px-2 py-1 bg-blue-600/20 hover:bg-blue-600/40 text-blue-400 rounded text-[10px] font-black uppercase transition-all disabled:opacity-50"
+                    >
+                        {isGeneratingAi ? (
+                            <ArrowPathIcon className="w-3 h-3 animate-spin" />
+                        ) : (
+                            <SparklesIcon className="w-3 h-3" />
+                        )}
+                        Générer via IA
+                    </button>
                 </div>
+                <textarea 
+                    name="visualInspection" 
+                    value={data.visualInspection} 
+                    onChange={handleMainChange} 
+                    rows={4} 
+                    className={inputStyle + " resize-none"} 
+                    placeholder="Détaillez ici toute trace d'oxydation, composants brûlés, ou interventions antérieures visibles..."
+                />
           </div>
 
-          {/* SECTION IMAGES EXPERTISE */}
           <div className="bg-gray-900/30 p-4 rounded-lg border border-gray-700">
               <div className="flex justify-between items-center mb-4">
                   <h3 className="text-sm font-bold text-gray-400 uppercase flex items-center gap-2">

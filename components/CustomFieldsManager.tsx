@@ -2,6 +2,8 @@ import React, { useState } from 'react';
 import { useAppSettings, AppSettings } from '../hooks/useAppSettings.ts';
 import { CustomFieldDef } from '../types.ts';
 import { PlusCircleIcon, PencilIcon, TrashIcon } from './icons.tsx';
+import ConfirmationModal from './ConfirmationModal.tsx';
+import Modal from './Modal.tsx';
 
 type FieldCategory = keyof AppSettings['customFields'];
 
@@ -9,35 +11,49 @@ const CustomFieldsManager: React.FC = () => {
     const { settings, updateCustomFields } = useAppSettings();
     const [activeCategory, setActiveCategory] = useState<FieldCategory>('ticket');
     const [draggedItem, setDraggedItem] = useState<CustomFieldDef | null>(null);
+    const [fieldToDelete, setFieldToDelete] = useState<string | null>(null);
+    const [fieldToEdit, setFieldToEdit] = useState<{ id?: string, label: string } | null>(null);
 
     const currentFieldsSource = settings.customFields?.[activeCategory];
     const currentFields = Array.isArray(currentFieldsSource) ? currentFieldsSource : [];
 
-    const addField = () => {
-        const label = prompt("Entrez le nom du nouveau champ personnalisé :");
-        if (label && label.trim()) {
-            const newField: CustomFieldDef = { id: `custom_${Date.now()}`, label: label.trim() };
-            updateCustomFields(activeCategory, [...currentFields, newField]);
+    const openAddField = () => {
+        setFieldToEdit({ label: '' });
+    };
+
+    const openEditField = (fieldId: string) => {
+        const field = currentFields.find(f => f.id === fieldId);
+        if (field) {
+            setFieldToEdit({ id: field.id, label: field.label });
         }
     };
 
-    const editField = (fieldId: string) => {
-        const field = currentFields.find(f => f.id === fieldId);
-        if (!field) return;
+    const saveField = () => {
+        if (!fieldToEdit || !fieldToEdit.label.trim()) return;
 
-        const newLabel = prompt("Modifiez le nom du champ :", field.label);
-        if (newLabel && newLabel.trim()) {
+        if (fieldToEdit.id) {
+            // Edit
             const updatedFields = currentFields.map(f =>
-                f.id === fieldId ? { ...f, label: newLabel.trim() } : f
+                f.id === fieldToEdit.id ? { ...f, label: fieldToEdit.label.trim() } : f
             );
             updateCustomFields(activeCategory, updatedFields);
+        } else {
+            // Add
+            const newField: CustomFieldDef = { id: `custom_${Date.now()}`, label: fieldToEdit.label.trim() };
+            updateCustomFields(activeCategory, [...currentFields, newField]);
         }
+        setFieldToEdit(null);
     };
 
     const deleteField = (fieldId: string) => {
-        if (window.confirm("Êtes-vous sûr de vouloir supprimer ce champ personnalisé ? Il sera retiré de tous les éléments associés.")) {
-            const updatedFields = currentFields.filter(f => f.id !== fieldId);
+        setFieldToDelete(fieldId);
+    };
+
+    const confirmDelete = () => {
+        if (fieldToDelete) {
+            const updatedFields = currentFields.filter(f => f.id !== fieldToDelete);
             updateCustomFields(activeCategory, updatedFields);
+            setFieldToDelete(null);
         }
     };
     
@@ -100,7 +116,7 @@ const CustomFieldsManager: React.FC = () => {
                     >
                         <span className="text-white">{field.label}</span>
                         <div className="flex items-center gap-2">
-                            <button onClick={() => editField(field.id)} className="p-1 text-blue-400 hover:text-blue-300" title="Modifier">
+                            <button onClick={() => openEditField(field.id)} className="p-1 text-blue-400 hover:text-blue-300" title="Modifier">
                                 <PencilIcon className="w-4 h-4" />
                             </button>
                             <button onClick={() => deleteField(field.id)} className="p-1 text-red-500 hover:text-red-400" title="Supprimer">
@@ -111,12 +127,45 @@ const CustomFieldsManager: React.FC = () => {
                 ))}
             </ul>
              <button
-                onClick={addField}
+                onClick={openAddField}
                 className="mt-4 flex items-center gap-2 px-3 py-1.5 bg-blue-600 rounded-md text-sm hover:bg-blue-500"
             >
                 <PlusCircleIcon className="w-5 h-5" />
                 Ajouter un champ
             </button>
+
+            <ConfirmationModal
+                isOpen={!!fieldToDelete}
+                onClose={() => setFieldToDelete(null)}
+                onConfirm={confirmDelete}
+                title="Supprimer le champ ?"
+                message="Êtes-vous sûr de vouloir supprimer ce champ personnalisé ? Il sera retiré de tous les éléments associés (Fiches, Clients ou Stock) et les données saisies dans ce champ seront perdues."
+                confirmText="Supprimer"
+            />
+
+            <Modal isOpen={!!fieldToEdit} onClose={() => setFieldToEdit(null)}>
+                <div className="p-6 text-white">
+                    <h3 className="text-lg font-bold mb-4">{fieldToEdit?.id ? 'Modifier le champ' : 'Ajouter un champ personnalisé'}</h3>
+                    <div className="space-y-4">
+                        <div>
+                            <label className="block text-xs font-medium text-gray-400 uppercase mb-1">Nom du champ</label>
+                            <input
+                                type="text"
+                                autoFocus
+                                value={fieldToEdit?.label || ''}
+                                onChange={(e) => setFieldToEdit(prev => prev ? { ...prev, label: e.target.value } : null)}
+                                onKeyDown={(e) => e.key === 'Enter' && saveField()}
+                                className="w-full p-2 bg-gray-700 border border-gray-600 rounded outline-none focus:ring-2 focus:ring-blue-500 text-white"
+                                placeholder="Ex: Numéro de série, Couleur, etc."
+                            />
+                        </div>
+                        <div className="flex justify-end gap-3 pt-4">
+                            <button onClick={() => setFieldToEdit(null)} className="px-4 py-2 bg-gray-600 rounded text-sm">Annuler</button>
+                            <button onClick={saveField} className="px-6 py-2 bg-blue-600 rounded text-sm font-bold">Enregistrer</button>
+                        </div>
+                    </div>
+                </div>
+            </Modal>
         </div>
     );
 };

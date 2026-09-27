@@ -1,95 +1,167 @@
-import { dbGet, dbPutDirect, dbDeleteDirect } from './dbService.ts';
+import { getDB } from './dbService.ts';
 import { mergeUpdates } from '../utils/merge.ts';
 import { SyncQueueItem, EntityType } from '../types.ts';
+import { collection, onSnapshot } from 'firebase/firestore';
+import { db, auth } from './firebase.ts';
+import { reportRealtimeSyncSuccess } from './syncService.ts';
 
-const CHANNEL_NAME = 'mac-repair-sync-channel';
-let channel: BroadcastChannel | null = null;
 
-let isApplyingRealtimeChange = false;
-const realtimeChangeQueue: SyncQueueItem[] = [];
+// Helper for deep stable JSON stringification to prevent key-order mismatch issues
+const stableStringify = (obj: unknown): string => {
+    if (obj === null || typeof obj !== 'object') {
+        return JSON.stringify(obj);
+    }
+    if (Array.isArray(obj)) {
+        return '[' + obj.map(stableStringify).join(',') + ']';
+    }
+    const typedObj = obj as Record<string, unknown>;
+    const keys = Object.keys(typedObj).sort();
+    return '{' + keys.map(key => JSON.stringify(key) + ':' + stableStringify(typedObj[key])).join(',') + '}';
+};
 
-const processRealtimeQueue = async () => {
-    if (isApplyingRealtimeChange || realtimeChangeQueue.length === 0) {
+// --- Firestore Real-time Sync List ---
+const collectionsToListen: { entity: EntityType; collectionName: string; storeName: string }[] = [
+    { entity: 'ticket', collectionName: 'tickets', storeName: 'tickets' },
+    { entity: 'stock', collectionName: 'stock', storeName: 'stock' },
+    { entity: 'stockUsage', collectionName: 'stockUsage', storeName: 'stockUsage' },
+    { entity: 'externalPurchase', collectionName: 'externalPurchases', storeName: 'externalPurchases' },
+    { entity: 'service', collectionName: 'services', storeName: 'services' },
+    { entity: 'facture', collectionName: 'factures', storeName: 'factures' },
+    { entity: 'proforma', collectionName: 'proformas', storeName: 'proformas' },
+    { entity: 'commande', collectionName: 'commandes', storeName: 'commandes' },
+    { entity: 'appointment', collectionName: 'appointments', storeName: 'appointments' },
+    { entity: 'simpleDocument', collectionName: 'simpleDocuments', storeName: 'simpleDocuments' },
+    { entity: 'storedDocument', collectionName: 'storedDocuments', storeName: 'knowledge_files' },
+    { entity: 'suggestions', collectionName: 'suggestions', storeName: 'suggestions' },
+    { entity: 'engagementSav', collectionName: 'engagementsSav', storeName: 'engagementsSav' },
+    { entity: 'mouvementStock', collectionName: 'mouvementsStock', storeName: 'mouvementsStock' }
+];
+
+const unsubscribeList: (() => void)[] = [];
+
+export const startFirebaseRealtimeSync = () => {
+    // Unsubscribe existing listeners
+    while (unsubscribeList.length > 0) {
+        const unsub = unsubscribeList.pop();
+        if (unsub) unsub();
+    }
+
+    if (!auth.currentUser) {
+        console.log("Firebase Real-time Sync: Deferring initialization (User not authenticated).");
         return;
     }
 
-    isApplyingRealtimeChange = true;
-    const changesToApply = [...realtimeChangeQueue];
-    realtimeChangeQueue.length = 0; // Clear the queue
+    console.log("Firebase Real-time Sync: Initializing onSnapshot listeners with transaction batching...");
 
-    console.log(`Real-time: Applying batch of ${changesToApply.length} change(s) from another tab.`);
+    collectionsToListen.forEach((colSpec) => {
+        try {
+            const unsub = onSnapshot(collection(db, colSpec.collectionName), async (snapshot) => {
+                try {
+                    const docChanges = snapshot.docChanges();
+                    if (docChanges.length === 0) return;
 
-    try {
-        const storeMap: Record<EntityType, string> = {
-            'ticket': 'tickets', 'stock': 'stock', 'service': 'services',
-            'facture': 'factures', 'proforma': 'proformas', 'commande': 'commandes',
-            'appointment': 'appointments', 'deviceSession': 'deviceSessions',
-            'simpleDocument': 'simpleDocuments',
-            'storedDocument': 'knowledge_files'
-        };
+                    // Filter out pending local writes to avoid processing acknowledged changes or empty updates
+                    const validChanges = docChanges.filter(c => !c.doc.metadata.hasPendingWrites);
+                    if (validChanges.length === 0) return;
 
-        for (const change of changesToApply) {
-            const storeName = storeMap[change.entity];
-            if (!storeName) continue;
+                    const changesToProcess: SyncQueueItem[] = [];
+                    const dbInstance = await getDB();
 
-            if (change.operation === 'put') {
-                const localItem = await dbGet(storeName, change.entityId);
-                const mergedItem = mergeUpdates(change.entity, localItem, change.payload);
-                
-                if (JSON.stringify(localItem) !== JSON.stringify(mergedItem)) {
-                    await dbPutDirect(storeName, mergedItem);
+                    for (const docChange of validChanges) {
+                        try {
+                            const docId = docChange.doc.id;
+                            const docData = docChange.doc.data();
+
+                            if (!docData.id) {
+                                docData.id = docId;
+                            }
+                            if (colSpec.storeName === 'suggestions') {
+                                docData.category = docId;
+                            }
+
+                            const itemKey = colSpec.storeName === 'suggestions' ? docData.category : docData.id;
+
+                            if (docChange.type === 'added' || docChange.type === 'modified') {
+                                console.log(`[Sync temps réel] Traitement de la modification pour ${colSpec.collectionName}/${docId}...`);
+                                const localItem = await dbInstance.get(colSpec.storeName, itemKey);
+                                if (localItem) {
+                                    const mergedItem = mergeUpdates(colSpec.entity, localItem, docData);
+                                    if (stableStringify(localItem) !== stableStringify(mergedItem)) {
+                                        await dbInstance.put(colSpec.storeName, mergedItem);
+                                        console.log(`[Sync temps réel] Mise à jour de ${colSpec.collectionName}/${docId} dans la base locale.`);
+                                        changesToProcess.push({
+                                            id: Date.now() + Math.random(),
+                                            timestamp: Date.now(),
+                                            entity: colSpec.entity,
+                                            entityId: itemKey,
+                                            operation: 'put',
+                                            payload: mergedItem
+                                        });
+                                    }
+                                } else {
+                                    await dbInstance.put(colSpec.storeName, docData);
+                                    console.log(`[Sync temps réel] Nouvel item ${colSpec.collectionName}/${docId} enregistré localement.`);
+                                    changesToProcess.push({
+                                        id: Date.now() + Math.random(),
+                                        timestamp: Date.now(),
+                                        entity: colSpec.entity,
+                                        entityId: itemKey,
+                                        operation: 'put',
+                                        payload: docData
+                                    });
+                                }
+                            } else if (docChange.type === 'removed') {
+                                console.log(`[Sync temps réel] Traitement de la suppression pour ${colSpec.collectionName}/${docId}...`);
+                                const localItem = await dbInstance.get(colSpec.storeName, docId);
+                                if (localItem) {
+                                    await dbInstance.delete(colSpec.storeName, docId);
+                                    console.log(`[Sync temps réel] Suppression de ${colSpec.collectionName}/${docId} de la base locale.`);
+                                    changesToProcess.push({
+                                        id: Date.now() + Math.random(),
+                                        timestamp: Date.now(),
+                                        entity: colSpec.entity,
+                                        entityId: docId,
+                                        operation: 'delete'
+                                    });
+                                }
+                            }
+                        } catch (itemErr) {
+                            console.error(`Error processing real-time change for ${colSpec.collectionName}/${docChange.doc.id}:`, itemErr);
+                        }
+                    }
+
+                    if (changesToProcess.length > 0) {
+                        window.dispatchEvent(new CustomEvent('datareceived', { detail: changesToProcess }));
+                        try {
+                            reportRealtimeSyncSuccess(changesToProcess.length);
+                        } catch (err) {
+                            console.error("Failed to report real-time sync success:", err);
+                        }
+                    }
+                } catch (snapshotErr) {
+                    console.error(`Fatal error in snapshot callback for ${colSpec.collectionName}:`, snapshotErr);
                 }
-            } else if (change.operation === 'delete') {
-                await dbDeleteDirect(storeName, change.entityId);
-            }
-        }
+            }, (error) => {
+                console.warn(`onSnapshot error for ${colSpec.collectionName}:`, error);
+                const errMsg = error instanceof Error ? error.message : String(error);
+                if (errMsg.toLowerCase().includes('permission') || errMsg.toLowerCase().includes('autoris') || errMsg.toLowerCase().includes('insufficient')) {
+                    window.dispatchEvent(new CustomEvent('syncerror', { 
+                        detail: { 
+                            message: `Synchronisation en temps réel (${colSpec.collectionName}) : Connexion Google requise ou session expirée.` 
+                        } 
+                    }));
+                }
+            });
 
-        if (changesToApply.length > 0) {
-            // Notify the UI hooks to re-fetch data and update the view, once per batch.
-            window.dispatchEvent(new CustomEvent('datareceived', { detail: changesToApply }));
+            unsubscribeList.push(unsub);
+        } catch (err) {
+            console.error(`Failed to register onSnapshot for ${colSpec.collectionName}:`, err);
         }
-    } catch (error) {
-        console.error("Error applying real-time changes from queue:", error);
-    } finally {
-        isApplyingRealtimeChange = false;
-        // Process any new items that arrived while processing
-        if (realtimeChangeQueue.length > 0) {
-            processRealtimeQueue();
-        }
-    }
+    });
 };
 
 export const initializeRealtimeSync = () => {
-    if ('BroadcastChannel' in window) {
-        try {
-            channel = new BroadcastChannel(CHANNEL_NAME);
-            channel.onmessage = (event) => {
-                // Handle both single items and arrays of items
-                const changes = Array.isArray(event.data) ? event.data : [event.data];
-                realtimeChangeQueue.push(...changes);
-                processRealtimeQueue();
-            };
-            
-            // Listen for local changes to broadcast them to other tabs
-            const handleDataChangeForBroadcast = (event: Event) => {
-                if (event instanceof CustomEvent && event.detail) {
-                    broadcastChange(event.detail);
-                }
-            };
-            window.addEventListener('datachanged', handleDataChangeForBroadcast);
-
-            console.log("Real-time sync service initialized for inter-tab communication.");
-        } catch (error) {
-            console.error("Failed to initialize BroadcastChannel:", error);
-        }
-    } else {
-        console.warn("BroadcastChannel API not supported. Real-time sync between tabs is disabled.");
-    }
+    // Initialize Firestore onSnapshot for real-time sync across devices/browsers
+    startFirebaseRealtimeSync();
 };
 
-// This function is called from dbService to notify other tabs. It can handle a single change or an array.
-export const broadcastChange = (change: Omit<SyncQueueItem, 'id' | 'timestamp'> | Omit<SyncQueueItem, 'id' | 'timestamp'>[]) => {
-    if (channel) {
-        channel.postMessage(change);
-    }
-};

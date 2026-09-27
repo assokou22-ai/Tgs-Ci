@@ -1,8 +1,10 @@
-
 import React, { useState, useRef, ChangeEvent } from 'react';
 import { backupFinanceData, restoreFinanceDatabase, mergeFinanceDatabaseFromFile } from '../services/backupService.ts';
 import { BackupData } from '../types.ts';
 import { ArrowDownTrayIcon, ArrowUpTrayIcon, ExclamationTriangleIcon, BanknotesIcon, ShoppingCartIcon, DocumentDuplicateIcon } from './icons.tsx';
+import { useToastContext } from '../context/ToastContext.tsx';
+import ConfirmationModal from './ConfirmationModal.tsx';
+import { getBackupAppIdentifier } from '../utils/backupIdentifier.ts';
 
 type FinanceAnalysis = {
     facturesCount: number;
@@ -13,13 +15,18 @@ type FinanceAnalysis = {
 };
 
 const FinanceBackupManager: React.FC = () => {
+    const { showToast } = useToastContext();
     const [actionProgress, setActionProgress] = useState({ loading: false, message: '' });
     const [analysis, setAnalysis] = useState<FinanceAnalysis | null>(null);
+    const [importMode, setImportMode] = useState<'merge' | 'overwrite' | null>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
 
     const handleDownloadBackup = async () => {
-        const dateStr = new Date().toISOString().split('T')[0];
-        await backupFinanceData(`RM_Finance_${dateStr}.json`);
+        const now = new Date();
+        const dateStr = now.toISOString().split('T')[0];
+        const timeStr = now.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }).replace(':', 'h');
+        const appTag = getBackupAppIdentifier();
+        await backupFinanceData(`${appTag}_RM_Finance_${dateStr} - ( ${timeStr} ).json`);
     };
 
     const handleFileSelect = async (event: ChangeEvent<HTMLInputElement>) => {
@@ -58,7 +65,7 @@ const FinanceBackupManager: React.FC = () => {
                 setActionProgress({ loading: false, message: '' });
             } catch (error) {
                 console.error("Analysis failed:", error);
-                alert(`Erreur d'analyse : ${error instanceof Error ? error.message : "Fichier corrompu"}`);
+                showToast(`Erreur d'analyse.`, "error");
                 setActionProgress({ loading: false, message: '' });
             } finally {
                 if (event.target) event.target.value = '';
@@ -68,13 +75,13 @@ const FinanceBackupManager: React.FC = () => {
     };
 
     const executeImport = async (mode: 'merge' | 'overwrite') => {
-        if (!analysis) return;
+        setImportMode(mode);
+    };
 
-        const confirmMsg = mode === 'merge' 
-            ? "FUSION : Les données existantes seront conservées. Les doublons seront mis à jour avec les versions les plus récentes. Continuer ?"
-            : "ÉCRASEMENT : TOUTES vos factures, commandes et proformas actuelles seront supprimées et remplacées par le contenu du fichier. Continuer ?";
-
-        if (!window.confirm(confirmMsg)) return;
+    const confirmImport = async () => {
+        if (!analysis || !importMode) return;
+        const mode = importMode;
+        setImportMode(null);
 
         setActionProgress({ loading: true, message: mode === 'merge' ? 'Fusion des données...' : 'Restauration complète...' });
 
@@ -82,11 +89,11 @@ const FinanceBackupManager: React.FC = () => {
             const operation = mode === 'merge' ? mergeFinanceDatabaseFromFile : restoreFinanceDatabase;
             await operation(analysis.data, (msg) => setActionProgress({ loading: true, message: msg }));
             
-            alert("Données financières restaurées avec succès !");
+            showToast("Données financières restaurées !", "success");
             window.location.reload();
         } catch (error) {
             console.error("Restore operation failed:", error);
-            alert(`Échec de l'importation : ${error instanceof Error ? error.message : "Erreur inconnue"}`);
+            showToast("Échec de l'importation.", "error");
             setActionProgress({ loading: false, message: '' });
         }
     };
@@ -229,6 +236,18 @@ const FinanceBackupManager: React.FC = () => {
                     <span className="text-blue-400 text-sm font-medium">{actionProgress.message}</span>
                 </div>
             )}
+
+            <ConfirmationModal
+                isOpen={importMode !== null}
+                onClose={() => setImportMode(null)}
+                onConfirm={confirmImport}
+                title={importMode === 'merge' ? "Confirmer la fusion ?" : "Confirmer l'écrasement ?"}
+                message={importMode === 'merge' 
+                    ? "FUSION : Les données existantes seront conservées. Les doublons seront mis à jour avec les versions les plus récentes. Continuer ?" 
+                    : "ÉCRASEMENT : TOUTES vos factures, commandes et proformas actuelles seront supprimées et remplacées par le contenu du fichier. Continuer ?"}
+                confirmText={importMode === 'merge' ? "Fusionner maintenant" : "Remplacer tout"}
+                confirmBtnClassName={importMode === 'merge' ? "bg-blue-600" : "bg-red-600"}
+            />
         </div>
     );
 };

@@ -1,54 +1,91 @@
-import { dbGetSuggestions, dbPutSuggestion, dbClearSuggestions } from './dbService.ts';
-import { SuggestionRecord, SuggestionCategory } from '../types.ts';
 
+import { dbGetSuggestions, dbPutSuggestion, dbClearSuggestions } from './dbService.ts';
+import { SuggestionCategory } from '../types.ts';
+import { MAC_MODELS_DB } from '../utils/macModelsData.ts';
+
+/**
+ * Récupère les suggestions pour une catégorie donnée.
+ * Combine les suggestions enregistrées en base avec les données statiques si applicable.
+ */
 export const getSuggestions = async (category: SuggestionCategory): Promise<string[]> => {
-    const records = await dbGetSuggestions();
-    const record = records.find(r => r.category === category);
-    return record ? record.values : [];
+    try {
+        const records = await dbGetSuggestions();
+        const record = records.find(r => r.category === category);
+        const savedValues = record ? record.values : [];
+
+        // Enrichissement statique pour certaines catégories
+        if (category === 'mac_models') {
+            const staticModels = MAC_MODELS_DB.map(m => m.name);
+            // On fusionne et on dédoublonne, les statiques en premier pour la précision
+            return Array.from(new Set([...staticModels, ...savedValues]));
+        }
+
+        if (category === 'mac_colors') {
+            const staticColors = Array.from(new Set(MAC_MODELS_DB.flatMap(m => m.colors)));
+            return Array.from(new Set([...staticColors, ...savedValues]));
+        }
+
+        if (category === 'service_name' || category === 'customServiceName') {
+            const staticServices = [
+                "Réparation de la carte mère",
+                "Remplacement de la carte mère",
+                "Réparation de la lumière sur l'écran",
+                "Réparation de la lumière sur la carte mère",
+                "Désoxydation (dégâts liquides)",
+                "Remplacement batterie neuve",
+                "Remplacement clavier",
+                "Remplacement trackpad",
+                "Remplacement écran"
+            ];
+            return Array.from(new Set([...staticServices, ...savedValues]));
+        }
+
+        return savedValues;
+    } catch {
+        return [];
+    }
 };
 
+/**
+ * Enregistre une nouvelle valeur dans la mémoire de l'application.
+ */
 export const addSuggestion = async (category: SuggestionCategory, value: string): Promise<void> => {
     try {
-        let cleanedValue = value.trim();
-        if (category === 'clientPhone') {
-            cleanedValue = cleanedValue.replace(/[\s/]/g, ''); // Remove spaces and slashes for consistency
-        }
-        
-        if (!cleanedValue || cleanedValue.length < 3) return; // Don't save empty or very short suggestions
+        const cleanedValue = value.trim();
+        // On ne stocke que les phrases significatives (ex: "Écran cassé" oui, "e" non)
+        if (!cleanedValue || cleanedValue.length < 3) return;
 
         const records = await dbGetSuggestions();
-        let record = records.find(r => r.category === category);
+        const record = records.find(r => r.category === category);
 
         if (record) {
-            // Add if not already present (case-insensitive)
-            if (!record.values.some(v => v.toLowerCase() === cleanedValue.toLowerCase())) {
-                record.values.push(cleanedValue);
-                // Optional: sort or limit the number of suggestions
-                record.values.sort();
-                await dbPutSuggestion(record);
+            // Éviter les doublons (insensible à la casse)
+            const exists = record.values.some(v => v.toLowerCase() === cleanedValue.toLowerCase());
+            if (!exists) {
+                // On garde les 50 dernières suggestions les plus pertinentes/récentes
+                const newValues = [cleanedValue, ...record.values].slice(0, 50);
+                await dbPutSuggestion({ ...record, values: newValues });
             }
         } else {
-            // Create new record
-            const newRecord: SuggestionRecord = {
-                category,
-                values: [cleanedValue]
-            };
-            await dbPutSuggestion(newRecord);
+            await dbPutSuggestion({ category, values: [cleanedValue] });
         }
     } catch (error) {
-        console.error(`Failed to add suggestion for category "${category}":`, error);
-        // This is a non-critical background task, so we just log the error.
+        console.warn(`Suggestion non enregistrée [${category}]:`, error);
+    }
+};
+
+/**
+ * Apprend d'un objet (ex: un ticket entier) en extrayant les champs pertinents.
+ */
+export const learnFromData = async (data: Record<string, unknown>, mappings: Record<string, SuggestionCategory>) => {
+    for (const [field, category] of Object.entries(mappings)) {
+        const value = data[field];
+        if (typeof value === 'string' && value.length > 3) {
+            await addSuggestion(category, value);
+        }
     }
 };
 
 export const clearSuggestions = async (): Promise<void> => {
-    if (window.confirm("Êtes-vous sûr de vouloir réinitialiser toutes les suggestions de saisie automatique ? Cette action est irréversible.")) {
-        try {
-            await dbClearSuggestions();
-            alert("Les suggestions ont été réinitialisées.");
-        } catch (error) {
-            console.error("Failed to clear suggestions:", error);
-            alert("La réinitialisation des suggestions a échoué.");
-        }
-    }
+    await dbClearSuggestions();
 };

@@ -1,13 +1,18 @@
 import React, { useState, useEffect } from 'react';
 import { isNotificationSupported, requestNotificationPermission } from '../services/notificationService.ts';
 import { BellIcon, BellSlashIcon } from './icons.tsx';
+import { useToastContext } from '../context/ToastContext.tsx';
 
 const NotificationBell: React.FC = () => {
+    const { showToast } = useToastContext();
     const [permission, setPermission] = useState<NotificationPermission>('default');
 
     useEffect(() => {
         if (isNotificationSupported()) {
-            setPermission(Notification.permission);
+            const timer = setTimeout(() => {
+                setPermission(Notification.permission);
+            }, 0);
+            return () => clearTimeout(timer);
         }
     }, []);
 
@@ -16,7 +21,7 @@ const NotificationBell: React.FC = () => {
             const newPermission = await requestNotificationPermission();
             setPermission(newPermission);
         } else if (permission === 'denied') {
-            alert("Les notifications sont bloquées. Veuillez les autoriser dans les paramètres de votre navigateur (généralement via l'icône de cadenas dans la barre d'adresse).");
+            showToast("Les notifications sont bloquées. Veuillez les autoriser dans les paramètres du navigateur.", "warning");
         }
     };
 

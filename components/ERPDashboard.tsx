@@ -1,9 +1,12 @@
+
 import React, { useMemo } from 'react';
 import { RepairTicket, Appointment, RepairStatus } from '../types.ts';
-import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend } from 'recharts';
+import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
 import { WrenchScrewdriverIcon, CalendarDaysIcon, ChartBarIcon, CubeIcon } from './icons.tsx';
 import RepairCostByCategoryChart from './RepairCostByCategoryChart.tsx';
 import TicketCreationSummary from './TicketCreationSummary.tsx';
+import MacbookModelTrendsChart from './MacbookModelTrendsChart.tsx';
+import InventoryFinanceWidget from './InventoryFinanceWidget.tsx';
 
 // Props definition
 interface ERPDashboardProps {
@@ -57,7 +60,7 @@ const ERPDashboard: React.FC<ERPDashboardProps> = ({ tickets, appointments }) =>
         };
     }, [tickets]);
 
-    // Frequent Models Chart Data
+    // Frequent Models Chart Data (Global)
     const frequentModelsData = useMemo(() => {
         const modelCounts = tickets.reduce((acc, ticket) => {
             const model = ticket.macModel.trim().toUpperCase() || 'Non spécifié';
@@ -72,11 +75,11 @@ const ERPDashboard: React.FC<ERPDashboardProps> = ({ tickets, appointments }) =>
     }, [tickets]);
 
     return (
-        <div className="space-y-8">
+        <div className="space-y-8 pb-10">
             {/* Header / Welcome */}
             <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6">
                 <div>
-                    <h1 className="text-4xl font-black text-white tracking-tighter uppercase italic text-gradient">Console Supervision</h1>
+                    <h1 className="text-4xl font-black text-white tracking-tighter uppercase italic">Console Supervision</h1>
                     <p className="text-slate-400 font-medium">Monitoring en temps réel de l'activité atelier TGS-CI.</p>
                 </div>
                 <div className="flex gap-4">
@@ -99,29 +102,33 @@ const ERPDashboard: React.FC<ERPDashboardProps> = ({ tickets, appointments }) =>
                 <StatCard title="Affluence" value={welcomeData.todayAppointments} icon={<CalendarDaysIcon className="w-8 h-8 text-purple-500"/>} colorClass="bg-purple-500" />
             </div>
 
+            {/* Real-time Financial & Inventory Widget */}
+            <InventoryFinanceWidget tickets={tickets} />
+
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
                 <div className="lg:col-span-1">
                     <TicketCreationSummary tickets={tickets} />
                 </div>
                 <div className="lg:col-span-2">
-                    <div className="glass-card p-6 rounded-2xl shadow-2xl h-full border border-white/10">
-                        <h3 className="text-xs font-black text-slate-500 uppercase tracking-widest mb-6">Popularité des Modèles MacBook</h3>
-                        <div className="h-[300px]">
-                            <ResponsiveContainer width="100%" height="100%">
-                                <BarChart data={frequentModelsData} layout="vertical" margin={{ top: 0, right: 30, left: 10, bottom: 0 }}>
-                                    <XAxis type="number" hide />
-                                    <YAxis type="category" dataKey="name" stroke="#64748b" fontSize={11} fontWeight={800} tickLine={false} axisLine={false} width={80} />
-                                    <Tooltip cursor={{ fill: 'rgba(255, 255, 255, 0.05)' }} contentStyle={{ backgroundColor: '#0f172a', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '12px' }} />
-                                    <Bar dataKey="count" name="Quantité" fill="#3b82f6" radius={[0, 8, 8, 0]} barSize={24} />
-                                </BarChart>
-                            </ResponsiveContainer>
-                        </div>
-                    </div>
+                    <MacbookModelTrendsChart tickets={tickets} />
                 </div>
             </div>
             
-            <div className="grid grid-cols-1">
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
                 <RepairCostByCategoryChart tickets={tickets} />
+                <div className="glass-card p-6 rounded-2xl shadow-2xl h-full border border-white/10">
+                    <h3 className="text-xs font-black text-slate-500 uppercase tracking-widest mb-6">Répartition Globale des Modèles</h3>
+                    <div className="h-[300px]">
+                        <ResponsiveContainer width="100%" height="100%">
+                            <BarChart data={frequentModelsData} layout="vertical" margin={{ top: 0, right: 30, left: 10, bottom: 0 }}>
+                                <XAxis type="number" hide />
+                                <YAxis type="category" dataKey="name" stroke="#64748b" fontSize={11} fontWeight={800} tickLine={false} axisLine={false} width={80} />
+                                <Tooltip cursor={{ fill: 'rgba(255, 255, 255, 0.05)' }} contentStyle={{ backgroundColor: '#0f172a', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '12px' }} />
+                                <Bar dataKey="count" name="Quantité" fill="#3b82f6" radius={[0, 8, 8, 0]} barSize={24} />
+                            </BarChart>
+                        </ResponsiveContainer>
+                    </div>
+                </div>
             </div>
         </div>
     );

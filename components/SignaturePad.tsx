@@ -1,3 +1,4 @@
+
 import React, { useRef, useEffect, useImperativeHandle, forwardRef, useCallback } from 'react';
 
 const SignaturePad = forwardRef((props, ref) => {
@@ -30,7 +31,7 @@ const SignaturePad = forwardRef((props, ref) => {
   };
 
   const startDrawing = useCallback((e: MouseEvent | TouchEvent) => {
-    e.preventDefault();
+    if (e.cancelable) e.preventDefault(); // Safety check for non-passive
     const canvas = canvasRef.current;
     const context = canvas?.getContext('2d');
     if (!canvas || !context) return;
@@ -43,7 +44,7 @@ const SignaturePad = forwardRef((props, ref) => {
 
   const handleDrawing = useCallback((e: MouseEvent | TouchEvent) => {
      if (!isDrawing.current) return;
-     e.preventDefault();
+     if (e.cancelable) e.preventDefault();
      const canvas = canvasRef.current;
      const context = canvas?.getContext('2d');
      if (!canvas || !context) return;
@@ -75,12 +76,22 @@ const SignaturePad = forwardRef((props, ref) => {
     
     const resizeCanvas = () => {
       const { width, height } = canvas.getBoundingClientRect();
+      if (canvas.width === width && canvas.height === height) return;
+      
+      const tempCanvas = document.createElement('canvas');
+      const tempCtx = tempCanvas.getContext('2d');
+      tempCanvas.width = canvas.width;
+      tempCanvas.height = canvas.height;
+      if (tempCtx) tempCtx.drawImage(canvas, 0, 0);
+
       canvas.width = width;
       canvas.height = height;
       setCanvasStyle();
-      context.lineWidth = 3.5; // Made the line thicker for better visibility and feel
+      context.lineWidth = 3.5; 
       context.lineCap = 'round';
       context.lineJoin = 'round';
+      
+      if (tempCtx) context.drawImage(tempCanvas, 0, 0, width, height);
     };
     
     resizeCanvas();
@@ -101,10 +112,10 @@ const SignaturePad = forwardRef((props, ref) => {
     canvas.addEventListener('mouseup', stopDrawing);
     canvas.addEventListener('mouseout', stopDrawing);
 
-    // Touch events (passive: false is important to allow preventDefault)
+    // Touch events (passive: false is mandatory for Safari/iOS to prevent scroll)
     canvas.addEventListener('touchstart', startDrawing, { passive: false });
     canvas.addEventListener('touchmove', handleDrawing, { passive: false });
-    canvas.addEventListener('touchend', stopDrawing);
+    canvas.addEventListener('touchend', stopDrawing, { passive: false });
 
     return () => {
       window.removeEventListener('resize', resizeCanvas);
@@ -139,18 +150,18 @@ const SignaturePad = forwardRef((props, ref) => {
   }));
 
   return (
-    <div className="relative">
+    <div className="relative group">
       <canvas
         ref={canvasRef}
-        className="w-full h-40 bg-gray-200 dark:bg-gray-700 border-2 border-dashed border-gray-400 dark:border-gray-500 rounded-md cursor-crosshair touch-none"
+        className="w-full h-40 bg-zinc-900 border-2 border-dashed border-zinc-700 dark:border-zinc-500 rounded-2xl cursor-crosshair touch-none transition-colors group-hover:border-blue-500/50"
       />
       <button
         type="button"
         onClick={clearCanvas}
-        className="absolute top-2 right-2 z-10 px-3 py-1 text-xs font-semibold text-white bg-red-600 rounded-md hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-gray-700 focus:ring-red-500 transition"
+        className="absolute top-2 right-2 z-10 px-3 py-1 text-[10px] font-black uppercase text-white bg-red-600/20 hover:bg-red-600 rounded-lg transition-all"
         title="Effacer la signature"
       >
-        Effacer
+        Réinitialiser
       </button>
     </div>
   );

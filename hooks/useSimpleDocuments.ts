@@ -1,3 +1,4 @@
+
 import { useState, useEffect, useCallback } from 'react';
 import { SimpleDocument } from '../types.ts';
 import { dbGetSimpleDocuments, dbAddSimpleDocument, dbUpdateSimpleDocument, dbDeleteSimpleDocument } from '../services/dbService.ts';
@@ -44,10 +45,12 @@ const useSimpleDocuments = () => {
   }, [fetchDocuments]);
 
   const deleteDocument = useCallback(async (id: string) => {
-    if (window.confirm("Supprimer ce document définitivement ?")) {
+    try {
       await dbDeleteSimpleDocument(id);
       await fetchDocuments();
       window.dispatchEvent(new CustomEvent('requestsync'));
+    } catch (error) {
+      console.error("Failed to delete document:", error);
     }
   }, [fetchDocuments]);
 
