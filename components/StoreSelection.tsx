@@ -1,6 +1,7 @@
 import React from 'react';
 import { BuildingStorefrontIcon } from './icons.tsx';
 import BackgroundAnimation from './BackgroundAnimation.tsx';
+import { DeviceProfileStartupSelector } from './DeviceProfileStartupSelector.tsx';
 
 interface StoreSelectionProps {
   onSelectStore: (storeId: string) => void;
@@ -11,10 +12,13 @@ const StoreSelection: React.FC<StoreSelectionProps> = ({ onSelectStore }) => {
   const storeId = "magasin-principal";
 
   return (
-    <div className="min-h-screen flex flex-col items-center p-4 text-white relative overflow-hidden">
+    <div className="min-h-screen flex flex-col items-center justify-between p-4 text-white relative overflow-hidden">
         <BackgroundAnimation />
-        <main className="flex-grow flex flex-col justify-center items-center w-full py-8">
-            <div className="text-center mb-12 z-10">
+        <header className="w-full max-w-xl mx-auto pt-4 flex justify-center z-10">
+            <DeviceProfileStartupSelector variant="compact" />
+        </header>
+        <main className="flex-grow flex flex-col justify-center items-center w-full py-6">
+            <div className="text-center mb-8 z-10">
                 <h1 className="text-3xl md:text-5xl font-bold">RéparerMonMac</h1>
                 <p className="mt-4 text-sm md:text-lg text-gray-300">Veuillez sélectionner votre magasin</p>
             </div>
@@ -32,8 +36,8 @@ const StoreSelection: React.FC<StoreSelectionProps> = ({ onSelectStore }) => {
             </div>
         </main>
 
-        <footer className="text-xs text-gray-500 z-10 pb-4">
-            copyright TGS-CI Groupe 2025
+        <footer className="text-xs text-gray-500 z-10 pb-4 text-center">
+            TGSCI Informatique, Hautes Réparations Spécialisées à Abidjan, société ivoiro-béninoise
         </footer>
     </div>
   );

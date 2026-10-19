@@ -1,6 +1,6 @@
 
 import React, { useState, useMemo, useEffect, useCallback } from 'react';
-import { RepairTicket, RepairStatus, Role, HistoryEntry, LegalTemplateId, TechnicalInterventionReport } from '../types.ts';
+import { RepairTicket, RepairStatus, Role, HistoryEntry, LegalTemplateId, TechnicalInterventionReport, DiagnosticCheck, EntryCondition, DiagnosticSheetBData } from '../types.ts';
 import { getStatusStyle } from '../utils/statusStyles.ts';
 import { 
     PencilIcon, PrinterIcon, ChatBubbleLeftRightIcon, 
@@ -23,6 +23,7 @@ import {
 } from './icons.tsx';
 import NotificationModal from './NotificationModal.tsx';
 import DiagnosticSheetBModal from './DiagnosticSheetBModal.tsx';
+import DiagnosticFormModal from './DiagnosticFormModal.tsx';
 import PrintableTicket from './PrintableTicket.tsx';
 import PrintableLegalFolder from './PrintableLegalFolder.tsx';
 import PrintableDiagnosticReport from './PrintableDiagnosticReport.tsx';
@@ -49,6 +50,15 @@ import { dbGetTickets } from '../services/dbService.ts';
 import WhatsAppShareModal from './WhatsAppShareModal.tsx';
 import WaitingStatusModal from './WaitingStatusModal.tsx';
 import RegularizeTicketModal from './RegularizeTicketModal.tsx';
+import TechnicalBlockageModal from './TechnicalBlockageModal.tsx';
+import { getTicketFinancialSummary } from '../utils/ticketHelpers.ts';
+import { YangoDeliveryViewModal } from './YangoDeliveryViewModal.tsx';
+import { PaymentLedgerManager } from './PaymentLedgerManager.tsx';
+import { InspectionPhotoGallery } from './InspectionPhotoGallery.tsx';
+import { Truck, Store, Eye, Share2 } from 'lucide-react';
+import SocialPostModal from './SocialPostModal.tsx';
+import { useDeviceProfile } from '../context/DeviceProfileContext.tsx';
+
 
 interface RepairDetailProps {
   ticket: RepairTicket;
@@ -63,15 +73,22 @@ const RepairDetail: React.FC<RepairDetailProps> = ({ ticket, onBack, onUpdate, r
     const { showToast } = useToastContext();
     const [isNotificationModalOpen, setNotificationModalOpen] = useState(false);
     const [isExpertiseModalOpen, setIsExpertiseModalOpen] = useState(false);
+    const [isDiagnosticModalOpen, setIsDiagnosticModalOpen] = useState(false);
+    const [zoomedImage, setZoomedImage] = useState<string | null>(null);
     const [isTechReportModalOpen, setIsTechReportModalOpen] = useState(false);
+    const [isBlockageModalOpen, setIsBlockageModalOpen] = useState(false);
     const [isStockUsageOpen, setStockUsageOpen] = useState(false);
     const [isExternalPurchaseOpen, setExternalPurchaseOpen] = useState(false);
     const [isPreviewOpen, setIsPreviewOpen] = useState(false);
-    const [previewType, setPreviewType] = useState<'standard' | 'legal' | 'technical_report' | 'p3_report'>('standard');
+    const [previewType, setPreviewType] = useState<'standard' | 'legal' | 'technical_report' | 'p3_report' | 'blockage_note'>('standard');
     const [isUpdating, setIsUpdating] = useState(false);
     const [isRegularizing, setIsRegularizing] = useState(false);
     const [isRegularizeModalOpen, setIsRegularizeModalOpen] = useState(false);
+    const [isYangoModalOpen, setIsYangoModalOpen] = useState(false);
+    const [isSocialPostModalOpen, setIsSocialPostModalOpen] = useState(false);
     const [allTickets, setAllTickets] = useState<RepairTicket[]>([]);
+    const { isTouch } = useDeviceProfile();
+
 
     const handleOpenRegularizeModal = async () => {
         try {
@@ -196,6 +213,143 @@ const RepairDetail: React.FC<RepairDetailProps> = ({ ticket, onBack, onUpdate, r
         } catch (error) { console.error(`Failed to ${actionDescription}:`, error); } finally { setIsUpdating(false); }
     };
 
+    const totalDueAmount = useMemo(() => {
+        const diag = Number(ticket.costs?.diagnostic) || 0;
+        const rep = Number(ticket.costs?.repair) || 0;
+        if (ticket.services && ticket.services.length > 0) {
+            const servicesTotal = ticket.services.reduce((acc, s) => acc + (Number(s.price) || 0), 0);
+            return Math.max(diag + rep, diag + servicesTotal);
+        }
+        return diag + rep;
+    }, [ticket.costs, ticket.services]);
+
+    const effectivePayments = useMemo(() => {
+        const list = Array.isArray(ticket.paymentsList) ? [...ticket.paymentsList] : [];
+        const adv = Number(ticket.costs?.advance) || 0;
+        if (list.length === 0 && adv > 0) {
+            list.push({
+                id: `legacy-adv-${ticket.id}`,
+                amount: adv,
+                date: ticket.createdAt ? ticket.createdAt.split('T')[0] : new Date().toISOString().split('T')[0],
+                method: 'especes',
+                notes: 'Acompte initial enregistré au dépôt de la fiche',
+                createdAt: ticket.createdAt || new Date().toISOString()
+            });
+        }
+        return list;
+    }, [ticket.paymentsList, ticket.costs?.advance, ticket.id, ticket.createdAt]);
+
+    const handleAddPayment = async (newPayment: PaymentEntry) => {
+        const currentList = Array.isArray(ticket.paymentsList) ? [...ticket.paymentsList] : [];
+        const adv = Number(ticket.costs?.advance) || 0;
+        if (currentList.length === 0 && adv > 0) {
+            currentList.push({
+                id: `legacy-adv-${ticket.id}`,
+                amount: adv,
+                date: ticket.createdAt ? ticket.createdAt.split('T')[0] : new Date().toISOString().split('T')[0],
+                method: 'especes',
+                notes: 'Acompte initial enregistré au dépôt de la fiche',
+                createdAt: ticket.createdAt || new Date().toISOString()
+            });
+        }
+        const updatedPayments = [...currentList, newPayment];
+        const totalPaid = updatedPayments.reduce((s, p) => s + (Number(p.amount) || 0), 0);
+
+        const updatedTicket: RepairTicket = {
+            ...ticket,
+            paymentsList: updatedPayments,
+            costs: {
+                ...ticket.costs,
+                advance: totalPaid
+            },
+            history: [
+                ...(ticket.history || []),
+                {
+                    timestamp: new Date().toISOString(),
+                    user: role,
+                    action: `Paiement de ${Number(newPayment.amount).toLocaleString('fr-FR')} FCFA via ${newPayment.method}`
+                }
+            ],
+            updatedAt: new Date().toISOString()
+        };
+        await handleUpdateWithFeedback(updatedTicket, 'enregistrer paiement');
+        showToast(`Paiement de ${Number(newPayment.amount).toLocaleString('fr-FR')} FCFA enregistré avec succès !`, "success");
+    };
+
+    const handleDeletePayment = async (id: string) => {
+        const updatedPayments = (ticket.paymentsList || []).filter(p => p.id !== id);
+        const totalPaid = updatedPayments.reduce((s, p) => s + (Number(p.amount) || 0), 0);
+        const updatedTicket: RepairTicket = {
+            ...ticket,
+            paymentsList: updatedPayments,
+            costs: {
+                ...ticket.costs,
+                advance: totalPaid
+            },
+            history: [
+                ...ticket.history,
+                {
+                    timestamp: new Date().toISOString(),
+                    user: role,
+                    action: `Suppression d'un règlement`
+                }
+            ],
+            updatedAt: new Date().toISOString()
+        };
+        await handleUpdateWithFeedback(updatedTicket, 'supprimer paiement');
+        showToast("Règlement supprimé.", "info");
+    };
+
+    const handleUpdatePayment = async (updatedPayment: PaymentEntry) => {
+        const updatedPayments = (ticket.paymentsList || []).map(p => p.id === updatedPayment.id ? updatedPayment : p);
+        const updatedTicket: RepairTicket = {
+            ...ticket,
+            paymentsList: updatedPayments,
+            history: [
+                ...ticket.history,
+                {
+                    timestamp: new Date().toISOString(),
+                    user: role,
+                    action: `Justificatif mis à jour pour le règlement`
+                }
+            ],
+            updatedAt: new Date().toISOString()
+        };
+        await handleUpdateWithFeedback(updatedTicket, 'mettre à jour justificatif');
+        showToast("Justificatif mis à jour avec succès !", "success");
+    };
+
+    const handleUpdateIntakePhotos = async (photos: string[]) => {
+        const updatedTicket: RepairTicket = {
+            ...ticket,
+            intakeImages: photos,
+            updatedAt: new Date().toISOString()
+        };
+        await handleUpdateWithFeedback(updatedTicket, 'mettre à jour photos réception');
+        showToast("Photos de réception mises à jour !", "success");
+    };
+
+    const handleUpdateRestitutionPhotos = async (photos: string[]) => {
+        const updatedTicket: RepairTicket = {
+            ...ticket,
+            restitutionPhotos: photos,
+            updatedAt: new Date().toISOString()
+        };
+        await handleUpdateWithFeedback(updatedTicket, 'mettre à jour photos restitution');
+        showToast("Photos de restitution enregistrées !", "success");
+    };
+
+    const handleUpdateRestitutionDetails = async (restitutionDetails: RestitutionDetails) => {
+        const updatedTicket: RepairTicket = {
+            ...ticket,
+            restitutionDetails,
+            updatedAt: new Date().toISOString()
+        };
+        await handleUpdateWithFeedback(updatedTicket, 'mettre à jour détails restitution');
+        showToast("Détails de restitution enregistrés !", "success");
+    };
+
+
     const handleStatusChange = async (newStatus: RepairStatus) => {
         if (newStatus === ticket.status) return;
         if (newStatus === RepairStatus.REPORTE) {
@@ -215,13 +369,34 @@ const RepairDetail: React.FC<RepairDetailProps> = ({ ticket, onBack, onUpdate, r
         let updatedTicket: RepairTicket = { ...ticket, status: newStatus, postponedDays: undefined, postponedUntil: undefined, updatedAt: new Date().toISOString(), history: [...ticket.history, newHistoryEntry] };
         
         if (newStatus === RepairStatus.RENDU) {
-            const total = (ticket.costs?.diagnostic || 0) + (ticket.costs?.repair || 0);
+            const ticketFin = getTicketFinancialSummary(ticket);
+            const total = ticketFin.totalBilled;
             updatedTicket = {
                 ...updatedTicket,
                 costs: {
                     ...updatedTicket.costs,
                     advance: total
                 }
+            };
+        }
+
+        if (newStatus === RepairStatus.ANNULE) {
+            const prevAdvance = ticket.costs?.advance || 0;
+            const hadAdvance = prevAdvance > 0;
+            const note = hadAdvance 
+                ? `Fiche annulée : mentionnée automatiquement comme INFACTURABLE (avance de ${prevAdvance.toLocaleString('fr-FR')} F CFA non intégrable dans notre point).`
+                : `Fiche annulée : mentionnée automatiquement comme INFACTURABLE (aucun fond intégrable dans notre point).`;
+            newHistoryEntry.action = `Annulation du dossier : ${note}`;
+            updatedTicket = {
+                ...updatedTicket,
+                isInfacturable: true,
+                infacturableReason: note
+            };
+        } else if (ticket.isInfacturable && newStatus !== RepairStatus.ANNULE) {
+            updatedTicket = {
+                ...updatedTicket,
+                isInfacturable: false,
+                infacturableReason: undefined
             };
         }
 
@@ -392,6 +567,37 @@ const RepairDetail: React.FC<RepairDetailProps> = ({ ticket, onBack, onUpdate, r
         setIsEditingWarrantyReport(false);
     };
 
+    const handleSaveDiagnostic = async (report: DiagnosticCheck[], images: string[], selectedScenario: EntryCondition) => {
+        const now = new Date().toISOString();
+        const newHistoryEntry: HistoryEntry = {
+            timestamp: now,
+            user: role as Role,
+            action: `Mise à jour du Diagnostic Technique (Scénario : ${selectedScenario})`
+        };
+        const updatedTicket: RepairTicket = {
+            ...ticket,
+            diagnosticReport: report,
+            diagnosticImages: images,
+            diagnosticCreatedAt: ticket.diagnosticCreatedAt || now,
+            updatedAt: now,
+            status: ticket.status === RepairStatus.A_DIAGNOSTIQUER ? RepairStatus.DIAGNOSTIC_EN_COURS : ticket.status,
+            printDiagnosticIntegrated: true,
+            diagnosticSheetB: {
+                ...(ticket.diagnosticSheetB || {
+                    testDuration: '',
+                    repairDelay: '',
+                    diagnosticPoints: [],
+                    tensionValues: [],
+                    visualInspection: ''
+                }),
+                entryCondition: selectedScenario
+            },
+            history: [...ticket.history, newHistoryEntry]
+        };
+        await handleUpdateWithFeedback(updatedTicket, 'enregistrer le diagnostic standard');
+        setIsDiagnosticModalOpen(false);
+    };
+
     const handleSaveExpertise = async (data: DiagnosticSheetBData) => {
         const updatedTicket: RepairTicket = { 
             ...ticket, 
@@ -422,8 +628,9 @@ const RepairDetail: React.FC<RepairDetailProps> = ({ ticket, onBack, onUpdate, r
         await handleUpdateWithFeedback(updatedTicket, 'sauvegarder le rapport technique');
     };
     
-    const totalCost = (ticket.costs.diagnostic || 0) + (ticket.costs.repair || 0);
-    const balance = Math.abs(totalCost - (ticket.costs.advance || 0));
+    const fin = getTicketFinancialSummary(ticket);
+    const totalCost = fin.totalBilled;
+    const balance = fin.balanceDue;
 
     const hasDiagnosticData = !!(ticket.diagnosticReport?.length || ticket.customFields?.diagnostic || ticket.customFields?.constatsParticuliers);
     const hasExpertiseBData = !!ticket.diagnosticSheetB;
@@ -472,6 +679,11 @@ const RepairDetail: React.FC<RepairDetailProps> = ({ ticket, onBack, onUpdate, r
                                 </select>
                                 <ChevronDownIcon className="w-3 h-3 absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none opacity-50" />
                             </div>
+                            {fin.isInfacturable && (
+                                <span className="px-2.5 py-1 bg-rose-500/20 text-rose-300 border border-rose-500/40 text-[9px] font-black uppercase rounded-lg shadow-sm flex items-center gap-1.5 shrink-0 animate-fade-in" title={fin.infacturableNotice}>
+                                    🚫 INFACTURABLE (0 F AU POINT)
+                                </span>
+                            )}
                         </div>
                         <p className="text-[10px] md:text-xs text-slate-400 font-bold mt-1">
                             Fiche créée le : {new Date(ticket.createdAt).toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
@@ -479,9 +691,8 @@ const RepairDetail: React.FC<RepairDetailProps> = ({ ticket, onBack, onUpdate, r
                     </div>
                 </div>
                 
-                <div className="flex items-center gap-2 w-full md:w-auto overflow-x-auto pb-1 md:pb-0 no-scrollbar">
-                    {/* Desktop Action Buttons - Hidden on mobile because they are in the fixed bar */}
-                    <div className="hidden md:flex items-center gap-2">
+                <div className={`flex items-center gap-2 w-full md:w-auto ${isTouch ? 'flex-wrap pt-2' : 'overflow-x-auto pb-1 md:pb-0 no-scrollbar'}`}>
+                    <div className="flex items-center gap-1.5 md:gap-2 flex-wrap">
                         {(ticket.status === RepairStatus.TERMINE || ticket.status === RepairStatus.RENDU) && (
                             <button
                                 onClick={async () => {
@@ -503,11 +714,36 @@ const RepairDetail: React.FC<RepairDetailProps> = ({ ticket, onBack, onUpdate, r
                         <button onClick={handleWhatsApp} className="px-3 py-2 bg-emerald-600/10 hover:bg-emerald-600/20 text-emerald-400 text-[9px] md:text-[10px] font-black rounded-xl transition-all border border-emerald-500/20 uppercase tracking-widest flex items-center gap-1.5 md:gap-2 shrink-0">
                             <WhatsAppIcon className="w-3.5 h-3.5 md:w-4 h-4 text-emerald-500"/> <span className="hidden xs:inline">WhatsApp</span>
                         </button>
+                        <button 
+                            onClick={() => setIsSocialPostModalOpen(true)} 
+                            className="px-3 py-2 bg-gradient-to-r from-blue-600/20 to-purple-600/20 hover:from-blue-600/35 hover:to-purple-600/35 text-blue-300 hover:text-white text-[9px] md:text-[10px] font-black rounded-xl transition-all border border-blue-500/30 uppercase tracking-widest flex items-center gap-1.5 md:gap-2 shrink-0 shadow-lg shadow-purple-900/20"
+                            title="Générer un texte pour réseaux sociaux et site web (Problème, état d'arrivée, solutions, conseil pratique)"
+                        >
+                            <Share2 className="w-3.5 h-3.5 md:w-4 h-4 text-purple-400" />
+                            <span className="hidden xs:inline">Texte Réseaux & Site</span>
+                            <span className="xs:hidden">Post</span>
+                        </button>
                         <button onClick={() => { setPreviewType('standard'); setIsPreviewOpen(true); }} className="px-3 py-2 bg-white/5 hover:bg-white/10 text-white text-[9px] md:text-[10px] font-black rounded-xl transition-all border border-white/10 uppercase tracking-widest flex items-center gap-1.5 md:gap-2 shrink-0">
                             <PrinterIcon className="w-3.5 h-3.5 md:w-4 h-4"/> <span className="hidden xs:inline">Imprimer</span>
                         </button>
                         <button onClick={() => { setPreviewType('p3_report'); setIsPreviewOpen(true); }} className="px-3 py-2 bg-emerald-600/15 hover:bg-emerald-600/25 border border-emerald-500/30 text-emerald-400 text-[9px] md:text-[10px] font-black rounded-xl transition-all uppercase tracking-widest flex items-center gap-1.5 md:gap-2 shrink-0" title="Générer le Rapport de Fin d'Intervention (P3) officiel TGS-CI">
                             <DocumentMagnifyingGlassIcon className="w-3.5 h-3.5 md:w-4 h-4 text-emerald-400"/> <span className="hidden xs:inline">Rapport P3 (PDF)</span><span className="xs:hidden">Rapport P3</span>
+                        </button>
+                        <button 
+                            onClick={() => setIsBlockageModalOpen(true)} 
+                            className={`px-3 py-2 text-[9px] md:text-[10px] font-black rounded-xl transition-all border uppercase tracking-widest flex items-center gap-1.5 md:gap-2 shrink-0 ${
+                                ticket.technicalBlockageReport 
+                                    ? 'bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border-amber-500/40 ring-1 ring-amber-500/30' 
+                                    : 'bg-amber-600/10 hover:bg-amber-600/20 text-amber-400 border-amber-500/20'
+                            }`}
+                            title="Rapport de blocage en cours de réparation & prolongation de délai"
+                        >
+                            <ClockIcon className="w-3.5 h-3.5 md:w-4 h-4 text-amber-400"/> 
+                            <span className="hidden xs:inline">{ticket.technicalBlockageReport ? 'Rallonge Déposée' : 'Rapport Blocage / Rallonge'}</span>
+                            <span className="xs:hidden">Rallonge</span>
+                        </button>
+                        <button onClick={() => setIsDiagnosticModalOpen(true)} className="px-3 py-2 bg-blue-600/15 hover:bg-blue-600/25 text-blue-400 text-[9px] md:text-[10px] font-black rounded-xl transition-all border border-blue-500/30 uppercase tracking-widest flex items-center gap-1.5 md:gap-2 shrink-0" title="Renseigner ou modifier le diagnostic technique standard (Expertise A)">
+                            <DocumentMagnifyingGlassIcon className="w-3.5 h-3.5 md:w-4 h-4 text-blue-400"/> <span className="hidden xs:inline">Diagnostic P2</span><span className="xs:hidden">Diag P2</span>
                         </button>
                         <button onClick={() => setIsExpertiseModalOpen(true)} className="px-3 py-2 bg-purple-600/10 hover:bg-purple-600/20 text-purple-400 text-[9px] md:text-[10px] font-black rounded-xl transition-all border border-purple-500/20 uppercase tracking-widest flex items-center gap-1.5 md:gap-2 shrink-0">
                             <WrenchScrewdriverIcon className="w-3.5 h-3.5 md:w-4 h-4 text-purple-500"/> <span className="hidden xs:inline">Expertise P3</span>
@@ -688,6 +924,66 @@ const RepairDetail: React.FC<RepairDetailProps> = ({ ticket, onBack, onUpdate, r
                         </div>
                     )}
 
+                    {/* SECTION 1. MODE DE RÉCEPTION DE L'ORDINATEUR (ATELIER VS YANGO) */}
+                    <div className="apple-card p-5 md:p-6 bg-slate-900/80 border border-slate-700/80 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                        <div className="flex items-center gap-3.5">
+                            <div className={`p-3 rounded-2xl shrink-0 ${ticket.receptionMode === 'livraison_yango' ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30' : 'bg-sky-500/20 text-sky-400 border border-sky-500/30'}`}>
+                                {ticket.receptionMode === 'livraison_yango' ? <Truck className="w-6 h-6" /> : <Store className="w-6 h-6" />}
+                            </div>
+                            <div>
+                                <div className="flex items-center gap-2">
+                                    <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">Mode d'arrivée à l'atelier :</span>
+                                    {ticket.receptionMode === 'livraison_yango' ? (
+                                        <span className="px-2.5 py-0.5 rounded-full text-xs font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40 flex items-center gap-1.5">
+                                            <Truck className="w-3.5 h-3.5" /> Livraison de l'ordinateur par Yango
+                                        </span>
+                                    ) : (
+                                        <span className="px-2.5 py-0.5 rounded-full text-xs font-bold bg-sky-500/20 text-sky-300 border border-sky-500/40 flex items-center gap-1.5">
+                                            <Store className="w-3.5 h-3.5" /> Dépôt direct au comptoir atelier
+                                        </span>
+                                    )}
+                                </div>
+                                <p className="text-xs text-slate-300 mt-1">
+                                    {ticket.receptionMode === 'livraison_yango' 
+                                        ? `Réceptionné le ${ticket.yangoDetails?.receptionDate || 'N/A'}${ticket.yangoDetails?.deliveryReference ? ` • Course réf: ${ticket.yangoDetails.deliveryReference}` : ''}${ticket.yangoDetails?.driverName ? ` • Livreur: ${ticket.yangoDetails.driverName}` : ''}`
+                                        : `Remis en main propre par ${ticket.client?.name || 'le client'} au comptoir de l'atelier.`}
+                                </p>
+                            </div>
+                        </div>
+
+                        <button
+                            type="button"
+                            onClick={() => setIsYangoModalOpen(true)}
+                            className="px-4 py-2 rounded-xl text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-white border border-slate-700 transition-all flex items-center justify-center gap-2 shrink-0 self-start sm:self-auto cursor-pointer"
+                        >
+                            <Eye className="w-4 h-4 text-sky-400" />
+                            <span>Consulter détails {ticket.receptionMode === 'livraison_yango' ? '& captures Yango' : 'dépôt'}</span>
+                        </button>
+                    </div>
+
+                    {/* SECTION 2. JUSTIFICATIFS DE PAIEMENT */}
+                    <PaymentLedgerManager
+                        payments={effectivePayments}
+                        totalDue={totalDueAmount}
+                        onAddPayment={handleAddPayment}
+                        onDeletePayment={handleDeletePayment}
+                        onUpdatePayment={handleUpdatePayment}
+                        readOnly={false}
+                    />
+
+                    {/* SECTION 3. PHOTOS AVANT ET APRÈS INTERVENTION & COMPARATEUR */}
+                    <InspectionPhotoGallery
+                        intakePhotos={ticket.intakeImages || []}
+                        restitutionPhotos={ticket.restitutionPhotos || []}
+                        restitutionDetails={ticket.restitutionDetails}
+                        onUpdateIntakePhotos={handleUpdateIntakePhotos}
+                        onUpdateRestitutionPhotos={handleUpdateRestitutionPhotos}
+                        onUpdateRestitutionDetails={handleUpdateRestitutionDetails}
+                        ticketNumber={ticket.id}
+                        readOnly={false}
+                    />
+
+
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-6">
                         <div className="apple-card p-6 md:p-8">
                             <h3 className="text-[9px] md:text-[10px] font-black text-apple-muted uppercase tracking-[0.2em] mb-3 md:mb-4">Informations Client</h3>
@@ -709,6 +1005,7 @@ const RepairDetail: React.FC<RepairDetailProps> = ({ ticket, onBack, onUpdate, r
                                     <p className="text-xl md:text-2xl font-black text-white uppercase tracking-tight">{ticket.macBrand} {ticket.macModel}</p>
                                     <p className="text-[10px] font-mono font-bold text-apple-muted mt-0.5">
                                         {ticket.modelNumber && <span className="text-blue-400 mr-2 uppercase">MODÈLE : {ticket.modelNumber}</span>}
+                                        {(ticket.emc || ticket.customFields?.emc) && <span className="text-emerald-400 mr-2 uppercase">| {ticket.emc || ticket.customFields?.emc}</span>}
                                         {ticket.macColor && <span className="text-slate-400 mr-2 uppercase">| {ticket.macColor}</span>}
                                     </p>
                                     <p className="text-[10px] font-mono font-bold text-slate-500 mt-1 uppercase">S/N: {ticket.serialNumber || 'NON SPÉCIFIÉ'}</p>
@@ -901,34 +1198,216 @@ const RepairDetail: React.FC<RepairDetailProps> = ({ ticket, onBack, onUpdate, r
                         </div>
                     )}
 
-                    {/* SECTION DIAGNOSTIC - NOUVEAU RENDU VISUEL */}
-                    {(hasDiagnosticData || hasExpertiseBData) && (
-                        <div className="apple-card p-8 bg-purple-900/10 border-purple-500/30">
-                            <div className="flex justify-between items-center mb-6">
-                                <h3 className="text-[10px] font-black text-purple-400 uppercase tracking-[0.3em] flex items-center gap-3">
-                                    <DocumentMagnifyingGlassIcon className="w-6 h-6" /> Expertise & Diagnostic Validés
-                                </h3>
-                                <div className="flex gap-2">
-                                    {hasDiagnosticData && (
-                                        <button 
-                                            onClick={() => { setPreviewType('standard'); setIsPreviewOpen(true); }}
-                                            className="px-4 py-2 bg-purple-600 hover:bg-purple-500 text-white rounded-xl text-[9px] font-black uppercase tracking-widest shadow-lg shadow-purple-900/40 transition-all flex items-center gap-2"
-                                        >
-                                            <PrinterIcon className="w-4 h-4" /> Rapport P2
-                                        </button>
-                                    )}
+                    {/* SECTION RAPPORT DE BLOCAGE EN COURS DE TRAVAUX & DEMANDE DE RALLONGE */}
+                    {ticket.technicalBlockageReport ? (
+                        <div className="apple-card p-6 md:p-8 bg-amber-950/20 border-2 border-amber-500/30 rounded-3xl space-y-5 animate-fade-in shadow-xl">
+                            <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 pb-4 border-b border-white/5">
+                                <div>
+                                    <div className="flex items-center gap-2.5 flex-wrap">
+                                        <h3 className="text-sm font-black text-amber-300 uppercase tracking-wide flex items-center gap-2">
+                                            <ExclamationTriangleIcon className="w-5 h-5 text-amber-400" />
+                                            Rapport de Blocage & Rallonge de Délai
+                                        </h3>
+                                        <span className={`px-2.5 py-0.5 rounded-full text-[9px] font-black uppercase tracking-wider border ${
+                                            ticket.technicalBlockageReport.status === 'ACCEPTEE' ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30' :
+                                            ticket.technicalBlockageReport.status === 'CLIENT_INFORME' ? 'bg-blue-500/20 text-blue-300 border-blue-500/30' :
+                                            ticket.technicalBlockageReport.status === 'REFUSEE' ? 'bg-red-500/20 text-red-300 border-red-500/30' :
+                                            'bg-amber-500/20 text-amber-300 border-amber-500/30'
+                                        }`}>
+                                            {ticket.technicalBlockageReport.status === 'ACCEPTEE' ? 'Accord client confirmé' :
+                                             ticket.technicalBlockageReport.status === 'CLIENT_INFORME' ? 'Client informé' :
+                                             ticket.technicalBlockageReport.status === 'REFUSEE' ? 'Refus / Point requis' :
+                                             'Rallonge demandée (+ En attente)'}
+                                        </span>
+                                    </div>
+                                    <p className="text-xs text-slate-400 mt-1">
+                                        Déposé par <span className="text-white font-bold">{ticket.technicalBlockageReport.technicianName}</span> le {new Date(ticket.technicalBlockageReport.createdAt).toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}
+                                    </p>
+                                </div>
+
+                                <div className="flex items-center gap-2">
+                                    <button
+                                        type="button"
+                                        onClick={() => { setPreviewType('blockage_note'); setIsPreviewOpen(true); }}
+                                        className="px-3 py-1.5 bg-white/5 hover:bg-white/10 text-white border border-white/10 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all flex items-center gap-1.5"
+                                    >
+                                        <PrinterIcon className="w-3.5 h-3.5 text-amber-400" /> Note Avenant
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => setIsBlockageModalOpen(true)}
+                                        className="px-3 py-1.5 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all flex items-center gap-1.5"
+                                    >
+                                        <PencilIcon className="w-3.5 h-3.5" /> Modifier
+                                    </button>
+                                </div>
+                            </div>
+
+                            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                <div className="p-4 bg-black/40 rounded-2xl border border-white/5 space-y-2">
+                                    <p className="text-[9px] font-black text-emerald-400 uppercase tracking-wider">
+                                        Composants déjà remplacés / testés
+                                    </p>
+                                    <div className="space-y-1">
+                                        {ticket.technicalBlockageReport.replacedComponents?.map((c, i) => (
+                                            <p key={i} className="text-xs text-slate-200 font-bold">• {c}</p>
+                                        ))}
+                                        {ticket.technicalBlockageReport.customComponentsText && (
+                                            <p className="text-xs text-emerald-300 font-mono italic">
+                                                + {ticket.technicalBlockageReport.customComponentsText}
+                                            </p>
+                                        )}
+                                    </div>
+                                </div>
+
+                                <div className="p-4 bg-black/40 rounded-2xl border border-white/5 space-y-2">
+                                    <p className="text-[9px] font-black text-red-400 uppercase tracking-wider">
+                                        Constats & Instabilités persistantes
+                                    </p>
+                                    <div className="space-y-1">
+                                        {ticket.technicalBlockageReport.symptoms?.map((s, i) => (
+                                            <p key={i} className="text-xs text-slate-200 font-bold">• {s}</p>
+                                        ))}
+                                        {ticket.technicalBlockageReport.technicalDetails && (
+                                            <p className="text-[11px] text-slate-400 font-mono italic mt-1 pt-1 border-t border-white/5">
+                                                "{ticket.technicalBlockageReport.technicalDetails}"
+                                            </p>
+                                        )}
+                                    </div>
+                                </div>
+
+                                <div className="p-4 bg-amber-500/10 rounded-2xl border border-amber-500/30 space-y-1">
+                                    <p className="text-[9px] font-black text-amber-400 uppercase tracking-wider">
+                                        Rallonge & Nouveau Rendez-vous
+                                    </p>
+                                    <p className="text-xl font-black text-white mt-1">
+                                        +{ticket.technicalBlockageReport.requestedDays} jours ouvrés
+                                    </p>
+                                    <p className="text-xs font-bold text-amber-200 capitalize">
+                                        {new Date(ticket.technicalBlockageReport.calculatedRdvDate).toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}
+                                    </p>
+                                    <p className="text-[10px] text-slate-400">Heure : {ticket.technicalBlockageReport.calculatedRdvTime || '10:00'}</p>
+                                </div>
+                            </div>
+
+                            {ticket.technicalBlockageReport.clientExplanation && (
+                                <div className="p-4 bg-black/30 rounded-2xl border border-white/5 space-y-1">
+                                    <p className="text-[9px] font-black text-purple-400 uppercase tracking-wider">
+                                        Explication client vulgarisée transmise :
+                                    </p>
+                                    <p className="text-xs text-slate-300 italic whitespace-pre-line leading-relaxed">
+                                        "{ticket.technicalBlockageReport.clientExplanation}"
+                                    </p>
+                                </div>
+                            )}
+                        </div>
+                    ) : (
+                        [RepairStatus.REPARATION_EN_COURS, RepairStatus.TESTS_EN_COURS].includes(ticket.status) && (
+                            <div className="bg-gradient-to-r from-amber-950/20 via-slate-900 to-black p-5 rounded-3xl border border-amber-500/30 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 animate-fade-in">
+                                <div className="flex items-center gap-3">
+                                    <div className="p-3 bg-amber-500/20 text-amber-400 rounded-2xl">
+                                        <ClockIcon className="w-6 h-6" />
+                                    </div>
+                                    <div>
+                                        <h4 className="text-sm font-black text-amber-300 uppercase tracking-tight">
+                                            Composants remplacés mais panne persistante ?
+                                        </h4>
+                                        <p className="text-xs text-slate-400 mt-0.5">
+                                            Renseignez les composants changés, les symptômes de blocage et calculez la nouvelle date de rendez-vous pour justifier le délai auprès du client.
+                                        </p>
+                                    </div>
+                                </div>
+                                <button
+                                    type="button"
+                                    onClick={() => setIsBlockageModalOpen(true)}
+                                    className="px-4 py-2.5 bg-amber-500 hover:bg-amber-400 text-black text-xs font-black uppercase tracking-wider rounded-xl transition-all shadow-lg shadow-amber-950/20 shrink-0"
+                                >
+                                    Déclarer un blocage & Rallonge
+                                </button>
+                            </div>
+                        )
+                    )}
+
+                    {/* SECTION DIAGNOSTIC - RENDU VISUEL ENRICHI */}
+                    {(hasDiagnosticData || hasExpertiseBData || (ticket.diagnosticReport && ticket.diagnosticReport.length > 0)) && (
+                        <div className="apple-card p-6 md:p-8 bg-purple-900/10 border-purple-500/30 space-y-5">
+                            <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 border-b border-purple-500/20 pb-4">
+                                <div className="flex items-center gap-3">
+                                    <div className="p-2.5 bg-purple-500/15 border border-purple-500/30 rounded-xl text-purple-400">
+                                        <DocumentMagnifyingGlassIcon className="w-5 h-5" />
+                                    </div>
+                                    <div>
+                                        <h3 className="text-xs md:text-sm font-black text-purple-300 uppercase tracking-wider flex items-center gap-2">
+                                            Expertise & Diagnostic Validés
+                                            {ticket.diagnosticSheetB?.entryCondition && (
+                                                <span className="px-2 py-0.5 bg-purple-500/20 text-purple-200 text-[8px] font-black uppercase rounded-md border border-purple-500/30">
+                                                    {ticket.diagnosticSheetB.entryCondition === EntryCondition.BOOT_DISPLAY ? "Scénario A (S'affiche)" :
+                                                     ticket.diagnosticSheetB.entryCondition === EntryCondition.BOOT_NO_DISPLAY ? "Scénario B (Pas d'affichage)" :
+                                                     "Scénario C (Ne démarre pas)"}
+                                                </span>
+                                            )}
+                                        </h3>
+                                        <p className="text-[10px] text-slate-400 font-bold uppercase mt-0.5">
+                                            {ticket.diagnosticCreatedAt ? `Validé le ${new Date(ticket.diagnosticCreatedAt).toLocaleString('fr-FR')}` : 'Rapport technique standardisé'}
+                                        </p>
+                                    </div>
+                                </div>
+                                <div className="flex items-center gap-2 flex-wrap">
+                                    <button
+                                        type="button"
+                                        onClick={() => setIsDiagnosticModalOpen(true)}
+                                        className="px-3 py-1.5 bg-purple-500/20 hover:bg-purple-500/30 text-purple-200 border border-purple-500/40 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all flex items-center gap-1.5"
+                                    >
+                                        <PencilIcon className="w-3.5 h-3.5" /> Modifier
+                                    </button>
+                                    <button 
+                                        onClick={() => { setPreviewType('standard'); setIsPreviewOpen(true); }}
+                                        className="px-3 py-1.5 bg-purple-600 hover:bg-purple-500 text-white rounded-xl text-[9px] font-black uppercase tracking-widest shadow-lg shadow-purple-900/40 transition-all flex items-center gap-1.5"
+                                    >
+                                        <PrinterIcon className="w-3.5 h-3.5" /> Rapport P2
+                                    </button>
                                     {hasExpertiseBData && (
                                         <button 
                                             onClick={() => { setPreviewType('standard'); setIsPreviewOpen(true); }}
-                                            className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-[9px] font-black uppercase tracking-widest shadow-lg shadow-indigo-900/40 transition-all flex items-center gap-2"
+                                            className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-[9px] font-black uppercase tracking-widest shadow-lg shadow-indigo-900/40 transition-all flex items-center gap-1.5"
                                         >
-                                            <ClipboardDocumentListIcon className="w-4 h-4" /> Expertise P3
+                                            <ClipboardDocumentListIcon className="w-3.5 h-3.5" /> Expertise P3
                                         </button>
                                     )}
                                 </div>
                             </div>
+
+                            {/* Tableau synthétique des composants vérifiés */}
+                            {ticket.diagnosticReport && ticket.diagnosticReport.length > 0 && (
+                                <div className="space-y-2">
+                                    <p className="text-[9px] font-black uppercase tracking-widest text-purple-300">Points de contrôle vérifiés ({ticket.diagnosticReport.length})</p>
+                                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+                                        {ticket.diagnosticReport.map((check, idx) => {
+                                            const isOk = check.status.toUpperCase().includes('OK') || check.status.toUpperCase().includes('FONCTIONNEL');
+                                            const isDefect = check.status.toUpperCase().includes('PROBLÈME') || check.status.toUpperCase().includes('DÉFAUT') || check.status.toUpperCase().includes('HS');
+                                            return (
+                                                <div key={idx} className="bg-black/30 p-2.5 rounded-xl border border-white/5 flex flex-col justify-between gap-1 text-xs">
+                                                    <div className="flex justify-between items-center gap-2">
+                                                        <span className="font-bold text-white truncate text-[11px]">{check.component}</span>
+                                                        <span className={`px-2 py-0.5 rounded text-[8px] font-black uppercase tracking-wider shrink-0 ${
+                                                            isOk ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30' :
+                                                            isDefect ? 'bg-red-500/20 text-red-300 border border-red-500/30' :
+                                                            'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                                                        }`}>
+                                                            {check.status}
+                                                        </span>
+                                                    </div>
+                                                    {check.notes && (
+                                                        <p className="text-[10px] text-slate-400 italic line-clamp-2">{check.notes}</p>
+                                                    )}
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                </div>
+                            )}
                             
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                 {ticket.customFields?.constatsParticuliers && (
                                     <div className="p-4 bg-black/40 rounded-2xl border border-white/5">
                                         <p className="text-[8px] font-black text-slate-500 uppercase mb-2">Observations Physiques</p>
@@ -1106,23 +1585,77 @@ const RepairDetail: React.FC<RepairDetailProps> = ({ ticket, onBack, onUpdate, r
                         <div className="space-y-2 md:space-y-3">
                             <div className="flex justify-between p-4 bg-white/5 rounded-2xl border border-white/5">
                                 <span className="text-sm font-bold text-apple-muted uppercase tracking-wider">Expertise & Diagnostic</span>
-                                <span className="text-sm font-mono font-black text-white">{(ticket.costs.diagnostic || 0).toLocaleString()} F</span>
+                                <span className="text-sm font-mono font-black text-white">{fin.diagnosticCost.toLocaleString()} F</span>
                             </div>
-                            {ticket.services.map((s, i) => (
-                                <div key={i} className="flex justify-between p-4 bg-white/5 rounded-2xl border border-white/5 group hover:border-apple-blue/30 transition-all">
-                                    <span className="text-sm font-black text-white uppercase tracking-tight truncate mr-2">{s.name}</span>
-                                    <span className="text-sm font-mono font-black text-white shrink-0">{s.price.toLocaleString()} F</span>
+                            {ticket.services && ticket.services.length > 0 ? (
+                                ticket.services.map((s, i) => (
+                                    <div key={i} className="flex justify-between p-4 bg-white/5 rounded-2xl border border-white/5 group hover:border-apple-blue/30 transition-all">
+                                        <span className="text-sm font-black text-white uppercase tracking-tight truncate mr-2">{s.name}</span>
+                                        <span className="text-sm font-mono font-black text-white shrink-0">{s.price.toLocaleString()} F</span>
+                                    </div>
+                                ))
+                            ) : fin.repairCost > 0 ? (
+                                <div className="flex justify-between p-4 bg-white/5 rounded-2xl border border-white/5 group hover:border-apple-blue/30 transition-all">
+                                    <span className="text-sm font-black text-white uppercase tracking-tight truncate mr-2">Forfait Réparation / Pièces & Main-d'œuvre</span>
+                                    <span className="text-sm font-mono font-black text-white shrink-0">{fin.repairCost.toLocaleString()} F</span>
                                 </div>
-                            ))}
+                            ) : null}
                         </div>
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-8 pt-8 border-t border-white/5">
-                            <div className="text-center p-4 bg-green-500/5 rounded-2xl border border-green-500/10">
-                                <p className="text-[8px] md:text-[9px] font-black text-green-500 uppercase mb-1">Acompte Perçu</p>
-                                <p className="text-xl md:text-2xl font-black text-green-400">{ticket.costs.advance.toLocaleString()} F</p>
+                        {fin.isInfacturable && (
+                            <div className="mt-6 p-4 rounded-2xl bg-rose-500/10 border border-rose-500/30 text-rose-300 space-y-2 animate-fade-in">
+                                <div className="flex items-center gap-2">
+                                    <span className="text-base">🚫</span>
+                                    <h4 className="text-xs font-black uppercase tracking-wider text-rose-300">
+                                        Fiche Annulée — Mentionnée comme Infacturable
+                                    </h4>
+                                </div>
+                                <p className="text-[11px] text-rose-200/90 leading-relaxed font-medium">
+                                    Cette fiche étant annulée, elle est automatiquement déclarée <strong>INFACTURABLE</strong>. En vertu des règles comptables de l'atelier, <strong>aucun fond n'est intégrable dans notre point</strong> (chiffre d'affaires, trésorerie et point de caisse = 0 F CFA).
+                                </p>
+                                {fin.rawAdvanceReceived > 0 && (
+                                    <div className="flex flex-wrap items-center gap-2 text-[10px] bg-black/40 px-3 py-1.5 rounded-xl border border-rose-500/20 font-mono">
+                                        <span className="text-rose-400 font-bold">Avance enregistrée au dépôt :</span>
+                                        <span className="line-through text-slate-400">{fin.rawAdvanceReceived.toLocaleString('fr-FR')} F CFA</span>
+                                        <span className="text-rose-300 font-bold">➔ 0 F CFA intégrable au point</span>
+                                    </div>
+                                )}
+                                {fin.rawTotalBilled > 0 && fin.rawAdvanceReceived === 0 && fin.wasPreviouslyPaidOrAdvanced && (
+                                    <div className="flex flex-wrap items-center gap-2 text-[10px] bg-black/40 px-3 py-1.5 rounded-xl border border-rose-500/20 font-mono">
+                                        <span className="text-rose-400 font-bold">Dossier préalablement soldé :</span>
+                                        <span className="line-through text-slate-400">{fin.rawTotalBilled.toLocaleString('fr-FR')} F CFA</span>
+                                        <span className="text-rose-300 font-bold">➔ 0 F CFA intégrable au point</span>
+                                    </div>
+                                )}
                             </div>
-                            <div className="text-center p-4 bg-apple-blue/10 rounded-2xl border border-apple-blue/20">
-                                <p className="text-[8px] md:text-[9px] font-black text-apple-blue uppercase mb-1">SOLDE À RÉGLER</p>
-                                <p className="text-xl md:text-3xl font-black text-white tracking-tighter">{balance.toLocaleString()} F</p>
+                        )}
+
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 md:gap-4 mt-8 pt-8 border-t border-white/5">
+                            <div className={`text-center p-4 rounded-2xl border ${fin.isInfacturable ? 'bg-rose-500/5 border-rose-500/20' : 'bg-white/5 border-white/10'}`}>
+                                <p className={`text-[8px] md:text-[9px] font-black uppercase mb-1 ${fin.isInfacturable ? 'text-rose-400' : 'text-slate-400'}`}>Total Facturable (Point)</p>
+                                <p className={`text-xl md:text-2xl font-black font-mono ${fin.isInfacturable ? 'text-rose-400' : 'text-white'}`}>
+                                    {totalCost.toLocaleString()} F
+                                </p>
+                                {fin.isInfacturable && (
+                                    <span className="text-[9px] font-bold text-rose-400/90 uppercase tracking-widest block mt-0.5">Infacturable</span>
+                                )}
+                            </div>
+                            <div className={`text-center p-4 rounded-2xl border ${fin.isInfacturable ? 'bg-rose-500/5 border-rose-500/20' : 'bg-green-500/5 border-green-500/10'}`}>
+                                <p className={`text-[8px] md:text-[9px] font-black uppercase mb-1 ${fin.isInfacturable ? 'text-rose-400' : 'text-green-500'}`}>Acompte Intégré au Point</p>
+                                <p className={`text-xl md:text-2xl font-black font-mono ${fin.isInfacturable ? 'text-rose-400' : 'text-green-400'}`}>
+                                    {fin.advanceReceived.toLocaleString()} F
+                                </p>
+                                {fin.isInfacturable && (
+                                    <span className="text-[9px] font-bold text-rose-400/90 uppercase tracking-widest block mt-0.5">0 F Encaissable</span>
+                                )}
+                            </div>
+                            <div className={`text-center p-4 rounded-2xl border ${fin.isInfacturable ? 'bg-rose-500/5 border-rose-500/20' : 'bg-apple-blue/10 border-apple-blue/20'}`}>
+                                <p className={`text-[8px] md:text-[9px] font-black uppercase mb-1 ${fin.isInfacturable ? 'text-rose-400' : 'text-apple-blue'}`}>SOLDE À RÉGLER</p>
+                                <p className={`text-xl md:text-2xl font-black font-mono tracking-tight ${fin.isInfacturable ? 'text-rose-400' : 'text-white'}`}>
+                                    {balance.toLocaleString()} F
+                                </p>
+                                {fin.isInfacturable && (
+                                    <span className="text-[9px] font-bold text-rose-400/90 uppercase tracking-widest block mt-0.5">Dossier Annulé</span>
+                                )}
                             </div>
                         </div>
                     </div>
@@ -1368,6 +1901,17 @@ const RepairDetail: React.FC<RepairDetailProps> = ({ ticket, onBack, onUpdate, r
                 ticket={ticket}
             />
 
+            <YangoDeliveryViewModal
+                isOpen={isYangoModalOpen}
+                onClose={() => setIsYangoModalOpen(false)}
+                receptionMode={ticket.receptionMode || 'depot_atelier'}
+                yangoDetails={ticket.yangoDetails}
+                ticketId={ticket.id}
+                clientName={ticket.client?.name}
+                clientPhone={ticket.client?.phone}
+            />
+
+
             <WaitingStatusModal
                 isOpen={isWaitingStatusModalOpen}
                 ticket={ticket}
@@ -1390,6 +1934,15 @@ const RepairDetail: React.FC<RepairDetailProps> = ({ ticket, onBack, onUpdate, r
                 />
             )}
 
+            {isDiagnosticModalOpen && (
+                <DiagnosticFormModal
+                    isOpen={isDiagnosticModalOpen}
+                    onClose={() => setIsDiagnosticModalOpen(false)}
+                    ticket={ticket}
+                    onSave={handleSaveDiagnostic}
+                />
+            )}
+
             {isStockUsageOpen && <StockUsageModal isOpen={isStockUsageOpen} onClose={() => setStockUsageOpen(false)} ticket={ticket} />}
             {isExternalPurchaseOpen && <ExternalPurchaseModal isOpen={isExternalPurchaseOpen} onClose={() => setExternalPurchaseOpen(false)} ticket={ticket} />}
             {isTechReportModalOpen && (
@@ -1408,6 +1961,7 @@ const RepairDetail: React.FC<RepairDetailProps> = ({ ticket, onBack, onUpdate, r
             <PreviewModal isOpen={isPreviewOpen} onClose={() => setIsPreviewOpen(false)} fileName={`TGS_DOSSIER_${ticket.id}.pdf`}>
                 {previewType === 'legal' ? <PrintableLegalFolder ticket={ticket} customFieldDefs={settings.customFields.ticket} /> :
                  previewType === 'p3_report' ? <PrintableTechnicalReportP3 ticket={ticket} /> :
+                 previewType === 'blockage_note' ? <PrintableBlockageNote ticket={ticket} /> :
                  previewType === 'technical_report' ? <PrintableTechnicalReport ticket={ticket} /> : (
                     <div className="flex flex-col">
                         {/* Option d'impression spécifique pour le rapport SAV s'il est présent */}
@@ -1422,8 +1976,8 @@ const RepairDetail: React.FC<RepairDetailProps> = ({ ticket, onBack, onUpdate, r
                             ticket.selectedLegalTemplate === 'bon' ? <PrintableEnterpriseBon ticket={ticket} /> : 
                             <PrintableLegalDocument ticket={ticket} template={ticket.selectedLegalTemplate || 'bon'} />
                         )}
-                        {ticket.printDiagnosticIntegrated && <PrintableDiagnosticReport ticket={ticket} />}
-                        {ticket.showExpertiseB && <PrintableDiagnosticSheetB ticket={ticket} />}
+                        {(ticket.printDiagnosticIntegrated || (ticket.diagnosticReport && ticket.diagnosticReport.length > 0) || (ticket.diagnosticImages && ticket.diagnosticImages.length > 0)) && <PrintableDiagnosticReport ticket={ticket} />}
+                        {(ticket.showExpertiseB || !!ticket.diagnosticSheetB) && <PrintableDiagnosticSheetB ticket={ticket} />}
                         {ticket.printFunctionalTests && <PrintableFunctionalTestsSheet ticket={ticket} />}
                         {ticket.printTechnicalReportP3 && <PrintableTechnicalReportP3 ticket={ticket} />}
                     </div>
@@ -1437,6 +1991,47 @@ const RepairDetail: React.FC<RepairDetailProps> = ({ ticket, onBack, onUpdate, r
                 allTickets={allTickets}
                 onConfirm={handleApplyNewTicketId}
             />
+
+            <TechnicalBlockageModal
+                isOpen={isBlockageModalOpen}
+                onClose={() => setIsBlockageModalOpen(false)}
+                ticket={ticket}
+                onSaveReport={async (updatedTicket) => {
+                    await onUpdate(updatedTicket);
+                }}
+                role={role}
+                onPrintNote={() => {
+                    setIsBlockageModalOpen(false);
+                    setPreviewType('blockage_note');
+                    setIsPreviewOpen(true);
+                }}
+            />
+
+            {/* Modal de génération de texte pour réseaux sociaux et site web */}
+            <SocialPostModal
+                isOpen={isSocialPostModalOpen}
+                onClose={() => setIsSocialPostModalOpen(false)}
+                ticket={ticket}
+            />
+
+            {/* Modal d'agrandissement d'une photo */}
+            {zoomedImage && (
+                <div 
+                    className="fixed inset-0 z-50 bg-black/90 backdrop-blur-md flex items-center justify-center p-4"
+                    onClick={() => setZoomedImage(null)}
+                >
+                    <div className="relative max-w-4xl max-h-[90vh] bg-zinc-950 p-2 rounded-2xl border border-white/20 shadow-2xl" onClick={e => e.stopPropagation()}>
+                        <button 
+                            type="button" 
+                            onClick={() => setZoomedImage(null)} 
+                            className="absolute -top-3 -right-3 w-8 h-8 rounded-full bg-red-600 text-white font-black text-sm flex items-center justify-center shadow-lg hover:bg-red-500 transition-all z-10"
+                        >
+                            &times;
+                        </button>
+                        <img src={zoomedImage} alt="Agrandissement" className="max-w-full max-h-[85vh] object-contain rounded-xl" />
+                    </div>
+                </div>
+            )}
         </div>
     );
 };

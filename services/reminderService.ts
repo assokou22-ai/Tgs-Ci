@@ -28,6 +28,43 @@ export const addDaysToDateStr = (dateStr: string, days: number): string => {
     return formatDateKey(date);
 };
 
+/**
+ * Format date or date range in clean French
+ * Single date: "Mercredi 30 Septembre 2026"
+ * Range: "du 1 janvier 2026 au 15 février 2026"
+ */
+export const formatPeriodDisplay = (startDateStr: string, endDateStr?: string): string => {
+    if (!startDateStr) return '';
+    if (!endDateStr || startDateStr === endDateStr) {
+        const [y, m, d] = startDateStr.split('-').map(Number);
+        const dateObj = new Date(y, m - 1, d);
+        return dateObj.toLocaleDateString('fr-FR', {
+            weekday: 'long',
+            day: 'numeric',
+            month: 'long',
+            year: 'numeric'
+        });
+    }
+
+    const [sy, sm, sd] = startDateStr.split('-').map(Number);
+    const [ey, em, ed] = endDateStr.split('-').map(Number);
+    const startObj = new Date(sy, sm - 1, sd);
+    const endObj = new Date(ey, em - 1, ed);
+
+    const startFormatted = startObj.toLocaleDateString('fr-FR', {
+        day: 'numeric',
+        month: 'long',
+        year: sy !== ey ? 'numeric' : undefined
+    });
+    const endFormatted = endObj.toLocaleDateString('fr-FR', {
+        day: 'numeric',
+        month: 'long',
+        year: 'numeric'
+    });
+
+    return `du ${startFormatted} au ${endFormatted}`;
+};
+
 // Convert stored completions in localStorage / cache
 const STORAGE_COMPLETED_KEY = 'tgs_daily_actions_completed';
 
@@ -82,6 +119,8 @@ export const generateWaitingStatusPhrase = (
 
 export interface DailyActionsResult {
     selectedDate: string;
+    selectedEndDate?: string;
+    isRange: boolean;
     actions: DailyActionItem[];
     overdueActions: DailyActionItem[];
     allFutureActions: DailyActionItem[];
@@ -100,14 +139,15 @@ export interface DailyActionsResult {
 /**
  * Main function that inspects all tickets, appointments, and engagements
  * and builds the complete 3-stage reminders (J-3, J-1, J-0 at 8h/heure fixée)
- * + calculates overdue actions.
+ * + calculates overdue actions. Supports single day or any custom date range (period & year).
  */
 export const calculateAllReminders = (
     tickets: RepairTicket[],
     appointments: Appointment[],
     engagements: EngagementSav[],
     targetDateStr: string = formatDateKey(new Date()),
-    completedIds: Record<string, string> = getCompletedActionIds()
+    completedIds: Record<string, string> = getCompletedActionIds(),
+    targetEndDateStr?: string
 ): DailyActionsResult => {
     const rawActions: DailyActionItem[] = [];
     const todayStr = formatDateKey(new Date());
@@ -315,6 +355,84 @@ export const calculateAllReminders = (
                 createdAt: ticket.createdAt
             });
         }
+
+        // D) Reprise suite à blocage technique (ex: serveurs Apple, NAND, commande pièce partenaire)
+        if (ticket.technicalBlockageReport?.calculatedRdvDate) {
+            const blockDate = ticket.technicalBlockageReport.calculatedRdvDate;
+            const blockTime = ticket.technicalBlockageReport.calculatedRdvTime || '10:00';
+            
+            // J-1
+            rawActions.push({
+                id: `ticket-${ticket.id}-blockage-j1`,
+                heure: '10 h 00',
+                clientName,
+                clientPhone,
+                appareil,
+                action: 'Préparer fin de blocage technique / Reprise travaux',
+                statut: completedIds[`ticket-${ticket.id}-blockage-j1`] ? 'FAIT' : 'A_FAIRE',
+                ticketId: ticket.id,
+                dateCible: addDaysToDateStr(blockDate, -1),
+                typeRappel: 'CONFIRMATION_J1',
+                details: `Dossier ${ticket.id} - Suite blocage technique (reprise prévue le ${blockDate})`,
+                createdAt: ticket.createdAt
+            });
+
+            // J-0 à 8h
+            rawActions.push({
+                id: `ticket-${ticket.id}-blockage-j0`,
+                heure: '08 h 00',
+                clientName,
+                clientPhone,
+                appareil,
+                action: `Reprise travaux suite blocage technique (${formatTimeDisplay(blockTime)})`,
+                statut: completedIds[`ticket-${ticket.id}-blockage-j0`] ? 'FAIT' : 'A_FAIRE',
+                ticketId: ticket.id,
+                dateCible: blockDate,
+                typeRappel: 'JOUR_J0_8H',
+                details: `Dossier ${ticket.id} - Date de reprise échue`,
+                createdAt: ticket.createdAt
+            });
+        }
+
+        // E) Nouveau RDV SAV
+        if (ticket.savNewRdvDate) {
+            const savDate = ticket.savNewRdvDate;
+            rawActions.push({
+                id: `ticket-${ticket.id}-sav-rdv-j0`,
+                heure: '08 h 30',
+                clientName,
+                clientPhone,
+                appareil,
+                action: 'Suivi SAV : Nouvelle restitution prévue',
+                statut: completedIds[`ticket-${ticket.id}-sav-rdv-j0`] ? 'FAIT' : 'A_FAIRE',
+                ticketId: ticket.id,
+                dateCible: savDate,
+                typeRappel: 'SAV_PROMESSE',
+                details: `Dossier ${ticket.id} - RDV SAV planifié le ${savDate}`,
+                createdAt: ticket.createdAt
+            });
+        }
+
+        // F) Dépôt / Enregistrement initial de la machine (utile pour l'historique et bilan de période)
+        if (ticket.createdAt) {
+            const intakeDate = ticket.createdAt.slice(0, 10);
+            if (intakeDate && intakeDate.length === 10) {
+                rawActions.push({
+                    id: `ticket-${ticket.id}-intake`,
+                    heure: '08 h 00',
+                    clientName,
+                    clientPhone,
+                    appareil,
+                    action: `Dépôt & Enregistrement Atelier (Fiche #${ticket.id})`,
+                    statut: 'FAIT',
+                    ticketId: ticket.id,
+                    dateCible: intakeDate,
+                    typeRappel: 'AUTRE',
+                    details: `Prise en charge : ${ticket.problemDescription ? ticket.problemDescription.slice(0, 75) : 'Diagnostic initial'}`,
+                    createdAt: ticket.createdAt
+                });
+            }
+        }
     });
 
     // 2. Process Appointments
@@ -465,12 +583,32 @@ export const calculateAllReminders = (
     });
     const uniqueActions = Array.from(actionMap.values());
 
-    // Filter for the selected date
-    const actionsForSelectedDate = uniqueActions
-        .filter(a => a.dateCible === targetDateStr)
-        .sort((a, b) => a.heure.localeCompare(b.heure));
+    // Determine if range or single date
+    const hasEndDate = Boolean(targetEndDateStr && targetEndDateStr.trim());
+    let effStartDate = targetDateStr;
+    let effEndDate = hasEndDate ? targetEndDateStr! : targetDateStr;
+    if (effEndDate < effStartDate) {
+        const temp = effStartDate;
+        effStartDate = effEndDate;
+        effEndDate = temp;
+    }
+    const isRange = effStartDate !== effEndDate;
 
-    // Overdue items: any item with dateCible < todayStr (or < targetDateStr if viewing past/future) and statut !== 'FAIT'
+    // Filter for the selected period or date
+    const actionsForPeriod = uniqueActions
+        .filter(a => {
+            if (isRange) {
+                return a.dateCible >= effStartDate && a.dateCible <= effEndDate;
+            }
+            return a.dateCible === effStartDate;
+        })
+        .sort((a, b) => {
+            const dateComp = a.dateCible.localeCompare(b.dateCible);
+            if (dateComp !== 0) return dateComp;
+            return a.heure.localeCompare(b.heure);
+        });
+
+    // Overdue items: any item with dateCible < todayStr and statut !== 'FAIT'
     const overdueActions = uniqueActions
         .filter(a => a.dateCible < todayStr && a.statut !== 'FAIT')
         .map(a => ({ ...a, statut: 'EN_RETARD' as DailyActionStatus, isOverdue: true }))
@@ -503,16 +641,18 @@ export const calculateAllReminders = (
         : `${overdueCount} action${overdueCount > 1 ? 's' : ''} en retard`;
 
     const allFutureActions = uniqueActions
-        .filter(a => a.dateCible > targetDateStr)
+        .filter(a => a.dateCible > effEndDate)
         .sort((a, b) => a.dateCible.localeCompare(b.dateCible));
 
-    const totalToday = actionsForSelectedDate.length;
-    const doneCount = actionsForSelectedDate.filter(a => a.statut === 'FAIT').length;
+    const totalToday = actionsForPeriod.length;
+    const doneCount = actionsForPeriod.filter(a => a.statut === 'FAIT').length;
     const todoCount = totalToday - doneCount;
 
     return {
-        selectedDate: targetDateStr,
-        actions: actionsForSelectedDate,
+        selectedDate: effStartDate,
+        selectedEndDate: isRange ? effEndDate : undefined,
+        isRange,
+        actions: actionsForPeriod,
         overdueActions,
         allFutureActions,
         stats: {

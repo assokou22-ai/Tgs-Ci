@@ -1,6 +1,7 @@
 import React, { useMemo } from 'react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import { Facture, Commande, RepairTicket } from '../types.ts';
+import { getTicketFinancialSummary } from '../utils/ticketHelpers.ts';
 
 interface RevenueAndUnpaidEvolutionChartProps {
   factures: Facture[];
@@ -108,9 +109,7 @@ const RevenueAndUnpaidEvolutionChart: React.FC<RevenueAndUnpaidEvolutionChartPro
             if (idx !== -1) {
                 // Unpaid tickets
                 if (t.status !== 'Annulé') {
-                    const totalCost = (t.costs?.diagnostic || 0) + (t.costs?.repair || 0);
-                    const advance = t.costs?.advance || 0;
-                    const due = totalCost - advance;
+                    const due = getTicketFinancialSummary(t).balanceDue;
                     if (due > 0) {
                         monthsData[idx].unpaid += due;
                     }

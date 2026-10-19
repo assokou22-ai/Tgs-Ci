@@ -2,7 +2,12 @@
 import React, { useState } from 'react';
 import Modal from './Modal.tsx';
 import { RepairTicket } from '../types.ts';
-import { generateWhatsAppMessage, generateSMSMessage, generateEmailLink } from '../services/notificationService.ts';
+import { 
+  generateWhatsAppMessage, 
+  generateSMSMessage, 
+  generateEmailLink, 
+  NotificationMessageType 
+} from '../services/notificationService.ts';
 import { PhoneIcon, ChatBubbleLeftRightIcon, BellIcon } from './icons.tsx';
 import { useToastContext } from '../context/ToastContext.tsx';
 import { formatDisplayPhone, formatWhatsAppPhone } from '../utils/formatters.ts';
@@ -17,7 +22,7 @@ interface NotificationModalProps {
 
 const NotificationModal: React.FC<NotificationModalProps> = ({ isOpen, onClose, ticket, onNotified }) => {
   const { showToast } = useToastContext();
-  const [selectedType, setSelectedType] = useState<'ready' | 'quote' | 'update'>('ready');
+  const [selectedType, setSelectedType] = useState<NotificationMessageType>('ready');
   const [phoneOverride, setPhoneOverride] = useState<string>(ticket?.client?.phone || ticket?.clientPhone || '');
 
   if (!isOpen) return null;
@@ -66,11 +71,14 @@ const NotificationModal: React.FC<NotificationModalProps> = ({ isOpen, onClose, 
     }
   };
 
-  const types = [
+  const types: { id: NotificationMessageType; label: string; desc: string }[] = [
     { id: 'ready', label: 'Appareil Prêt', desc: 'Informer que la machine est disponible et indiquer le solde à régler.' },
+    { id: 'two_options', label: '2 Options Claires (Apple / T2 / NAND)', desc: 'Dilemme : poursuivre la réparation à date ou remplacer la carte mère sous 72h chiffré.' },
+    { id: 'nand_voltages', label: 'Point Tensions & Puces NAND', desc: 'Tensions 12.6V / 3.3V / 5V OK, stockage NAND endommagé & avertissement perte de données.' },
+    { id: 'session_password', label: 'Mot de Passe Session Requis', desc: 'Mac redémarré. Apple exige l\'ancien mot de passe de session pour activation et tests complets.' },
     { id: 'quote', label: 'Devis / Prix', desc: 'Envoyer le montant des réparations pour validation du client.' },
     { id: 'update', label: 'En cours', desc: 'Rassurer le client sur l\'avancement des travaux dans l\'atelier.' },
-  ] as const;
+  ];
 
   return (
     <Modal isOpen={isOpen} onClose={onClose} containerClassName="bg-gray-800 rounded-2xl shadow-2xl w-full max-w-lg m-4 p-0 overflow-hidden border border-gray-700">

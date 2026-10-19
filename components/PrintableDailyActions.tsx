@@ -5,6 +5,8 @@ import { formatDisplayPhone } from '../utils/formatters.ts';
 
 interface PrintableDailyActionsProps {
     dateKey: string;
+    endDateKey?: string;
+    isRange?: boolean;
     formattedDate: string;
     actions: DailyActionItem[];
     stats: {
@@ -18,6 +20,8 @@ interface PrintableDailyActionsProps {
 
 export const PrintableDailyActions: React.FC<PrintableDailyActionsProps> = ({
     dateKey,
+    endDateKey,
+    isRange = false,
     formattedDate,
     actions,
     stats,
@@ -81,10 +85,10 @@ export const PrintableDailyActions: React.FC<PrintableDailyActionsProps> = ({
                         </h1>
                     </div>
                     <div style={{ fontSize: '9pt', fontWeight: '900', textTransform: 'uppercase', color: '#000', letterSpacing: '0.5px' }}>
-                        Tableau du Matin & Actions du Jour
+                        {isRange ? 'Planning & Actions de la Période' : 'Tableau du Matin & Actions du Jour'}
                     </div>
                     <div style={{ fontSize: '7.5pt', color: '#666', fontWeight: 'bold', textTransform: 'uppercase', marginTop: '2px' }}>
-                        Feuille de route opérationnelle atelier • Cocody Faya, Abidjan (Réf. {dateKey})
+                        Feuille de route opérationnelle atelier • Cocody Faya, Abidjan ({isRange && endDateKey ? `Période du ${dateKey} au ${endDateKey}` : `Réf. ${dateKey}`})
                     </div>
                 </div>
 
@@ -125,7 +129,7 @@ export const PrintableDailyActions: React.FC<PrintableDailyActionsProps> = ({
             {stats.overdueCount > 0 && filterCategory !== 'DONE' && (
                 <div style={{ position: 'relative', zIndex: 1, border: '1.5pt solid #dc2626', background: '#fff5f5', padding: '8px 12px', borderRadius: '1.5mm', marginBottom: '14px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                     <div style={{ fontSize: '8pt', color: '#991b1b', fontWeight: 'bold' }}>
-                        ⚠️ <strong>ATTENTION RETARDS :</strong> {stats.overdueCount} dossier(s) en attente dépassent le délai planifié. Priorité absolue de relance ce matin.
+                        ⚠️ <strong>ATTENTION RETARDS :</strong> {stats.overdueCount} dossier(s) en attente dépassent le délai planifié. Priorité absolue de relance.
                     </div>
                 </div>
             )}
@@ -135,7 +139,10 @@ export const PrintableDailyActions: React.FC<PrintableDailyActionsProps> = ({
                 <table className="zebra-actions" style={tableStyle}>
                     <thead>
                         <tr>
-                            <th style={{ ...thStyle, width: '65px', textAlign: 'center' }}>Heure</th>
+                            {isRange && (
+                                <th style={{ ...thStyle, width: '80px', textAlign: 'center' }}>Date</th>
+                            )}
+                            <th style={{ ...thStyle, width: '60px', textAlign: 'center' }}>Heure</th>
                             <th style={{ ...thStyle, width: '150px' }}>Client & Contact</th>
                             <th style={{ ...thStyle, width: '130px' }}>Appareil / Modèle</th>
                             <th style={thStyle}>Action Requise / Rappel</th>
@@ -150,8 +157,15 @@ export const PrintableDailyActions: React.FC<PrintableDailyActionsProps> = ({
 
                                 return (
                                     <tr key={item.id || idx} style={{ borderBottom: '0.8pt solid #ddd', backgroundColor: isOverdue ? '#fff8f8' : undefined }}>
+                                        {/* DATE SI PÉRIODE */}
+                                        {isRange && (
+                                            <td style={{ ...tdStyle, textAlign: 'center', fontFamily: 'monospace', fontWeight: 'bold', fontSize: '8pt', whiteSpace: 'nowrap' }}>
+                                                {item.dateCible ? new Date(item.dateCible + 'T00:00:00').toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric' }) : '-'}
+                                            </td>
+                                        )}
+
                                         {/* 1. HEURE */}
-                                        <td style={{ ...tdStyle, textAlign: 'center', fontFamily: 'monospace', fontWeight: '900', fontSize: '9pt' }}>
+                                        <td style={{ ...tdStyle, textAlign: 'center', fontFamily: 'monospace', fontWeight: '900', fontSize: '8.5pt' }}>
                                             <div style={{ padding: '2px 4px', border: '0.8pt solid #000', borderRadius: '1mm', display: 'inline-block', backgroundColor: isDone ? '#eee' : isOverdue ? '#fee2e2' : '#f0f9ff' }}>
                                                 {item.heure}
                                             </div>
@@ -221,7 +235,7 @@ export const PrintableDailyActions: React.FC<PrintableDailyActionsProps> = ({
                             })
                         ) : (
                             <tr>
-                                <td colSpan={5} style={{ padding: '40px', textAlign: 'center', color: '#888', fontStyle: 'italic', fontSize: '10pt' }}>
+                                <td colSpan={isRange ? 6 : 5} style={{ padding: '40px', textAlign: 'center', color: '#888', fontStyle: 'italic', fontSize: '10pt' }}>
                                     Aucune action répertoriée pour cette sélection.
                                 </td>
                             </tr>

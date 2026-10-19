@@ -11,7 +11,9 @@
         "status": { "type": "string" },
         "problemDescription": { "type": "string" },
         "macModel": { "type": "string" },
-        "macColor": { "type": "string" }
+        "macColor": { "type": "string" },
+        "isInfacturable": { "type": "boolean" },
+        "infacturableReason": { "type": "string" }
       },
       "required": ["id", "createdAt", "updatedAt", "status", "macModel"]
     },

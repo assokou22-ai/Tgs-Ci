@@ -4,6 +4,7 @@ import { ClockIcon, WrenchScrewdriverIcon, CurrencyEuroIcon, BanknotesIcon, Char
 import ProblemFrequencyChart from './ProblemFrequencyChart.tsx';
 import { SyncDiagnosticPanel } from './SyncDiagnosticPanel.tsx';
 import { motion } from 'framer-motion';
+import { getTicketFinancialSummary } from '../utils/ticketHelpers.ts';
 
 interface DashboardProps {
     tickets: RepairTicket[];
@@ -78,9 +79,8 @@ const Dashboard: React.FC<DashboardProps> = ({ tickets }) => {
         const completedTodayCount = ticketsCompletedToday.length;
         
         const revenueToday = ticketsCompletedToday.reduce((sum, ticket) => {
-            const diagnosticCost = ticket.costs?.diagnostic || 0;
-            const repairCost = ticket.costs?.repair || 0;
-            return sum + diagnosticCost + repairCost;
+            const ticketTotal = getTicketFinancialSummary(ticket).totalBilled;
+            return sum + ticketTotal;
         }, 0);
 
         const averageCostToday = completedTodayCount > 0 ? revenueToday / completedTodayCount : 0;

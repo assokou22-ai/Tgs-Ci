@@ -10,12 +10,34 @@ const mergeArrayByKey = <T extends Record<string, unknown>>(a: T[], b: T[], key:
 };
 
 const mergeRepairTicket = (local: RepairTicket, remote: RepairTicket): RepairTicket => {
-    const localDate = new Date(local.updatedAt || 0).getTime();
-    const remoteDate = new Date(remote.updatedAt || 0).getTime();
+    const localDate = new Date(local.updatedAt || local.createdAt || 0).getTime();
+    const remoteDate = new Date(remote.updatedAt || remote.createdAt || 0).getTime();
 
-    // La version la plus récente sert de base structurelle, avec un tie-breaker sur la richesse du contenu si les dates sont identiques
+    // Vérifier si l'un des deux côtés contient un diagnostic actif alors que l'autre est vierge
+    const remoteHasActiveDiag = Boolean(
+        (remote.diagnosticReport && remote.diagnosticReport.length > 0) ||
+        (remote.diagnosticSheetB && (
+            remote.diagnosticSheetB.visualInspection || 
+            (remote.diagnosticSheetB.tensionValues && remote.diagnosticSheetB.tensionValues.some(v => v.value)) ||
+            (remote.diagnosticSheetB.diagnosticPoints && remote.diagnosticSheetB.diagnosticPoints.some(p => p.notes)) ||
+            (remote.diagnosticSheetB.images && remote.diagnosticSheetB.images.length > 0)
+        )) ||
+        (remote.diagnosticImages && remote.diagnosticImages.length > 0)
+    );
+    const localHasActiveDiag = Boolean(
+        (local.diagnosticReport && local.diagnosticReport.length > 0) ||
+        (local.diagnosticSheetB && (
+            local.diagnosticSheetB.visualInspection || 
+            (local.diagnosticSheetB.tensionValues && local.diagnosticSheetB.tensionValues.some(v => v.value)) ||
+            (local.diagnosticSheetB.diagnosticPoints && local.diagnosticSheetB.diagnosticPoints.some(p => p.notes)) ||
+            (local.diagnosticSheetB.images && local.diagnosticSheetB.images.length > 0)
+        )) ||
+        (local.diagnosticImages && local.diagnosticImages.length > 0)
+    );
+
     let newest = local;
     let oldest = remote;
+
     if (remoteDate > localDate) {
         newest = remote;
         oldest = local;
@@ -23,14 +45,23 @@ const mergeRepairTicket = (local: RepairTicket, remote: RepairTicket): RepairTic
         newest = local;
         oldest = remote;
     } else {
-        const localLen = JSON.stringify(local).length;
-        const remoteLen = JSON.stringify(remote).length;
-        if (remoteLen >= localLen) {
+        // En cas d'égalité stricte des horodatages (ex: synchro initiale ou modifs quasi-simultanées)
+        if (remoteHasActiveDiag && !localHasActiveDiag) {
             newest = remote;
             oldest = local;
-        } else {
+        } else if (localHasActiveDiag && !remoteHasActiveDiag) {
             newest = local;
             oldest = remote;
+        } else {
+            const localLen = JSON.stringify(local).length;
+            const remoteLen = JSON.stringify(remote).length;
+            if (remoteLen >= localLen) {
+                newest = remote;
+                oldest = local;
+            } else {
+                newest = local;
+                oldest = remote;
+            }
         }
     }
 
@@ -38,19 +69,58 @@ const mergeRepairTicket = (local: RepairTicket, remote: RepairTicket): RepairTic
     const combinedHistory = mergeArrayByKey<HistoryEntry>(local.history || [], remote.history || [], 'timestamp')
         .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
 
+    // Diagnostic Sheet B : fusion intelligente en conservant les données les plus fraîches et complètes
+    let mergedSheetB = newest.diagnosticSheetB;
+    if (newest.diagnosticSheetB && oldest.diagnosticSheetB) {
+        mergedSheetB = {
+            ...oldest.diagnosticSheetB,
+            ...newest.diagnosticSheetB,
+            entryCondition: newest.diagnosticSheetB.entryCondition || oldest.diagnosticSheetB.entryCondition,
+            testDuration: newest.diagnosticSheetB.testDuration || oldest.diagnosticSheetB.testDuration || '',
+            repairDelay: newest.diagnosticSheetB.repairDelay || oldest.diagnosticSheetB.repairDelay || '',
+            visualInspection: newest.diagnosticSheetB.visualInspection || oldest.diagnosticSheetB.visualInspection || '',
+            tensionValues: (newest.diagnosticSheetB.tensionValues && newest.diagnosticSheetB.tensionValues.some(v => v.value))
+                ? newest.diagnosticSheetB.tensionValues
+                : (oldest.diagnosticSheetB.tensionValues || newest.diagnosticSheetB.tensionValues || []),
+            diagnosticPoints: (newest.diagnosticSheetB.diagnosticPoints && newest.diagnosticSheetB.diagnosticPoints.some(p => p.notes))
+                ? newest.diagnosticSheetB.diagnosticPoints
+                : (oldest.diagnosticSheetB.diagnosticPoints || newest.diagnosticSheetB.diagnosticPoints || []),
+            images: (newest.diagnosticSheetB.images && newest.diagnosticSheetB.images.length > 0)
+                ? newest.diagnosticSheetB.images
+                : (oldest.diagnosticSheetB.images || [])
+        };
+    } else if (!mergedSheetB) {
+        mergedSheetB = oldest.diagnosticSheetB;
+    }
+
+    // Diagnostic Report : la version renseignée fait toujours autorité pour éviter d'écraser un diagnostic avec un rapport vide
+    const mergedDiagnosticReport = (newest.diagnosticReport && newest.diagnosticReport.length > 0)
+        ? newest.diagnosticReport
+        : (oldest.diagnosticReport && oldest.diagnosticReport.length > 0 ? oldest.diagnosticReport : (newest.diagnosticReport || oldest.diagnosticReport || []));
+
+    // Images diagnostiques et images de réception : priorité à la version active qui contient des photos
+    const mergedDiagnosticImages = (newest.diagnosticImages && newest.diagnosticImages.length > 0)
+        ? newest.diagnosticImages
+        : (oldest.diagnosticImages && oldest.diagnosticImages.length > 0 ? oldest.diagnosticImages : []);
+
+    const mergedIntakeImages = (newest.intakeImages && newest.intakeImages.length > 0)
+        ? newest.intakeImages
+        : (oldest.intakeImages && oldest.intakeImages.length > 0 ? oldest.intakeImages : []);
+
     const merged: RepairTicket = {
         ...newest,
         history: combinedHistory,
-        // On conserve toujours les blocs de données les plus complets (si l'ancien a un diag et pas le nouveau)
-        diagnosticSheetB: newest.diagnosticSheetB || oldest.diagnosticSheetB,
-        diagnosticReport: (newest.diagnosticReport?.length || 0) >= (oldest.diagnosticReport?.length || 0) 
-            ? newest.diagnosticReport 
-            : oldest.diagnosticReport,
-        diagnosticImages: (newest.diagnosticImages?.length || 0) >= (oldest.diagnosticImages?.length || 0)
-            ? newest.diagnosticImages
-            : oldest.diagnosticImages,
+        diagnosticSheetB: mergedSheetB,
+        diagnosticReport: mergedDiagnosticReport,
+        diagnosticImages: mergedDiagnosticImages,
+        intakeImages: mergedIntakeImages,
+        printDiagnosticIntegrated: newest.printDiagnosticIntegrated || oldest.printDiagnosticIntegrated || Boolean(mergedDiagnosticReport.length > 0 || mergedDiagnosticImages.length > 0),
+        showExpertiseB: newest.showExpertiseB || oldest.showExpertiseB || Boolean(mergedSheetB),
         clientSignature: newest.clientSignature || oldest.clientSignature,
         attachments: mergeArrayByKey(local.attachments || [], remote.attachments || [], 'id'),
+        paymentsList: mergeArrayByKey(local.paymentsList || [], remote.paymentsList || [], 'id'),
+        payments: mergeArrayByKey(local.payments || [], remote.payments || [], 'id'),
+        ligneVentes: (newest.ligneVentes && newest.ligneVentes.length > 0) ? newest.ligneVentes : (oldest.ligneVentes || []),
         isReopenedAfterCancellation: newest.isReopenedAfterCancellation !== undefined ? newest.isReopenedAfterCancellation : oldest.isReopenedAfterCancellation,
         cancellationReturnDate: newest.cancellationReturnDate || oldest.cancellationReturnDate,
         cancellationReturnNotes: newest.cancellationReturnNotes || oldest.cancellationReturnNotes,
@@ -69,7 +139,13 @@ const mergeRepairTicket = (local: RepairTicket, remote: RepairTicket): RepairTic
     }
 
     merged.customFields = { ...(oldest.customFields || {}), ...(newest.customFields || {}) };
-    merged.client.customFields = { ...(oldest.client.customFields || {}), ...(newest.client.customFields || {}) };
+    merged.client = {
+        name: 'Client inconnu',
+        phone: '',
+        ...(oldest.client || {}),
+        ...(newest.client || {}),
+        customFields: { ...(oldest.client?.customFields || {}), ...(newest.client?.customFields || {}) }
+    };
 
     return merged;
 };

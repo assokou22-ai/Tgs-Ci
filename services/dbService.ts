@@ -157,6 +157,11 @@ export const dbDeleteTicket = async (id: string) => {
     const db = await getDB();
     await db.delete(TICKET_STORE, id);
     await addToSyncQueue('ticket', id, 'delete');
+    const upper = id.trim().toUpperCase();
+    if (upper && upper !== id) {
+        await db.delete(TICKET_STORE, upper);
+        await addToSyncQueue('ticket', upper, 'delete');
+    }
 };
 
 export const dbBulkPutTickets = async (tickets: RepairTicket[]) => {
@@ -475,7 +480,13 @@ export const dbDeleteStoredDocument = async (id: string) => {
 export const dbGet = async (storeName: string, id: string): Promise<Record<string, unknown> | null> => {
     try {
         const db = await getDB();
-        const item = await db.get(storeName as 'tickets', id);
+        let item = await db.get(storeName as 'tickets', id);
+        if (!item && storeName === 'tickets' && typeof id === 'string') {
+            const allTickets = await db.getAll('tickets');
+            const targetUpper = id.trim().toUpperCase();
+            const found = allTickets.find(t => (t.id || '').trim().toUpperCase() === targetUpper);
+            if (found) item = found;
+        }
         return (item as Record<string, unknown>) || null;
     } catch (err) {
         console.warn(`dbGet error on store ${storeName}:`, err);
@@ -484,7 +495,13 @@ export const dbGet = async (storeName: string, id: string): Promise<Record<strin
             console.log("Closed database or transaction error detected. Resetting dbPromise and retrying dbGet...");
             dbPromise = null;
             const db = await getDB();
-            const item = await db.get(storeName as 'tickets', id);
+            let item = await db.get(storeName as 'tickets', id);
+            if (!item && storeName === 'tickets' && typeof id === 'string') {
+                const allTickets = await db.getAll('tickets');
+                const targetUpper = id.trim().toUpperCase();
+                const found = allTickets.find(t => (t.id || '').trim().toUpperCase() === targetUpper);
+                if (found) item = found;
+            }
             return (item as Record<string, unknown>) || null;
         }
         throw err;

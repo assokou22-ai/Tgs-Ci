@@ -3,6 +3,7 @@ import { RepairTicket } from '../types.ts';
 import { useAppSettings } from '../hooks/useAppSettings.ts';
 import { AppleLogo } from './icons.tsx';
 import SecureQrCode from './SecureQrCode.tsx';
+import { getTicketFinancialSummary } from '../utils/ticketHelpers.ts';
 
 interface PrintableEnterpriseBonProps {
   ticket: RepairTicket;
@@ -23,11 +24,12 @@ const PrintableEnterpriseBon: React.FC<PrintableEnterpriseBonProps> = ({ ticket 
   
   const cf = ticket.customFields || {};
 
-  const diagCost = ticket.costs?.diagnostic || 0;
-  const servicesTotal = ticket.services?.reduce((sum, s) => sum + s.price, 0) || 0;
-  const total = diagCost + servicesTotal;
-  const advance = ticket.costs?.advance || 0;
-  const balance = Math.abs(total - advance);
+  const fin = getTicketFinancialSummary(ticket);
+  const diagCost = fin.diagnosticCost;
+  const servicesTotal = fin.repairCost;
+  const total = fin.totalBilled;
+  const advance = fin.advanceReceived;
+  const balance = fin.balanceDue;
 
   const labelStyle: React.CSSProperties = { fontSize: '7pt', fontWeight: 'bold', color: '#666', textTransform: 'uppercase' as const, letterSpacing: '0.05em' };
   const valueStyle: React.CSSProperties = { fontSize: '9pt', fontWeight: '900', color: '#000' };
@@ -105,8 +107,11 @@ const PrintableEnterpriseBon: React.FC<PrintableEnterpriseBonProps> = ({ ticket 
                       <div style={valueStyle}>{ticket.macModel || 'APPLE MACBOOK'}</div>
                   </div>
                   <div>
-                      <div style={labelStyle}>N° Modèle (AXXXX)</div>
-                      <div style={{ ...valueStyle, fontFamily: 'monospace' }}>{ticket.modelNumber || cf.modelA || 'NON SPÉCIFIÉ'}</div>
+                      <div style={labelStyle}>N° Modèle (AXXXX) / EMC</div>
+                      <div style={{ ...valueStyle, fontFamily: 'monospace' }}>
+                        {ticket.modelNumber || cf.modelA || 'NON SPÉCIFIÉ'}
+                        {(ticket.emc || cf.emc) ? ` · ${ticket.emc || cf.emc}` : ''}
+                      </div>
                   </div>
                   <div style={{ gridColumn: 'span 2' }}>
                       <div style={labelStyle}>Numéro de Série (S/N)</div>
@@ -211,15 +216,39 @@ const PrintableEnterpriseBon: React.FC<PrintableEnterpriseBonProps> = ({ ticket 
                       <td style={{ padding: '1mm 0' }}>Forfait Diagnostic & Recherche de Pannes Micro-électronique (Carte Logique)</td>
                       <td style={{ textAlign: 'right', fontWeight: 'bold', padding: '1mm 0' }}>{diagCost.toLocaleString()}</td>
                   </tr>
-                  {ticket.services && ticket.services.map((s) => (
-                      <tr key={s.id} style={{ borderBottom: '0.3pt dashed #EEE' }}>
-                          <td style={{ padding: '1mm 0' }}>{s.name}</td>
-                          <td style={{ textAlign: 'right', fontWeight: 'bold', padding: '1mm 0' }}>{s.price.toLocaleString()}</td>
+                  {ticket.services && ticket.services.length > 0 ? (
+                      ticket.services.map((s) => (
+                          <tr key={s.id} style={{ borderBottom: '0.3pt dashed #EEE' }}>
+                              <td style={{ padding: '1mm 0' }}>{s.name}</td>
+                              <td style={{ textAlign: 'right', fontWeight: 'bold', padding: '1mm 0' }}>{s.price.toLocaleString()}</td>
+                          </tr>
+                      ))
+                  ) : servicesTotal > 0 ? (
+                      <tr style={{ borderBottom: '0.3pt dashed #EEE' }}>
+                          <td style={{ padding: '1mm 0' }}>Forfait Réparation / Pièces & Main-d'œuvre</td>
+                          <td style={{ textAlign: 'right', fontWeight: 'bold', padding: '1mm 0' }}>{servicesTotal.toLocaleString()}</td>
                       </tr>
-                  ))}
+                  ) : null}
+                  {fin.isInfacturable && (
+                      <tr>
+                          <td colSpan={2} style={{ padding: '2mm', backgroundColor: '#fff5f5', border: '0.5pt solid #feb2b2', textAlign: 'center' }}>
+                              <div style={{ fontSize: '7.5pt', fontWeight: '900', color: '#c53030' }}>
+                                  🚫 CONTRAT / BON ANNULÉ — MENTION : INFACTURABLE
+                              </div>
+                              <div style={{ fontSize: '6.5pt', color: '#742a2a', marginTop: '0.2mm' }}>
+                                  Dossier annulé : aucun fond n'est intégrable dans notre point (0 F CFA comptabilisé).
+                                  {fin.rawAdvanceReceived > 0 && ` Avance déclarée de ${fin.rawAdvanceReceived.toLocaleString()} F CFA exclue de notre point.`}
+                              </div>
+                          </td>
+                      </tr>
+                  )}
                   <tr style={{ fontWeight: '900', borderTop: '1pt solid #000' }}>
-                      <td style={{ padding: '1.5mm 0', textTransform: 'uppercase' }}>Montant Total Estimé & Validé</td>
-                      <td style={{ textAlign: 'right', padding: '1.5mm 0', fontSize: '10pt', color: '#0071e3' }}>{total.toLocaleString()} F</td>
+                      <td style={{ padding: '1.5mm 0', textTransform: 'uppercase' }}>
+                          {fin.isInfacturable ? 'Montant Facturable (Au Point)' : 'Montant Total Estimé & Validé'}
+                      </td>
+                      <td style={{ textAlign: 'right', padding: '1.5mm 0', fontSize: '10pt', color: fin.isInfacturable ? '#c53030' : '#0071e3' }}>
+                          {total.toLocaleString()} F {fin.isInfacturable ? '(INFACTURABLE)' : ''}
+                      </td>
                   </tr>
                   {advance > 0 && (
                       <tr style={{ fontSize: '8pt', color: '#666' }}>
@@ -227,9 +256,11 @@ const PrintableEnterpriseBon: React.FC<PrintableEnterpriseBonProps> = ({ ticket 
                           <td style={{ textAlign: 'right', padding: '1mm 0' }}>-{advance.toLocaleString()}</td>
                       </tr>
                   )}
-                  <tr style={{ fontWeight: '900', background: '#F4F4F4', borderTop: '1pt solid #000' }}>
+                  <tr style={{ fontWeight: '900', background: fin.isInfacturable ? '#fee2e2' : '#F4F4F4', borderTop: '1pt solid #000' }}>
                       <td style={{ padding: '2mm', textTransform: 'uppercase' }}>Reste à Payer à la Livraison</td>
-                      <td style={{ textAlign: 'right', padding: '2mm', fontSize: '10pt', color: '#000' }}>{balance.toLocaleString()} F</td>
+                      <td style={{ textAlign: 'right', padding: '2mm', fontSize: '10pt', color: fin.isInfacturable ? '#991b1b' : '#000' }}>
+                          {balance.toLocaleString()} F {fin.isInfacturable ? '(ANNULÉ)' : ''}
+                      </td>
                   </tr>
               </tbody>
           </table>

@@ -5,8 +5,11 @@ import { PencilIcon, PrinterIcon, MacbookIcon, TrashIcon, ClockIcon, CalendarDay
 import PaginationControls from './PaginationControls.tsx';
 import ListItemSkeleton from './skeletons/ListItemSkeleton.tsx';
 import { motion } from 'framer-motion';
+import { Share2 } from 'lucide-react';
 import WhatsAppShareModal from './WhatsAppShareModal.tsx';
+import SocialPostModal from './SocialPostModal.tsx';
 import { getStatusStyle } from '../utils/statusStyles.ts';
+import { getTicketFinancialSummary } from '../utils/ticketHelpers.ts';
 
 interface RepairListProps {
   title: string;
@@ -21,17 +24,19 @@ interface RepairListProps {
 
 const PAGE_SIZE = 8;
 
-const RepairItem = memo(({ ticket, onSelect, onEdit, onPrint, onDelete, onWhatsApp, nowTimeVal }: { 
+const RepairItem = memo(({ ticket, onSelect, onEdit, onPrint, onDelete, onWhatsApp, onSocial, nowTimeVal }: { 
     ticket: RepairTicket; 
     onSelect: (t: RepairTicket) => void; 
     onEdit: (t: RepairTicket) => void; 
     onPrint?: (t: RepairTicket, type?: 'standard' | 'diagnostic') => void; 
     onDelete?: (id: string) => void;
     onWhatsApp: (t: RepairTicket) => void;
+    onSocial?: (t: RepairTicket) => void;
     nowTimeVal: number;
 }) => {
-    const total = (ticket.costs.diagnostic || 0) + (ticket.costs.repair || 0);
-    const balance = Math.abs(total - (ticket.costs.advance || 0));
+    const fin = getTicketFinancialSummary(ticket);
+    const total = fin.totalBilled;
+    const balance = fin.balanceDue;
     const createdAt = new Date(ticket.createdAt);
 
     // Détection de statut stagnant (> 5 jours sans changement)
@@ -69,7 +74,7 @@ const RepairItem = memo(({ ticket, onSelect, onEdit, onPrint, onDelete, onWhatsA
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             onClick={() => onSelect(ticket)} 
-            className={`p-5 cursor-pointer transition-all group relative border-l-4 flex gap-4 ${
+            className={`p-4 sm:p-5 cursor-pointer transition-all group relative border-l-4 flex flex-col sm:flex-row gap-3 sm:gap-4 ${
                 isStale 
                 ? 'bg-red-950/20 hover:bg-red-950/30 border-red-600 animate-pulse shadow-xl shadow-red-950/25' 
                 : isToday
@@ -77,13 +82,18 @@ const RepairItem = memo(({ ticket, onSelect, onEdit, onPrint, onDelete, onWhatsA
                 : `hover:bg-white/[0.03] ${borderStyleClass} hover:border-apple-blue`
             }`}
         >
-            <div className="flex flex-col items-center gap-1 pt-1 shrink-0">
-                <button onClick={(e) => { e.stopPropagation(); onEdit(ticket); }} className="p-3 hover:bg-white/10 rounded-xl text-apple-muted hover:text-white transition-all min-h-[44px] min-w-[44px] flex items-center justify-center" title="Modifier"><PencilIcon className="w-5 h-5"/></button>
-                <button onClick={(e) => { e.stopPropagation(); onWhatsApp(ticket); }} className="p-3 hover:bg-emerald-600/20 rounded-xl text-apple-muted hover:text-emerald-400 transition-all min-h-[44px] min-w-[44px] flex items-center justify-center" title="WhatsApp"><WhatsAppIcon className="w-5 h-5"/></button>
-                <button onClick={(e) => { e.stopPropagation(); onPrint?.(ticket, 'standard'); }} className="p-3 hover:bg-white/10 rounded-xl text-apple-muted hover:text-white transition-all min-h-[44px] min-w-[44px] flex items-center justify-center" title="Imprimer Fiche"><PrinterIcon className="w-5 h-5"/></button>
-                <button onClick={(e) => { e.stopPropagation(); onPrint?.(ticket, 'diagnostic'); }} className="p-3 hover:bg-purple-600/20 rounded-xl text-apple-muted hover:text-purple-400 transition-all min-h-[44px] min-w-[44px] flex items-center justify-center" title="Imprimer Diagnostic"><ClipboardDocumentCheckIcon className="w-5 h-5"/></button>
+            <div className="flex flex-row sm:flex-col items-center justify-start gap-1 pt-2 sm:pt-1 border-t sm:border-t-0 sm:border-r border-white/5 sm:pr-2.5 shrink-0 order-last sm:order-first flex-wrap sm:flex-nowrap">
+                <button onClick={(e) => { e.stopPropagation(); onEdit(ticket); }} className="p-2.5 sm:p-3 hover:bg-white/10 rounded-xl text-apple-muted hover:text-white transition-all min-h-[44px] min-w-[44px] flex items-center justify-center cursor-pointer" title="Modifier"><PencilIcon className="w-5 h-5"/></button>
+                <button onClick={(e) => { e.stopPropagation(); onWhatsApp(ticket); }} className="p-2.5 sm:p-3 hover:bg-emerald-600/20 rounded-xl text-apple-muted hover:text-emerald-400 transition-all min-h-[44px] min-w-[44px] flex items-center justify-center cursor-pointer" title="WhatsApp"><WhatsAppIcon className="w-5 h-5"/></button>
+                {onSocial && (
+                    <button onClick={(e) => { e.stopPropagation(); onSocial(ticket); }} className="p-2.5 sm:p-3 hover:bg-purple-600/20 rounded-xl text-apple-muted hover:text-purple-400 transition-all min-h-[44px] min-w-[44px] flex items-center justify-center cursor-pointer" title="Générer texte réseaux sociaux & site web">
+                        <Share2 className="w-5 h-5"/>
+                    </button>
+                )}
+                <button onClick={(e) => { e.stopPropagation(); onPrint?.(ticket, 'standard'); }} className="p-2.5 sm:p-3 hover:bg-white/10 rounded-xl text-apple-muted hover:text-white transition-all min-h-[44px] min-w-[44px] flex items-center justify-center cursor-pointer" title="Imprimer Fiche"><PrinterIcon className="w-5 h-5"/></button>
+                <button onClick={(e) => { e.stopPropagation(); onPrint?.(ticket, 'diagnostic'); }} className="p-2.5 sm:p-3 hover:bg-purple-600/20 rounded-xl text-apple-muted hover:text-purple-400 transition-all min-h-[44px] min-w-[44px] flex items-center justify-center cursor-pointer" title="Imprimer Diagnostic"><ClipboardDocumentCheckIcon className="w-5 h-5"/></button>
                 {onDelete && (
-                    <button onClick={(e) => { e.stopPropagation(); onDelete(ticket.id); }} className="p-3 hover:bg-red-600/20 rounded-xl text-apple-muted hover:text-red-400 transition-all min-h-[44px] min-w-[44px] flex items-center justify-center" title="Supprimer">
+                    <button onClick={(e) => { e.stopPropagation(); onDelete(ticket.id); }} className="p-2.5 sm:p-3 hover:bg-red-600/20 rounded-xl text-apple-muted hover:text-red-400 transition-all min-h-[44px] min-w-[44px] flex items-center justify-center cursor-pointer" title="Supprimer">
                         <TrashIcon className="w-5 h-5"/>
                     </button>
                 )}
@@ -98,6 +108,11 @@ const RepairItem = memo(({ ticket, onSelect, onEdit, onPrint, onDelete, onWhatsA
                                 <span className={`w-1.5 h-1.5 rounded-full ${statusStyle.dot}`}></span>
                                 {ticket.status}
                             </span>
+                            {fin.isInfacturable && (
+                                <span className="px-2 py-0.5 rounded bg-rose-500/20 text-rose-300 border border-rose-500/30 text-[8px] font-black uppercase tracking-wider flex items-center gap-1" title={fin.infacturableNotice}>
+                                    🚫 INFACTURABLE (0 F AU POINT)
+                                </span>
+                            )}
                             {isToday && (
                                 <span className="px-2 py-0.5 bg-apple-blue text-white text-[8px] font-black uppercase rounded shadow-lg shadow-apple-blue/30 tracking-widest flex items-center gap-1">
                                     <span className="w-1 h-1 rounded-full bg-white animate-ping"></span> DU JOUR ⚡
@@ -108,18 +123,47 @@ const RepairItem = memo(({ ticket, onSelect, onEdit, onPrint, onDelete, onWhatsA
                                     STAGNANT ⚠️
                                 </span>
                             )}
+                            {ticket.technicalBlockageReport && (
+                                <span className={`px-2 py-0.5 rounded text-[8px] font-black uppercase tracking-wider border flex items-center gap-1 ${
+                                    ticket.technicalBlockageReport.status === 'ACCEPTEE' ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40' :
+                                    ticket.technicalBlockageReport.status === 'CLIENT_INFORME' ? 'bg-blue-500/20 text-blue-300 border-blue-500/40' :
+                                    ticket.technicalBlockageReport.status === 'REFUSEE' ? 'bg-red-500/20 text-red-300 border-red-500/40' :
+                                    'bg-amber-500/20 text-amber-300 border-amber-500/40'
+                                }`}>
+                                    ⏳ +{ticket.technicalBlockageReport.requestedDays}J RALLONGE
+                                </span>
+                            )}
                         </div>
                         <p className={`font-black text-sm truncate uppercase tracking-tight ${isStale ? 'text-red-400 font-extrabold' : 'text-white'}`}>{ticket.client.name}</p>
                     </div>
-                    {balance > 0 && (
-                        <span className={`text-[10px] font-black px-2.5 py-1 rounded-full border shrink-0 ${
-                            (total - (ticket.costs.advance || 0)) < 0 
-                            ? 'text-emerald-400 bg-emerald-400/10 border-emerald-400/20' 
-                            : 'text-red-400 bg-red-400/10 border-red-400/20'
-                        }`}>
+                    {fin.isInfacturable ? (
+                        <div className="flex flex-col items-end gap-0.5 shrink-0">
+                            <span 
+                                className="text-[10px] font-black px-2.5 py-1 rounded-full border text-rose-400 bg-rose-500/15 border-rose-500/30 uppercase tracking-wider font-mono shadow-sm"
+                                title={fin.infacturableNotice || "Fiche annulée — Infacturable : aucun fond intégrable au point"}
+                            >
+                                🚫 Infacturable
+                            </span>
+                            {fin.rawAdvanceReceived > 0 && (
+                                <span className="text-[8px] font-bold text-rose-300/80 font-mono" title="Avance versée mais exclue de notre point comptable">
+                                    Avance {fin.rawAdvanceReceived.toLocaleString()} F (0 F au point)
+                                </span>
+                            )}
+                            {fin.rawTotalBilled > 0 && fin.rawAdvanceReceived === 0 && fin.wasPreviouslyPaidOrAdvanced && (
+                                <span className="text-[8px] font-bold text-rose-300/80 font-mono">
+                                    Soldé (0 F au point)
+                                </span>
+                            )}
+                        </div>
+                    ) : balance > 0 ? (
+                        <span className="text-[10px] font-black px-2.5 py-1 rounded-full border shrink-0 text-amber-400 bg-amber-400/10 border-amber-400/20 font-mono">
                           {balance.toLocaleString()} F
                         </span>
-                    )}
+                    ) : total > 0 ? (
+                        <span className="text-[10px] font-black px-2 py-0.5 rounded-full border shrink-0 text-emerald-400 bg-emerald-400/10 border-emerald-400/20">
+                          Soldé
+                        </span>
+                    ) : null}
                 </div>
                 
                 <div className="flex justify-between items-end">
@@ -150,6 +194,7 @@ const RepairItem = memo(({ ticket, onSelect, onEdit, onPrint, onDelete, onWhatsA
 const RepairList: React.FC<RepairListProps> = ({ title, tickets, onSelectTicket, onEditTicket, onDeleteTicket, statusToShow, loading, onPrintTicket }) => {
   const [currentPage, setCurrentPage] = useState(1);
   const [waTicket, setWaTicket] = useState<RepairTicket | null>(null);
+  const [socialTicket, setSocialTicket] = useState<RepairTicket | null>(null);
   const [nowTimeVal, setNowTimeVal] = useState<number>(0);
 
   const [prioritizeToday, setPrioritizeToday] = useState(() => {
@@ -270,6 +315,7 @@ const RepairList: React.FC<RepairListProps> = ({ title, tickets, onSelectTicket,
                         onPrint={onPrintTicket} 
                         onDelete={onDeleteTicket} 
                         onWhatsApp={setWaTicket}
+                        onSocial={setSocialTicket}
                         nowTimeVal={nowTimeVal}
                     />
                 ))}
@@ -286,6 +332,14 @@ const RepairList: React.FC<RepairListProps> = ({ title, tickets, onSelectTicket,
             isOpen={!!waTicket}
             onClose={() => setWaTicket(null)}
             ticket={waTicket}
+          />
+      )}
+
+      {socialTicket && (
+          <SocialPostModal
+            isOpen={!!socialTicket}
+            onClose={() => setSocialTicket(null)}
+            ticket={socialTicket}
           />
       )}
     </div>

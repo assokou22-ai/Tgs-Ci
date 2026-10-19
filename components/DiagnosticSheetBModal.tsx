@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import Modal from './Modal.tsx';
 import { RepairTicket, DiagnosticSheetBData, DiagnosticPoint, TensionValue, EntryCondition } from '../types.ts';
-import { PlusCircleIcon, TrashIcon, ExclamationTriangleIcon, CloudArrowDownIcon, SparklesIcon, ArrowPathIcon } from './icons.tsx';
+import { PlusCircleIcon, TrashIcon, ExclamationTriangleIcon, CloudArrowDownIcon, SparklesIcon, ArrowPathIcon, CameraIcon, PhotoIcon } from './icons.tsx';
 import { useToastContext } from '../context/ToastContext.tsx';
 import { compressImageBase64 } from '../utils/imageCompression.ts';
 
@@ -56,6 +56,7 @@ const DiagnosticSheetBModal: React.FC<DiagnosticSheetBModalProps> = ({ isOpen, o
   const [deviceType, setDeviceType] = useState<'pro' | 'air'>(ticket.macModel.toLowerCase().includes('air') ? 'air' : 'pro');
   const [isGeneratingAi, setIsGeneratingAi] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const cameraInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (isOpen) {
@@ -113,7 +114,7 @@ const DiagnosticSheetBModal: React.FC<DiagnosticSheetBModalProps> = ({ isOpen, o
         const reader = new FileReader();
         reader.onload = async (event) => {
             const base64 = event.target?.result as string;
-            const compressed = await compressImageBase64(base64);
+            const compressed = await compressImageBase64(base64, 1024, 1024, 0.68);
             setData(prev => ({
                 ...prev, 
                 images: [...(prev.images || []), compressed].slice(0, 6)
@@ -346,19 +347,34 @@ const DiagnosticSheetBModal: React.FC<DiagnosticSheetBModalProps> = ({ isOpen, o
           </div>
 
           <div className="bg-gray-900/30 p-4 rounded-lg border border-gray-700">
-              <div className="flex justify-between items-center mb-4">
-                  <h3 className="text-sm font-bold text-gray-400 uppercase flex items-center gap-2">
-                      <CloudArrowDownIcon className="w-5 h-5 text-purple-400"/>
-                      Photos Expertise Carte Mère ({data.images?.length || 0}/6)
-                  </h3>
-                  <button 
-                    type="button"
-                    onClick={() => fileInputRef.current?.click()}
-                    className="px-3 py-1.5 bg-purple-600 hover:bg-purple-500 text-white text-xs font-bold rounded-md transition-all"
-                  >
-                      Capturer des preuves
-                  </button>
-                  <input type="file" ref={fileInputRef} onChange={handleImageUpload} multiple accept="image/*" className="hidden" />
+              <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 mb-4">
+                  <div>
+                      <h3 className="text-sm font-bold text-gray-400 uppercase flex items-center gap-2">
+                          <CloudArrowDownIcon className="w-5 h-5 text-purple-400"/>
+                          Photos Expertise Carte Mère ({data.images?.length || 0}/6)
+                      </h3>
+                      <p className="text-[10px] text-gray-500">Microscopie, oxydation, composants brûlés</p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                      <input type="file" ref={cameraInputRef} onChange={handleImageUpload} accept="image/*" capture="environment" className="hidden" />
+                      <input type="file" ref={fileInputRef} onChange={handleImageUpload} multiple accept="image/*" className="hidden" />
+                      <button 
+                        type="button"
+                        onClick={() => cameraInputRef.current?.click()}
+                        disabled={(data.images?.length || 0) >= 6}
+                        className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white text-xs font-bold rounded-md transition-all flex items-center gap-1.5"
+                      >
+                          <CameraIcon className="w-3.5 h-3.5" /> Caméra
+                      </button>
+                      <button 
+                        type="button"
+                        onClick={() => fileInputRef.current?.click()}
+                        disabled={(data.images?.length || 0) >= 6}
+                        className="px-3 py-1.5 bg-purple-600 hover:bg-purple-500 disabled:opacity-40 text-white text-xs font-bold rounded-md transition-all flex items-center gap-1.5"
+                      >
+                          <PhotoIcon className="w-3.5 h-3.5" /> Galerie
+                      </button>
+                  </div>
               </div>
 
               {(data.images?.length || 0) > 0 ? (

@@ -1,6 +1,7 @@
 import React, { useMemo } from 'react';
 import { RepairTicket, RepairStatus } from '../types.ts';
 import Modal from './Modal.tsx';
+import { getTicketFinancialSummary } from '../utils/ticketHelpers.ts';
 
 interface GlobalPerformanceModalProps {
   isOpen: boolean;
@@ -17,9 +18,7 @@ const StatCard: React.FC<{ title: string; value: string | number; description?: 
 );
 
 const getTicketTotal = (ticket: RepairTicket) => {
-    const diagnosticCost = ticket.costs?.diagnostic || 0;
-    const repairCost = ticket.costs?.repair || 0;
-    return diagnosticCost + repairCost;
+    return getTicketFinancialSummary(ticket).totalBilled;
 };
 
 const GlobalPerformanceModal: React.FC<GlobalPerformanceModalProps> = ({ isOpen, onClose, tickets }) => {

@@ -1,6 +1,7 @@
 import React, { useRef, useState, useEffect } from 'react';
 import { RepairTicket } from '../types.ts';
 import { AppleLogo } from './icons.tsx';
+import { getTicketFinancialSummary } from '../utils/ticketHelpers.ts';
 
 interface PrintableDiagnosticSheetBProps {
   ticket: RepairTicket;
@@ -8,8 +9,9 @@ interface PrintableDiagnosticSheetBProps {
 
 const PrintableDiagnosticSheetB: React.FC<PrintableDiagnosticSheetBProps> = ({ ticket }) => {
   const data = ticket.diagnosticSheetB;
-  const totalCost = (ticket.costs?.diagnostic || 0) + (ticket.costs?.repair || 0);
-  const balance = totalCost - (ticket.costs?.advance || 0);
+  const fin = getTicketFinancialSummary(ticket);
+  const totalCost = fin.totalBilled;
+  const balance = fin.balanceDue;
 
   const pageRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
@@ -384,15 +386,15 @@ const PrintableDiagnosticSheetB: React.FC<PrintableDiagnosticSheetBProps> = ({ t
                   <div style={{ fontSize: cfg.idSubSize, color: '#334155' }}>Durée Expertise : <strong style={{ color: '#0f172a' }}>{data.testDuration || 'N/A'}</strong></div>
                   <div style={{ fontSize: cfg.idSubSize, color: '#334155', marginTop: '0.3mm' }}>Délai Réparation : <strong style={{ color: '#0f172a' }}>{data.repairDelay || 'N/A'}</strong></div>
               </div>
-              <div style={{ border: '0.6pt solid #bbf7d0', borderRadius: '1.2mm', padding: cfg.bottomCardPadding, backgroundColor: '#f0fdf4' }}>
-                  <div style={{ fontWeight: '900', fontSize: cfg.idLabelSize, color: '#166534', borderBottom: '0.4pt solid #bbf7d0', paddingBottom: '0.4mm', marginBottom: '0.8mm', textTransform: 'uppercase', letterSpacing: '0.02em' }}>
-                    SYNTHÈSE FINANCIÈRE
+              <div style={{ border: `0.6pt solid ${fin.isInfacturable ? '#fca5a5' : '#bbf7d0'}`, borderRadius: '1.2mm', padding: cfg.bottomCardPadding, backgroundColor: fin.isInfacturable ? '#fef2f2' : '#f0fdf4' }}>
+                  <div style={{ fontWeight: '900', fontSize: cfg.idLabelSize, color: fin.isInfacturable ? '#991b1b' : '#166534', borderBottom: `0.4pt solid ${fin.isInfacturable ? '#fca5a5' : '#bbf7d0'}`, paddingBottom: '0.4mm', marginBottom: '0.8mm', textTransform: 'uppercase', letterSpacing: '0.02em' }}>
+                    {fin.isInfacturable ? 'SYNTHÈSE (INFACTURABLE)' : 'SYNTHÈSE FINANCIÈRE'}
                   </div>
                   <div style={{ textAlign: 'right', fontSize: cfg.idSubSize, color: '#334155' }}>
-                    Total Dossier : <strong>{totalCost.toLocaleString('fr-FR')} F CFA</strong>
+                    Total Dossier : <strong>{totalCost.toLocaleString('fr-FR')} F CFA {fin.isInfacturable ? '(0 F AU POINT)' : ''}</strong>
                   </div>
-                  <div style={{ textAlign: 'right', fontSize: cfg.idValueSize, borderTop: '0.5pt solid #bbf7d0', marginTop: '0.6mm', paddingTop: '0.4mm', fontWeight: '900', color: '#166534' }}>
-                    SOLDE : {balance.toLocaleString('fr-FR')} F CFA
+                  <div style={{ textAlign: 'right', fontSize: cfg.idValueSize, borderTop: `0.5pt solid ${fin.isInfacturable ? '#fca5a5' : '#bbf7d0'}`, marginTop: '0.6mm', paddingTop: '0.4mm', fontWeight: '900', color: fin.isInfacturable ? '#991b1b' : '#166534' }}>
+                    SOLDE : {balance.toLocaleString('fr-FR')} F CFA {fin.isInfacturable ? '(ANNULÉ)' : ''}
                   </div>
               </div>
           </div>

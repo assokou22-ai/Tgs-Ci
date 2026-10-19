@@ -1,14 +1,19 @@
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { RepairTicket, RepairStatus, Role, HistoryEntry } from '../types.ts';
 import PaginationControls from './PaginationControls.tsx';
 import { DocumentMagnifyingGlassIcon, PrinterIcon, TrashIcon, PencilIcon, ExclamationTriangleIcon } from './icons.tsx';
+import { FolderArchive, Share2, LayoutGrid, Table2 } from 'lucide-react';
 import { getStatusStyle } from '../utils/statusStyles.ts';
 import useLogs from '../hooks/useLogs.ts';
 import { useFirebase } from '../context/FirebaseContext.tsx';
 import Modal from './Modal.tsx';
 import useAppointments from '../hooks/useAppointments.ts';
 import { isFallbackTicketId, extractTicketSequenceNumber } from '../utils/idGenerator.ts';
+import { getTicketFinancialSummary } from '../utils/ticketHelpers.ts';
+import { ExportAllDossiersModal } from './ExportAllDossiersModal.tsx';
+import SocialPostModal from './SocialPostModal.tsx';
+import { useDeviceProfile } from '../context/DeviceProfileContext.tsx';
 
 interface TicketArchiveProps {
   tickets: RepairTicket[];
@@ -39,6 +44,15 @@ const TicketArchive: React.FC<TicketArchiveProps> = ({
   const [isUpdatingStatus, setIsUpdatingStatus] = useState<string | null>(null);
   const [selectedTicketIds, setSelectedTicketIds] = useState<string[]>([]);
   const [isBulkUpdating, setIsBulkUpdating] = useState(false);
+  const [isExportAllModalOpen, setIsExportAllModalOpen] = useState(false);
+  const [socialTicket, setSocialTicket] = useState<RepairTicket | null>(null);
+
+  const { isTouch, deviceProfile } = useDeviceProfile();
+  const [viewMode, setViewMode] = useState<'cards' | 'table'>(() => isTouch ? 'cards' : 'table');
+
+  useEffect(() => {
+    setViewMode(isTouch ? 'cards' : 'table');
+  }, [isTouch]);
 
   const { addLog } = useLogs();
   const { user } = useFirebase();
@@ -119,13 +133,32 @@ const TicketArchive: React.FC<TicketArchiveProps> = ({
     };
     
     if (newStatus === RepairStatus.RENDU) {
-        const total = (ticket.costs?.diagnostic || 0) + (ticket.costs?.repair || 0);
+        const total = getTicketFinancialSummary(ticket).totalBilled;
         updatedTicket = {
             ...updatedTicket,
             costs: {
                 ...updatedTicket.costs,
                 advance: total
             }
+        };
+    }
+
+    if (newStatus === RepairStatus.ANNULE) {
+        const prevAdvance = ticket.costs?.advance || 0;
+        const note = prevAdvance > 0 
+            ? `Fiche annulée : mentionnée automatiquement comme INFACTURABLE (avance de ${prevAdvance.toLocaleString('fr-FR')} F CFA non intégrable dans notre point).`
+            : `Fiche annulée : mentionnée automatiquement comme INFACTURABLE (aucun fond intégrable dans notre point).`;
+        newHistoryEntry.action = `Annulation du dossier : ${note}`;
+        updatedTicket = {
+            ...updatedTicket,
+            isInfacturable: true,
+            infacturableReason: note
+        };
+    } else if (ticket.isInfacturable && newStatus !== RepairStatus.ANNULE) {
+        updatedTicket = {
+            ...updatedTicket,
+            isInfacturable: false,
+            infacturableReason: undefined
         };
     }
 
@@ -207,13 +240,32 @@ const TicketArchive: React.FC<TicketArchiveProps> = ({
             };
             
             if (newStatus === RepairStatus.RENDU) {
-                const total = (ticket.costs?.diagnostic || 0) + (ticket.costs?.repair || 0);
+                const total = getTicketFinancialSummary(ticket).totalBilled;
                 updatedTicket = {
                     ...updatedTicket,
                     costs: {
                         ...updatedTicket.costs,
                         advance: total
                     }
+                };
+            }
+
+            if (newStatus === RepairStatus.ANNULE) {
+                const prevAdvance = ticket.costs?.advance || 0;
+                const note = prevAdvance > 0 
+                    ? `Fiche annulée : mentionnée automatiquement comme INFACTURABLE (avance de ${prevAdvance.toLocaleString('fr-FR')} F CFA non intégrable dans notre point).`
+                    : `Fiche annulée : mentionnée automatiquement comme INFACTURABLE (aucun fond intégrable dans notre point).`;
+                newHistoryEntry.action = `Annulation du dossier : ${note}`;
+                updatedTicket = {
+                    ...updatedTicket,
+                    isInfacturable: true,
+                    infacturableReason: note
+                };
+            } else if (ticket.isInfacturable && newStatus !== RepairStatus.ANNULE) {
+                updatedTicket = {
+                    ...updatedTicket,
+                    isInfacturable: false,
+                    infacturableReason: undefined
                 };
             }
 
@@ -374,7 +426,47 @@ const TicketArchive: React.FC<TicketArchiveProps> = ({
     <div className="apple-card p-6 shadow-xl">
       <div className="flex flex-col gap-4 mb-6">
         <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-          <h2 className="text-xl font-black text-white">Archives Générales</h2>
+          <div className="flex items-center gap-3 flex-wrap">
+            <h2 className="text-xl font-black text-white">Archives Générales</h2>
+            <button
+              onClick={() => setIsExportAllModalOpen(true)}
+              className="flex items-center gap-1.5 px-3.5 py-2 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white rounded-xl text-xs font-black uppercase tracking-wider transition-all shadow-lg shadow-blue-900/30 active:scale-95"
+              title="Générer une archive ZIP de tous les dossiers avec PDF, HTML et photos classées"
+            >
+              <FolderArchive className="w-4 h-4" />
+              <span>Exporter tous les dossiers</span>
+            </button>
+
+            {/* Sélecteur Vue Cartes Tactiles / Tableau */}
+            <div className="inline-flex items-center p-0.5 bg-black/40 border border-white/10 rounded-xl">
+              <button
+                type="button"
+                onClick={() => setViewMode('cards')}
+                className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                  viewMode === 'cards'
+                    ? 'bg-blue-600 text-white shadow-md'
+                    : 'text-zinc-400 hover:text-white'
+                }`}
+                title="Affichage Cartes Tactiles (Idéal tablette & mobile)"
+              >
+                <LayoutGrid className="w-3.5 h-3.5" />
+                <span className="hidden xs:inline text-[11px]">Cartes</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setViewMode('table')}
+                className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                  viewMode === 'table'
+                    ? 'bg-blue-600 text-white shadow-md'
+                    : 'text-zinc-400 hover:text-white'
+                }`}
+                title="Affichage Tableau complet"
+              >
+                <Table2 className="w-3.5 h-3.5" />
+                <span className="hidden xs:inline text-[11px]">Tableau</span>
+              </button>
+            </div>
+          </div>
           <div className="w-full md:w-80">
               <input 
                   type="text" 
@@ -490,142 +582,291 @@ const TicketArchive: React.FC<TicketArchiveProps> = ({
         </div>
       )}
 
-      <div className="overflow-x-auto custom-scrollbar">
-        <table className="w-full text-sm text-left">
-            <thead className="text-[11px] font-bold text-apple-muted uppercase tracking-wider bg-white/5">
-                <tr>
-                    <th className="px-4 py-3 rounded-l-xl text-center w-12">
-                        <input 
-                            type="checkbox" 
-                            checked={paginatedTickets.length > 0 && paginatedTickets.every(t => selectedTicketIds.includes(t.id))}
-                            onChange={(e) => {
-                                if (e.target.checked) {
-                                    const newIds = [...selectedTicketIds];
-                                    paginatedTickets.forEach(t => {
-                                        if (!newIds.includes(t.id)) newIds.push(t.id);
-                                    });
-                                    setSelectedTicketIds(newIds);
-                                } else {
-                                    const paginatedIds = paginatedTickets.map(t => t.id);
-                                    setSelectedTicketIds(selectedTicketIds.filter(id => !paginatedIds.includes(id)));
-                                }
-                            }}
-                            className="rounded border-white/25 bg-neutral-900 text-apple-blue focus:ring-apple-blue/50 cursor-pointer h-4 w-4"
-                        />
-                    </th>
-                    <th className="px-4 py-3 text-center">Actions</th>
-                    <th 
-                        className="px-4 py-3 cursor-pointer hover:text-white transition-colors"
-                        onClick={() => handleSort('id')}
+      {viewMode === 'cards' ? (
+        /* VUE CARTES TACTILES (TABLETTE & MOBILE) : Colonnes réduites, zéro défilement horizontal, gros boutons tactiles */
+        <div className={`grid gap-3.5 ${deviceProfile === 'mobile' ? 'grid-cols-1' : 'grid-cols-1 sm:grid-cols-2'}`}>
+          {paginatedTickets.map(ticket => {
+            const isSelected = selectedTicketIds.includes(ticket.id);
+            const statusStyle = getStatusStyle(ticket.status);
+            const fin = getTicketFinancialSummary(ticket);
+
+            return (
+              <div 
+                key={ticket.id}
+                className={`p-4 rounded-2xl border transition-all flex flex-col justify-between gap-3 relative ${
+                  isSelected 
+                    ? 'bg-blue-950/30 border-blue-500/60 ring-1 ring-blue-500/40 shadow-lg' 
+                    : 'bg-zinc-900/80 border-white/10 hover:border-white/20'
+                }`}
+              >
+                {/* Header Carte : Checkbox, Dossier ID & Statut */}
+                <div className="flex items-center justify-between gap-2 border-b border-white/5 pb-2.5">
+                  <div className="flex items-center gap-2.5">
+                    <label className="p-1 -m-1 cursor-pointer flex items-center justify-center min-w-[36px] min-h-[36px]">
+                      <input 
+                        type="checkbox"
+                        checked={isSelected}
+                        onChange={(e) => {
+                          if (e.target.checked) {
+                            setSelectedTicketIds([...selectedTicketIds, ticket.id]);
+                          } else {
+                            setSelectedTicketIds(selectedTicketIds.filter(id => id !== ticket.id));
+                          }
+                        }}
+                        className="rounded border-white/25 bg-neutral-900 text-apple-blue focus:ring-apple-blue/50 cursor-pointer h-5 w-5"
+                      />
+                    </label>
+                    <span className="font-mono font-bold text-sm text-apple-blue">
+                      #{ticket.id}
+                    </span>
+                    {isFallbackTicketId(ticket.id) && (
+                      <span className="px-1.5 py-0.5 text-[9px] font-black uppercase bg-amber-500/20 text-amber-400 border border-amber-500/40 rounded">
+                        Provisoire
+                      </span>
+                    )}
+                  </div>
+
+                  {onUpdateTicket ? (
+                    <select
+                      value={ticket.status}
+                      disabled={isUpdatingStatus === ticket.id}
+                      onChange={(e) => handleStatusChange(ticket, e.target.value as RepairStatus)}
+                      className={`px-3 py-1.5 rounded-xl text-xs font-bold uppercase cursor-pointer outline-none transition-all ${statusStyle.badge}`}
                     >
-                        <div className="flex items-center gap-1 select-none">
-                            Dossier {sortField === 'id' && (
-                                <span className="text-[10px] text-apple-blue font-black">{sortOrder === 'asc' ? '▲' : '▼'}</span>
-                            )}
-                        </div>
-                    </th>
-                    <th className="px-4 py-3">Client</th>
-                    <th className="px-4 py-3">Matériel</th>
-                    <th 
-                        className="px-4 py-3 cursor-pointer hover:text-white transition-colors"
-                        onClick={() => handleSort('createdAt')}
+                      {statusOptions.map(opt => (
+                        <option key={opt} value={opt} className="bg-zinc-950 text-slate-300 py-2">
+                          {opt}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <span className={`px-2.5 py-1 rounded-full text-xs font-bold uppercase ${statusStyle.badge}`}>
+                      {ticket.status}
+                    </span>
+                  )}
+                </div>
+
+                {/* Corps de Carte : Client, Matériel, Date & Finances */}
+                <div className="space-y-1.5 text-xs">
+                  <div className="font-black text-sm sm:text-base text-white uppercase tracking-tight truncate">
+                    {ticket.client.name}
+                  </div>
+                  
+                  <div className="flex items-center justify-between gap-2 text-zinc-300">
+                    <span className="font-medium text-sky-400">{ticket.macModel || 'MacBook'}</span>
+                    <span className="text-zinc-500">{new Date(ticket.createdAt).toLocaleDateString('fr-FR')}</span>
+                  </div>
+
+                  {ticket.client.phone && (
+                    <div className="text-[11px] font-mono text-zinc-400 flex items-center gap-1.5">
+                      <span>📞 {ticket.client.phone}</span>
+                    </div>
+                  )}
+
+                  <div className="pt-1 flex items-center justify-between text-xs">
+                    {fin.balanceDue > 0 ? (
+                      <span className="font-mono font-bold text-amber-400 bg-amber-500/10 px-2 py-0.5 rounded-md border border-amber-500/20">
+                        Solde dû : {fin.balanceDue.toLocaleString()} F
+                      </span>
+                    ) : (
+                      <span className="font-mono font-bold text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded-md border border-emerald-500/20">
+                        ✓ Soldé ({fin.totalBilled.toLocaleString()} F)
+                      </span>
+                    )}
+                    <span className="text-[11px] text-zinc-500 font-mono">
+                      Total: {fin.totalBilled.toLocaleString()} F
+                    </span>
+                  </div>
+                </div>
+
+                {/* Boutons d'Action Agrandis (Touch Targets ≥ 48px) */}
+                <div className="grid grid-cols-4 gap-1.5 pt-2 border-t border-white/5">
+                  <button 
+                    type="button"
+                    onClick={() => onSelectTicket(ticket)} 
+                    className="p-2.5 bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 border border-blue-500/30 rounded-xl text-xs font-bold flex flex-col items-center justify-center gap-1 active:scale-95 min-h-[48px] transition-all"
+                    title="Voir et traiter la fiche"
+                  >
+                    <DocumentMagnifyingGlassIcon className="w-4 h-4" />
+                    <span className="text-[10px]">Voir</span>
+                  </button>
+
+                  {onEditTicket && (
+                    <button 
+                      type="button"
+                      onClick={() => onEditTicket(ticket)} 
+                      className="p-2.5 bg-white/5 hover:bg-white/10 text-zinc-300 hover:text-white border border-white/10 rounded-xl text-xs font-bold flex flex-col items-center justify-center gap-1 active:scale-95 min-h-[48px] transition-all"
+                      title="Modifier les données"
                     >
-                        <div className="flex items-center gap-1 select-none">
-                            Date {sortField === 'createdAt' && (
-                                <span className="text-[10px] text-apple-blue font-black">{sortOrder === 'asc' ? '▲' : '▼'}</span>
-                            )}
-                        </div>
-                    </th>
-                    <th 
-                        className="px-4 py-3 rounded-r-xl cursor-pointer hover:text-white transition-colors"
-                        onClick={() => handleSort('status')}
-                    >
-                        <div className="flex items-center gap-1 select-none">
-                            Statut {sortField === 'status' && (
-                                <span className="text-[10px] text-apple-blue font-black">{sortOrder === 'asc' ? '▲' : '▼'}</span>
-                            )}
-                        </div>
-                    </th>
-                </tr>
-            </thead>
-            <tbody className="divide-y divide-white/5">
-                {paginatedTickets.map(ticket => (
-                    <tr key={ticket.id} className="hover:bg-white/[0.02] transition-colors group">
-                        <td className="px-4 py-4 text-center">
-                            <input 
-                                type="checkbox"
-                                checked={selectedTicketIds.includes(ticket.id)}
-                                onChange={(e) => {
-                                    if (e.target.checked) {
-                                        setSelectedTicketIds([...selectedTicketIds, ticket.id]);
-                                    } else {
-                                        setSelectedTicketIds(selectedTicketIds.filter(id => id !== ticket.id));
-                                    }
-                                }}
-                                className="rounded border-white/25 bg-neutral-900 text-apple-blue focus:ring-apple-blue/50 cursor-pointer h-4 w-4"
-                            />
-                        </td>
-                        <td className="px-4 py-4 flex justify-center gap-1">
-                            <button onClick={() => onSelectTicket(ticket)} className="p-2 hover:bg-apple-blue hover:text-white rounded-full transition-all text-apple-muted" title="Voir"><DocumentMagnifyingGlassIcon className="w-4 h-4" /></button>
-                            {onEditTicket && <button onClick={() => onEditTicket(ticket)} className="p-2 hover:bg-apple-blue hover:text-white rounded-full transition-all text-apple-muted" title="Éditer"><PencilIcon className="w-4 h-4" /></button>}
-                            <button onClick={() => onPrintTicket(ticket)} className="p-2 hover:bg-white/10 hover:text-white rounded-full transition-all text-apple-muted" title="Imprimer"><PrinterIcon className="w-4 h-4" /></button>
-                            {onDeleteTicket && (
-                              <button 
-                                onClick={(e) => { 
-                                  e.stopPropagation(); 
-                                  setTicketToDelete(ticket); 
-                                  setDeletePassword('');
-                                  setDeleteError('');
-                                }} 
-                                className="p-2 hover:bg-red-600 hover:text-white rounded-full transition-all text-apple-muted opacity-0 group-hover:opacity-100" 
-                                title="Supprimer"
-                              >
-                                <TrashIcon className="w-4 h-4" />
-                              </button>
-                            )}
-                        </td>
-                        <td className="px-4 py-4 font-mono font-bold text-apple-blue whitespace-nowrap">
-                            {ticket.id}
-                            {isFallbackTicketId(ticket.id) && (
-                                <span className="ml-1.5 px-1.5 py-0.5 text-[9px] font-black uppercase bg-amber-500/20 text-amber-400 border border-amber-500/40 rounded">
-                                    Provisoire
+                      <PencilIcon className="w-4 h-4" />
+                      <span className="text-[10px]">Éditer</span>
+                    </button>
+                  )}
+
+                  <button 
+                    type="button"
+                    onClick={() => onPrintTicket(ticket)} 
+                    className="p-2.5 bg-white/5 hover:bg-white/10 text-zinc-300 hover:text-white border border-white/10 rounded-xl text-xs font-bold flex flex-col items-center justify-center gap-1 active:scale-95 min-h-[48px] transition-all"
+                    title="Imprimer"
+                  >
+                    <PrinterIcon className="w-4 h-4" />
+                    <span className="text-[10px]">Imprimer</span>
+                  </button>
+
+                  <button 
+                    type="button"
+                    onClick={() => setSocialTicket(ticket)} 
+                    className="p-2.5 bg-purple-600/20 hover:bg-purple-600/30 text-purple-300 border border-purple-500/30 rounded-xl text-xs font-bold flex flex-col items-center justify-center gap-1 active:scale-95 min-h-[48px] transition-all"
+                    title="Générer texte réseaux sociaux & site web"
+                  >
+                    <Share2 className="w-4 h-4" />
+                    <span className="text-[10px]">Post</span>
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        /* VUE TABLEAU MULTI-COLONNES STANDARD (ORDINATEUR) */
+        <div className="overflow-x-auto custom-scrollbar">
+          <table className="w-full text-sm text-left">
+              <thead className="text-[11px] font-bold text-apple-muted uppercase tracking-wider bg-white/5">
+                  <tr>
+                      <th className="px-4 py-3 rounded-l-xl text-center w-12">
+                          <input 
+                              type="checkbox" 
+                              checked={paginatedTickets.length > 0 && paginatedTickets.every(t => selectedTicketIds.includes(t.id))}
+                              onChange={(e) => {
+                                  if (e.target.checked) {
+                                      const newIds = [...selectedTicketIds];
+                                      paginatedTickets.forEach(t => {
+                                          if (!newIds.includes(t.id)) newIds.push(t.id);
+                                      });
+                                      setSelectedTicketIds(newIds);
+                                  } else {
+                                      const paginatedIds = paginatedTickets.map(t => t.id);
+                                      setSelectedTicketIds(selectedTicketIds.filter(id => !paginatedIds.includes(id)));
+                                  }
+                              }}
+                              className="rounded border-white/25 bg-neutral-900 text-apple-blue focus:ring-apple-blue/50 cursor-pointer h-4 w-4"
+                          />
+                      </th>
+                      <th className="px-4 py-3 text-center">Actions</th>
+                      <th 
+                          className="px-4 py-3 cursor-pointer hover:text-white transition-colors"
+                          onClick={() => handleSort('id')}
+                      >
+                          <div className="flex items-center gap-1 select-none">
+                              Dossier {sortField === 'id' && (
+                                  <span className="text-[10px] text-apple-blue font-black">{sortOrder === 'asc' ? '▲' : '▼'}</span>
+                              )}
+                          </div>
+                      </th>
+                      <th className="px-4 py-3">Client</th>
+                      <th className="px-4 py-3">Matériel</th>
+                      <th 
+                          className="px-4 py-3 cursor-pointer hover:text-white transition-colors"
+                          onClick={() => handleSort('createdAt')}
+                      >
+                          <div className="flex items-center gap-1 select-none">
+                              Date {sortField === 'createdAt' && (
+                                  <span className="text-[10px] text-apple-blue font-black">{sortOrder === 'asc' ? '▲' : '▼'}</span>
+                              )}
+                          </div>
+                      </th>
+                      <th 
+                          className="px-4 py-3 rounded-r-xl cursor-pointer hover:text-white transition-colors"
+                          onClick={() => handleSort('status')}
+                      >
+                          <div className="flex items-center gap-1 select-none">
+                              Statut {sortField === 'status' && (
+                                  <span className="text-[10px] text-apple-blue font-black">{sortOrder === 'asc' ? '▲' : '▼'}</span>
+                              )}
+                          </div>
+                      </th>
+                  </tr>
+              </thead>
+              <tbody className="divide-y divide-white/5">
+                  {paginatedTickets.map(ticket => (
+                      <tr key={ticket.id} className="hover:bg-white/[0.02] transition-colors group">
+                          <td className="px-4 py-4 text-center">
+                              <input 
+                                  type="checkbox"
+                                  checked={selectedTicketIds.includes(ticket.id)}
+                                  onChange={(e) => {
+                                      if (e.target.checked) {
+                                          setSelectedTicketIds([...selectedTicketIds, ticket.id]);
+                                      } else {
+                                          setSelectedTicketIds(selectedTicketIds.filter(id => id !== ticket.id));
+                                      }
+                                  }}
+                                  className="rounded border-white/25 bg-neutral-900 text-apple-blue focus:ring-apple-blue/50 cursor-pointer h-4 w-4"
+                              />
+                          </td>
+                          <td className="px-4 py-4 flex justify-center gap-1">
+                              <button onClick={() => onSelectTicket(ticket)} className="p-2 hover:bg-apple-blue hover:text-white rounded-full transition-all text-apple-muted" title="Voir"><DocumentMagnifyingGlassIcon className="w-4 h-4" /></button>
+                              {onEditTicket && <button onClick={() => onEditTicket(ticket)} className="p-2 hover:bg-apple-blue hover:text-white rounded-full transition-all text-apple-muted" title="Éditer"><PencilIcon className="w-4 h-4" /></button>}
+                              <button onClick={() => onPrintTicket(ticket)} className="p-2 hover:bg-white/10 hover:text-white rounded-full transition-all text-apple-muted" title="Imprimer"><PrinterIcon className="w-4 h-4" /></button>
+                              <button onClick={() => setSocialTicket(ticket)} className="p-2 hover:bg-purple-600 hover:text-white rounded-full transition-all text-purple-400 hover:text-white" title="Générer texte réseaux sociaux & site web"><Share2 className="w-4 h-4" /></button>
+                              {onDeleteTicket && (
+                                <button 
+                                  onClick={(e) => { 
+                                    e.stopPropagation(); 
+                                    setTicketToDelete(ticket); 
+                                    setDeletePassword('');
+                                    setDeleteError('');
+                                  }} 
+                                  className="p-2 hover:bg-red-600 hover:text-white rounded-full transition-all text-apple-muted opacity-0 group-hover:opacity-100" 
+                                  title="Supprimer"
+                                >
+                                  <TrashIcon className="w-4 h-4" />
+                                </button>
+                              )}
+                          </td>
+                          <td className="px-4 py-4 font-mono font-bold text-apple-blue whitespace-nowrap">
+                              {ticket.id}
+                              {isFallbackTicketId(ticket.id) && (
+                                  <span className="ml-1.5 px-1.5 py-0.5 text-[9px] font-black uppercase bg-amber-500/20 text-amber-400 border border-amber-500/40 rounded">
+                                      Provisoire
+                                  </span>
+                              )}
+                          </td>
+                          <td className="px-4 py-4 font-bold text-white truncate max-w-[150px] uppercase">{ticket.client.name}</td>
+                          <td className="px-4 py-4 font-medium text-slate-300">{ticket.macModel}</td>
+                          <td className="px-4 py-4 text-apple-muted">{new Date(ticket.createdAt).toLocaleDateString('fr-FR')}</td>
+                          <td className="px-4 py-4">
+                              {onUpdateTicket ? (
+                                <select
+                                  value={ticket.status}
+                                  disabled={isUpdatingStatus === ticket.id}
+                                  onChange={(e) => handleStatusChange(ticket, e.target.value as RepairStatus)}
+                                  className={`px-2.5 py-1 pr-6 rounded-full text-[10px] font-bold uppercase bg-transparent border-0 cursor-pointer focus:ring-1 focus:ring-white/20 outline-none leading-none appearance-none font-sans text-center transition-all ${isUpdatingStatus === ticket.id ? 'opacity-50' : ''} ${getStatusStyle(ticket.status).badge}`}
+                                  style={{
+                                    backgroundImage: `url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3E%3Cpath stroke='%23a1a1aa' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='m6 8 4 4 4-4'/%3E%3C/svg%3E")`,
+                                    backgroundPosition: 'right 0.35rem center',
+                                    backgroundSize: '1.25rem 1.25rem',
+                                    backgroundRepeat: 'no-repeat',
+                                  }}
+                                >
+                                  {statusOptions.map(opt => (
+                                    <option key={opt} value={opt} className="bg-zinc-950 text-slate-300 text-xs py-2 uppercase font-sans">
+                                      {opt}
+                                    </option>
+                                  ))}
+                                </select>
+                              ) : (
+                                <span className={`px-2.5 py-1 rounded-full text-[10px] font-bold uppercase ${getStatusStyle(ticket.status).badge}`}>
+                                  {ticket.status}
                                 </span>
-                            )}
-                        </td>
-                        <td className="px-4 py-4 font-bold text-white truncate max-w-[150px] uppercase">{ticket.client.name}</td>
-                        <td className="px-4 py-4 font-medium text-slate-300">{ticket.macModel}</td>
-                        <td className="px-4 py-4 text-apple-muted">{new Date(ticket.createdAt).toLocaleDateString('fr-FR')}</td>
-                        <td className="px-4 py-4">
-                            {onUpdateTicket ? (
-                              <select
-                                value={ticket.status}
-                                disabled={isUpdatingStatus === ticket.id}
-                                onChange={(e) => handleStatusChange(ticket, e.target.value as RepairStatus)}
-                                className={`px-2.5 py-1 pr-6 rounded-full text-[10px] font-bold uppercase bg-transparent border-0 cursor-pointer focus:ring-1 focus:ring-white/20 outline-none leading-none appearance-none font-sans text-center transition-all ${isUpdatingStatus === ticket.id ? 'opacity-50' : ''} ${getStatusStyle(ticket.status).badge}`}
-                                style={{
-                                  backgroundImage: `url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3E%3Cpath stroke='%23a1a1aa' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='m6 8 4 4 4-4'/%3E%3C/svg%3E")`,
-                                  backgroundPosition: 'right 0.35rem center',
-                                  backgroundSize: '1.25rem 1.25rem',
-                                  backgroundRepeat: 'no-repeat',
-                                }}
-                              >
-                                {statusOptions.map(opt => (
-                                  <option key={opt} value={opt} className="bg-zinc-950 text-slate-300 text-xs py-2 uppercase font-sans">
-                                    {opt}
-                                  </option>
-                                ))}
-                              </select>
-                            ) : (
-                              <span className={`px-2.5 py-1 rounded-full text-[10px] font-bold uppercase ${getStatusStyle(ticket.status).badge}`}>
-                                {ticket.status}
-                              </span>
-                            )}
-                        </td>
-                    </tr>
-                ))}
-            </tbody>
-        </table>
-      </div>
+                              )}
+                          </td>
+                      </tr>
+                  ))}
+              </tbody>
+          </table>
+        </div>
+      )}
       
       <div className="mt-6 border-t border-white/5 pt-4">
           <PaginationControls currentPage={currentPage} totalPages={totalPages} onPageChange={setCurrentPage} />
@@ -708,6 +949,20 @@ const TicketArchive: React.FC<TicketArchiveProps> = ({
             </div>
           </div>
         </Modal>
+      )}
+
+      <ExportAllDossiersModal
+        isOpen={isExportAllModalOpen}
+        onClose={() => setIsExportAllModalOpen(false)}
+        tickets={tickets}
+      />
+
+      {socialTicket && (
+        <SocialPostModal
+          isOpen={!!socialTicket}
+          onClose={() => setSocialTicket(null)}
+          ticket={socialTicket}
+        />
       )}
     </div>
   );

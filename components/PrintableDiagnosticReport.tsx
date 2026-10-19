@@ -108,7 +108,9 @@ const PrintableDiagnosticReport: React.FC<PrintableDiagnosticReportProps> = ({ t
             <div>
                 <div style={{ fontSize: cfg.summaryLabelSize, color: '#64748B', textTransform: 'uppercase', marginBottom: '0.5mm', fontWeight: '800' }}>Appareil</div>
                 <div style={{ fontSize: cfg.summaryValueSize, fontWeight: '900', color: '#0F172A' }}>{ticket.macBrand} {ticket.macModel}</div>
-                <div style={{ fontSize: cfg.summarySubSize, color: '#475569', marginTop: '0.5mm', fontWeight: '600' }}>N° DE SÉRIE : {ticket.serialNumber || 'Inconnu'}</div>
+                <div style={{ fontSize: cfg.summarySubSize, color: '#475569', marginTop: '0.5mm', fontWeight: '600' }}>
+                    N° DE SÉRIE : {ticket.serialNumber || 'Inconnu'} {ticket.modelNumber ? `· Modèle ${ticket.modelNumber}` : ''} {(ticket.emc || ticket.customFields?.emc) ? `· ${ticket.emc || ticket.customFields?.emc}` : ''}
+                </div>
             </div>
             <div style={{ textAlign: 'right' }}>
                 <div style={{ fontSize: cfg.summaryLabelSize, color: '#64748B', textTransform: 'uppercase', marginBottom: '0.5mm', fontWeight: '800' }}>Technicien responsable</div>
@@ -232,6 +234,28 @@ const PrintableDiagnosticReport: React.FC<PrintableDiagnosticReportProps> = ({ t
               </tbody>
           </table>
         </>
+
+        {/* CLICHÉS PHOTOGRAPHIQUES DU RAPPORT DE DIAGNOSTIC */}
+        {((ticket.diagnosticImages && ticket.diagnosticImages.length > 0) || (ticket.intakeImages && ticket.intakeImages.length > 0)) && (() => {
+          const imgs = (ticket.diagnosticImages && ticket.diagnosticImages.length > 0) 
+            ? ticket.diagnosticImages 
+            : (ticket.intakeImages || []);
+          return (
+            <div style={{ marginBottom: cfg.sectionMarginBottom }}>
+              <div style={{ fontSize: cfg.sectionTitleSize, fontWeight: '900', textTransform: 'uppercase', borderBottom: '1pt solid #000', paddingBottom: '0.6mm', marginBottom: '1.2mm', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span>Clichés d'Expertise & Contrôle Visuel ({imgs.length})</span>
+                <span style={{ fontSize: cfg.refLabelSize, color: '#64748B', fontWeight: 'bold' }}>Photos intégrées au dossier</span>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: `repeat(${Math.min(imgs.length, 4)}, 1fr)`, gap: '2mm' }}>
+                {imgs.slice(0, 4).map((img, i) => (
+                  <div key={i} style={{ border: '0.6pt solid #CBD5E1', borderRadius: '1.2mm', overflow: 'hidden', height: isUltra ? '22mm' : isDense ? '26mm' : '30mm', backgroundColor: '#000', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                    <img src={img} alt={`Expertise ${i+1}`} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                  </div>
+                ))}
+              </div>
+            </div>
+          );
+        })()}
 
         {ticket.technicianNotes && (
           <div style={{ marginBottom: cfg.sectionMarginBottom }}>

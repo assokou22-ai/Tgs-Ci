@@ -75,6 +75,7 @@ export const sanitizeTicket = (input: unknown): RepairTicket => {
     updatedAt: ensureValidISO(ticket.updatedAt || ticket.createdAt),
     status: ticket.status || RepairStatus.A_DIAGNOSTIQUER,
     client: {
+      ...(ticket.client || {}),
       name: ticket.client?.name || 'Client inconnu',
       phone: ticket.client?.phone || '',
       secondaryPhone: ticket.client?.secondaryPhone || '',
@@ -93,9 +94,7 @@ export const sanitizeTicket = (input: unknown): RepairTicket => {
     costs: {
       diagnostic: Number(ticket.costs?.diagnostic) || 0,
       repair: Number(ticket.costs?.repair) || 0,
-      advance: (ticket.status || RepairStatus.A_DIAGNOSTIQUER) === RepairStatus.RENDU
-        ? (Number(ticket.costs?.diagnostic) || 0) + (Number(ticket.costs?.repair) || 0)
-        : Number(ticket.costs?.advance) || 0,
+      advance: Number(ticket.costs?.advance) || 0,
     },
     powersOn: typeof ticket.powersOn === 'boolean' ? ticket.powersOn : true,
     powerOnStatus: ticket.powerOnStatus || 'non',
@@ -112,6 +111,10 @@ export const sanitizeTicket = (input: unknown): RepairTicket => {
     history: Array.isArray(ticket.history) ? ticket.history : [],
     diagnosticReport: Array.isArray(ticket.diagnosticReport) ? ticket.diagnosticReport : [],
     diagnosticImages: Array.isArray(ticket.diagnosticImages) ? ticket.diagnosticImages : [],
+    intakeImages: Array.isArray(ticket.intakeImages) ? ticket.intakeImages : [],
+    attachments: Array.isArray(ticket.attachments) ? ticket.attachments : [],
+    ligneVentes: Array.isArray(ticket.ligneVentes) ? ticket.ligneVentes : [],
+    paymentsList: Array.isArray(ticket.paymentsList) ? ticket.paymentsList : [],
     customFields: ticket.customFields || {},
     diagnosticSheetB: diagSheetB,
     estimatedWorkDelay: ticket.estimatedWorkDelay || '',

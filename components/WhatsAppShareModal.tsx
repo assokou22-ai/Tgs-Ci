@@ -3,11 +3,14 @@ import Modal from './Modal.tsx';
 import { 
     X, CheckCircle2, Clipboard, 
     Sparkles, ChevronRight, FileText, 
-    Clock, AlertTriangle, MessageSquare, Phone, Link2
+    Clock, AlertTriangle, MessageSquare, Phone, Link2,
+    Split, Cpu, Key
 } from 'lucide-react';
 import { WhatsAppIcon } from './icons.tsx';
 import { useToastContext } from '../context/ToastContext.tsx';
 import { formatWhatsAppPhone, formatDisplayPhone, generateWhatsAppUrl } from '../utils/formatters.ts';
+import { getTicketFinancialSummary } from '../utils/ticketHelpers.ts';
+import { generateWorkshopMessage } from '../services/workshopCommunicationService.ts';
 
 interface WhatsAppShareModalProps {
     isOpen: boolean;
@@ -16,7 +19,19 @@ interface WhatsAppShareModalProps {
     ticket: any; // Flexible to accept RepairTicket, Facture, or Commande
 }
 
-type TemplateType = 'reception' | 'diagnostic' | 'progress' | 'ready' | 'unrepairable' | 'reminder' | 'review' | 'custom';
+type TemplateType = 
+    | 'two_options_t2_nand'
+    | 'nand_voltages_dataloss'
+    | 'apple_session_password'
+    | 'ready' 
+    | 'blockage_extension' 
+    | 'reception' 
+    | 'diagnostic' 
+    | 'progress' 
+    | 'reminder' 
+    | 'unrepairable' 
+    | 'review' 
+    | 'custom';
 
 interface MessageTemplate {
     id: TemplateType;
@@ -26,10 +41,14 @@ interface MessageTemplate {
 }
 
 const templates: MessageTemplate[] = [
+    { id: 'two_options_t2_nand', label: '2 Options (Poursuite vs CM 72h)', description: 'Blocage T2/NAND/Apple, 2 options chiffrées', icon: <Split className="w-4 h-4 text-amber-400" /> },
+    { id: 'nand_voltages_dataloss', label: 'Point Tensions & NAND', description: 'Tensions 12.6V OK, NAND HS & perte données', icon: <Cpu className="w-4 h-4 text-red-400" /> },
+    { id: 'apple_session_password', label: 'Mot de Passe Session Apple', description: 'Activation serveurs Apple & tests ligne par ligne', icon: <Key className="w-4 h-4 text-blue-400" /> },
     { id: 'ready', label: 'Appareil Prêt', description: 'Prêt pour retrait / livraison avec solde', icon: <CheckCircle2 className="w-4 h-4 text-emerald-400" /> },
+    { id: 'blockage_extension', label: 'Rallonge de délai', description: 'Justification technique & nouveau RDV', icon: <Clock className="w-4 h-4 text-amber-400" /> },
     { id: 'reception', label: 'Réception', description: 'Confirmation de prise en charge atelier', icon: <FileText className="w-4 h-4 text-blue-400" /> },
     { id: 'diagnostic', label: 'Devis / Diagnostic', description: 'Bilan technique et devis à valider', icon: <Sparkles className="w-4 h-4 text-purple-400" /> },
-    { id: 'progress', label: 'En cours', description: 'Suivi et avancement de l\'intervention', icon: <Clock className="w-4 h-4 text-amber-400" /> },
+    { id: 'progress', label: 'En cours', description: 'Suivi et avancement de l\'intervention', icon: <Clock className="w-4 h-4 text-blue-400" /> },
     { id: 'reminder', label: 'Rappel Solde', description: 'Paiement restant / facture en attente', icon: <ChevronRight className="w-4 h-4 text-yellow-400" /> },
     { id: 'unrepairable', label: 'Irréparable', description: 'Rapport d\'impossibilité technique', icon: <AlertTriangle className="w-4 h-4 text-red-500" /> },
     { id: 'review', label: 'Avis Client', description: 'Lien Google Maps & Satisfaction', icon: <MessageSquare className="w-4 h-4 text-cyan-400" /> },
@@ -49,8 +68,9 @@ const WhatsAppShareModal: React.FC<WhatsAppShareModalProps> = ({ isOpen, onClose
         if (ticket) {
             const raw = ticket.client?.phone || ticket.clientPhone || ticket.telephone || ticket.phone || '';
             setTargetPhone(raw);
-            // Default to 'ready' if ticket is finished
-            if (ticket.status === 'Terminé' || ticket.status === 'Rendu') {
+            if (ticket.technicalBlockageReport && ticket.technicalBlockageReport.status === 'DEMANDEE') {
+                setSelectedTemplate('blockage_extension');
+            } else if (ticket.status === 'Terminé' || ticket.status === 'Rendu') {
                 setSelectedTemplate('ready');
             } else if (ticket.status === 'Devis à valider' || ticket.status === 'Diagnostic en cours') {
                 setSelectedTemplate('diagnostic');
@@ -68,13 +88,20 @@ const WhatsAppShareModal: React.FC<WhatsAppShareModalProps> = ({ isOpen, onClose
         const clientName = ticket.client?.name || ticket.clientName || 'Client';
         const model = ticket.macModel || 'MacBook';
         const id = ticket.id || ticket.numero || 'N/A';
-        const total = ticket.costs ? ((ticket.costs.diagnostic || 0) + (ticket.costs.repair || 0)) : (ticket.total || 0);
-        const advance = (ticket.costs?.advance || ticket.advance || 0);
+        const fin = ticket.costs ? getTicketFinancialSummary(ticket) : null;
+        const total = fin ? fin.totalBilled : (ticket.total || 0);
+        const advance = fin ? fin.advanceReceived : (ticket.advance || 0);
         const balance = Math.max(0, total - advance);
         
         let msg = `*TGS CI - RÉPARER MON MACBOOK*\n📌 *DÉTAILS N°${id}*\n👤 *CLIENT :* ${clientName}\n\n`;
 
         switch (type) {
+            case 'two_options_t2_nand':
+                return generateWorkshopMessage('two_options_t2_nand', ticket);
+            case 'nand_voltages_dataloss':
+                return generateWorkshopMessage('nand_voltages_dataloss', ticket);
+            case 'apple_session_password':
+                return generateWorkshopMessage('apple_session_password', ticket);
             case 'ready':
                 msg += `✅ *BONNE NOUVELLE : VOTRE APPAREIL EST PRÊT !*\n\nBonjour ${clientName},\nVotre *${model}* est entièrement réparé, testé et disponible dans nos ateliers.\n\n💰 *Total des travaux :* ${total.toLocaleString('fr-FR')} F CFA\n💳 *Acompte versé :* ${advance.toLocaleString('fr-FR')} F CFA\n💵 *SOLDE À RÉGLER AU RETRAIT :* ${balance.toLocaleString('fr-FR')} F CFA\n\n📍 *Atelier TGS CI :* Cocody Faya, Abidjan\n📞 *Contact :* +225 07 57 13 35 07\n\nVous pouvez passer le récupérer aux horaires d'ouverture. Merci de votre confiance !`;
                 break;
@@ -86,6 +113,15 @@ const WhatsAppShareModal: React.FC<WhatsAppShareModalProps> = ({ isOpen, onClose
                 break;
             case 'progress':
                 msg += `⚙️ *SUIVI DE VOTRE RÉPARATION*\n\nBonjour ${clientName},\nVotre *${model}* est actuellement sur le banc technique de nos experts.\n\nL'intervention suit son cours normal. Nous vous notifierons dès la fin des tests de validation.`;
+                break;
+            case 'blockage_extension':
+                if (ticket.technicalBlockageReport?.clientExplanation) {
+                    msg = ticket.technicalBlockageReport.clientExplanation;
+                } else {
+                    const days = ticket.technicalBlockageReport?.requestedDays || 3;
+                    const rdv = ticket.technicalBlockageReport?.calculatedRdvDate || ticket.rendezVousDate || 'prochainement';
+                    msg += `⏳ *NOTE D'INTERVENTION & AVENANT DE DÉLAI*\n\nBonjour ${clientName},\nConcernant les travaux sur votre *${model}* (Fiche N°${id}) :\nNos techniciens ont procédé au remplacement des premiers composants identifiés. Cependant, des tests approfondis de stabilité sous tension nécessitent un délai supplémentaire de *+${days} jours ouvrés*.\n\n📅 *Nouvelle date estimée de mise à disposition :* ${rdv} à 10 h 00.\n\nNous vous remercions pour votre compréhension et votre confiance.`;
+                }
                 break;
             case 'reminder':
                 msg += `💰 *RAPPEL DE PAIEMENT / FACTURE*\n\nBonjour ${clientName},\nNous vous informons qu'un solde restant de *${balance.toLocaleString('fr-FR')} F CFA* est en attente pour le dossier N°${id} (${model}).\n\nMerci de nous contacter pour finaliser le règlement.`;

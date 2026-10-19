@@ -3,13 +3,17 @@ import { FeatureId } from '../types.ts';
 import SyncStatusIndicator from './SyncStatusIndicator.tsx';
 import DriveStatusBadge from './DriveStatusBadge.tsx';
 import StorageHealthIndicator from './StorageHealthIndicator.tsx';
-import { ArrowLeftIcon, ArrowUturnLeftIcon } from './icons.tsx';
+import { ArrowLeftIcon, ArrowUturnLeftIcon, AppleLogo } from './icons.tsx';
+import { CoteDIvoireFlag, BeninFlag } from './Flags.tsx';
 import GlobalSearch from './GlobalSearch.tsx';
 import { useAppSettings } from '../hooks/useAppSettings.ts';
 import { useFirebase } from '../context/FirebaseContext.tsx';
 import { motion, AnimatePresence } from 'framer-motion';
 import { LogOutIcon, MenuIcon, ChevronLeft, ChevronRight } from 'lucide-react';
 import { useOrientation } from '../hooks/useOrientation.ts';
+import { DeviceProfileSwitchButton } from './DeviceProfileSwitchButton.tsx';
+
+
 
 export interface NavItem {
     id: string;
@@ -17,12 +21,17 @@ export interface NavItem {
     icon: React.FC<React.SVGProps<SVGSVGElement>>;
     onClick?: () => void;
     isActive?: boolean;
+    badge?: number | string;
     featureId?: FeatureId;
 }
 
 interface DashboardLayoutProps {
     title: string;
     subtitle?: string;
+    role?: string;
+    activeTab?: string;
+    onTabChange?: (tabId: string) => void;
+    statsBadge?: string;
     navItems: NavItem[];
     children: React.ReactNode;
     sidebarFooter?: React.ReactNode;
@@ -30,7 +39,17 @@ interface DashboardLayoutProps {
     onExitRole?: () => void;
 }
 
-const DashboardLayout: React.FC<DashboardLayoutProps> = ({ title, navItems, children, onBack, onExitRole }) => {
+const DashboardLayout: React.FC<DashboardLayoutProps> = ({ 
+    title, 
+    subtitle, 
+    navItems, 
+    children, 
+    activeTab, 
+    onTabChange, 
+    statsBadge, 
+    onBack, 
+    onExitRole 
+}) => {
     const { isFeatureEnabled } = useAppSettings();
     const { user, authReady, signInWithGoogle, signOutUser } = useFirebase();
     const { isMobileLandscape } = useOrientation();
@@ -58,12 +77,35 @@ const DashboardLayout: React.FC<DashboardLayoutProps> = ({ title, navItems, chil
         }
     };
 
+    const handleExit = () => {
+        setIsMobileMenuOpen(false);
+        const url = new URL(window.location.href);
+        url.searchParams.delete('role');
+        url.searchParams.delete('ticketId');
+        window.history.pushState({}, '', url);
+
+        if (onExitRole) {
+            try {
+                onExitRole();
+            } catch (err) {
+                console.error("Erreur lors de onExitRole:", err);
+            }
+        }
+        window.dispatchEvent(new PopStateEvent('popstate'));
+    };
+
     const handleNavClick = (onClick?: () => void) => {
         if (onClick) onClick();
         setIsMobileMenuOpen(false);
     };
 
-    const visibleItems = navItems.filter(item => !item.featureId || isFeatureEnabled(item.featureId));
+    const visibleItems = navItems
+        .filter(item => !item.featureId || isFeatureEnabled(item.featureId))
+        .map(item => ({
+            ...item,
+            isActive: item.isActive !== undefined ? item.isActive : (activeTab ? item.id === activeTab : false),
+            onClick: item.onClick ? item.onClick : (onTabChange ? () => onTabChange(item.id) : undefined)
+        }));
 
     return (
         <div className="min-h-screen bg-black text-white selection:bg-apple-blue selection:text-white font-sans flex overflow-x-hidden">
@@ -77,16 +119,20 @@ const DashboardLayout: React.FC<DashboardLayoutProps> = ({ title, navItems, chil
                 `}
             >
                 {/* Brand / Logo Section */}
-                <div className="h-20 flex items-center justify-between px-5 border-b border-white/5 shrink-0">
+                <div className="h-20 flex items-center justify-between px-5 border-b border-white/[0.06] shrink-0 bg-white/[0.01]">
                     {isSidebarOpen ? (
                         <div className="flex items-center gap-3 overflow-hidden">
-                            <span className="text-[13px] font-black uppercase tracking-wider text-white">
-                                REPARER<span className="text-apple-blue font-black tracking-widest text-[9px] uppercase ml-1 border border-apple-blue/30 px-1.5 py-0.5 rounded bg-apple-blue/10">MONMAC</span>
-                            </span>
+                            <AppleLogo className="w-5 h-5 text-white shrink-0" />
+                            <div className="flex flex-col">
+                                <span className="text-xs font-extrabold uppercase tracking-tight text-white flex items-center gap-1.5">
+                                    TGS-CI <span className="text-[9px] font-mono text-apple-blue px-1 py-0.5 rounded bg-apple-blue/10 border border-apple-blue/20">PRO</span>
+                                </span>
+                                <span className="text-[9px] text-zinc-500 font-medium tracking-wide">MacBook Workshop</span>
+                            </div>
                         </div>
                     ) : (
                         <div className="mx-auto flex items-center justify-center">
-                            <span className="text-[11px] font-black text-apple-blue tracking-tighter uppercase">RMM</span>
+                            <AppleLogo className="w-5 h-5 text-white" />
                         </div>
                     )}
                 </div>
@@ -121,9 +167,20 @@ const DashboardLayout: React.FC<DashboardLayoutProps> = ({ title, navItems, chil
                                     )}
                                     
                                     {isSidebarOpen && (
-                                        <span className="text-[10px] font-black uppercase tracking-wider truncate">
-                                            {item.label}
-                                        </span>
+                                        <div className="flex items-center justify-between flex-1 min-w-0">
+                                            <span className="text-[10px] font-black uppercase tracking-wider truncate">
+                                                {item.label}
+                                            </span>
+                                            {item.badge !== undefined && (
+                                                <span className={`px-2 py-0.5 rounded-full text-[9px] font-bold ${
+                                                    isItemActive 
+                                                        ? 'bg-white/20 text-white' 
+                                                        : 'bg-apple-blue/20 text-apple-blue border border-apple-blue/30'
+                                                }`}>
+                                                    {item.badge}
+                                                </span>
+                                            )}
+                                        </div>
                                     )}
                                 </button>
 
@@ -166,8 +223,8 @@ const DashboardLayout: React.FC<DashboardLayoutProps> = ({ title, navItems, chil
                             {/* Navigation Core exits */}
                             <div className="flex gap-2">
                                 <button
-                                    onClick={onExitRole}
-                                    className="flex-1 flex items-center justify-center gap-2 py-2 bg-white/5 hover:bg-white/10 rounded-xl text-zinc-400 hover:text-white border border-white/5 text-[9px] font-black uppercase tracking-widest transition-all"
+                                    onClick={handleExit}
+                                    className="flex-1 flex items-center justify-center gap-2 py-2 bg-white/5 hover:bg-white/10 rounded-xl text-zinc-400 hover:text-white border border-white/5 text-[9px] font-black uppercase tracking-widest transition-all cursor-pointer"
                                     title="Quitter le module actuel"
                                 >
                                     <ArrowUturnLeftIcon className="w-3 h-3 text-apple-blue" />
@@ -202,8 +259,8 @@ const DashboardLayout: React.FC<DashboardLayoutProps> = ({ title, navItems, chil
                             )}
 
                             <button
-                                onClick={onExitRole}
-                                className="p-2 bg-white/5 hover:bg-white/10 rounded-xl text-zinc-400 border border-white/5 transition-all active:scale-95"
+                                onClick={handleExit}
+                                className="p-2 bg-white/5 hover:bg-white/10 rounded-xl text-zinc-400 border border-white/5 transition-all active:scale-95 cursor-pointer"
                                 title="Quitter le module actuel"
                             >
                                 <ArrowUturnLeftIcon className="w-3.5 h-3.5 text-apple-blue" />
@@ -223,21 +280,21 @@ const DashboardLayout: React.FC<DashboardLayoutProps> = ({ title, navItems, chil
                 {/* BARRE DE NAVIGATION EN TÊTE */}
                 <header 
                     className={`
-                        fixed top-0 right-0 z-[100] ${isMobileLandscape ? 'h-14' : 'h-20'} flex items-center px-4 md:px-8 transition-all duration-300 ease-in-out left-0
+                        fixed top-0 right-0 z-[100] ${isMobileLandscape ? 'h-14' : 'h-16 md:h-20'} flex items-center px-3 sm:px-4 md:px-8 transition-all duration-300 ease-in-out left-0 pointer-events-none select-none
                         ${isSidebarOpen ? 'lg:left-64' : 'lg:left-20'}
                     `}
                 >
-                    <div className="absolute inset-0 bg-black/60 backdrop-blur-2xl border-b border-white/5"></div>
+                    <div className="absolute inset-0 bg-black/75 backdrop-blur-2xl border-b border-white/5 pointer-events-none"></div>
                     
-                    <div className="relative max-w-[1800px] w-full mx-auto flex items-center justify-between gap-4">
+                    <div className="relative max-w-[1800px] w-full mx-auto flex items-center justify-between gap-2 sm:gap-4 pointer-events-auto">
                         
-                        <div className="flex items-center gap-4 shrink-0">
+                        <div className="flex items-center gap-2 sm:gap-4 shrink-0 min-w-0">
                             {/* HAMBURGER / COLLAPSE BUTTON */}
                             <motion.button 
                                 whileHover={{ scale: 1.05 }}
                                 whileTap={{ scale: 0.95 }}
                                 onClick={handleMenuClick}
-                                className="p-2 bg-white/5 hover:bg-white/10 rounded-2xl transition-all text-apple-blue hover:text-white border border-white/5 flex items-center gap-2 px-3 shrink-0"
+                                className="p-2 sm:p-2.5 bg-white/5 hover:bg-white/10 rounded-2xl transition-all text-apple-blue hover:text-white border border-white/5 flex items-center gap-2 shrink-0 cursor-pointer"
                                 title={isSidebarOpen ? "Réduire le menu" : "Agrandir le menu"}
                             >
                                 <MenuIcon className="w-4 h-4 shrink-0" />
@@ -248,44 +305,75 @@ const DashboardLayout: React.FC<DashboardLayoutProps> = ({ title, navItems, chil
                                 )}
                             </motion.button>
 
-                            <div className="w-px h-8 bg-white/10 hidden sm:block"></div>
+                            <div className="w-px h-6 bg-white/10 hidden sm:block"></div>
 
-                            <div className="flex items-center gap-3">
-                                {onBack && (
+                            <div className="flex items-center gap-2 sm:gap-3 min-w-0">
+                                {(onBack || onExitRole) && (
                                     <motion.button 
                                         whileHover={{ scale: 1.1 }}
                                         whileTap={{ scale: 0.9 }}
-                                        onClick={onBack}
-                                        className="flex items-center justify-center w-8 h-8 bg-apple-blue rounded-xl text-white shadow-xl shadow-blue-500/20 hover:bg-blue-500 transition-all shrink-0"
+                                        onClick={onBack ? onBack : handleExit}
+                                        className="flex items-center justify-center w-8 h-8 bg-apple-blue hover:bg-blue-600 rounded-xl text-white shadow-xl shadow-blue-500/20 transition-all shrink-0 cursor-pointer"
+                                        title={onBack ? "Retour" : "Quitter le module"}
                                     >
                                         <ArrowLeftIcon className="w-4 h-4" />
                                     </motion.button>
                                 )}
                                 
-                                <div className="flex flex-col">
-                                    <h1 className="text-[10px] md:text-sm font-black text-white uppercase tracking-[0.2em] italic truncate max-w-[120px] md:max-w-none leading-none">
-                                        {title}
-                                    </h1>
-                                    {!isMobileLandscape && (
-                                        <div className="flex items-center gap-1.5 mt-1">
-                                            <div className="w-1.5 h-1.5 rounded-full bg-apple-blue animate-pulse"></div>
-                                            <span className="text-[8px] font-black text-apple-blue uppercase tracking-widest leading-none">Système Actif</span>
+                                <div className="flex flex-col min-w-0">
+                                    <div className="flex items-center gap-1.5 sm:gap-2">
+                                        <h1 className="text-xs sm:text-sm font-black text-white uppercase tracking-[0.15em] italic truncate max-w-[100px] sm:max-w-xs md:max-w-none leading-none">
+                                            {title}
+                                        </h1>
+                                        {statsBadge && (
+                                            <span className="hidden sm:inline-flex px-2 py-0.5 rounded-full text-[9px] font-bold bg-white/10 text-zinc-300 border border-white/10">
+                                                {statsBadge}
+                                            </span>
+                                        )}
+                                    </div>
+                                    {subtitle ? (
+                                        <p className="hidden md:block text-[9px] text-zinc-400 font-medium truncate max-w-[200px] md:max-w-md mt-0.5">
+                                            {subtitle}
+                                        </p>
+                                    ) : !isMobileLandscape ? (
+                                        <div className="hidden md:flex items-center gap-2 mt-1">
+                                            <div className="flex items-center gap-1.5">
+                                                <div className="w-1.5 h-1.5 rounded-full bg-apple-blue animate-pulse"></div>
+                                                <span className="text-[8px] font-black text-apple-blue uppercase tracking-widest leading-none">Système Actif</span>
+                                            </div>
+                                            <span className="text-zinc-600 text-[9px]">·</span>
+                                            <div className="hidden sm:flex items-center gap-1.5 text-[9px] text-zinc-400 font-medium">
+                                                <span>Cocody, Abidjan</span>
+                                                <CoteDIvoireFlag className="w-3.5 h-2.5" />
+                                                <BeninFlag className="w-3.5 h-2.5" />
+                                            </div>
                                         </div>
-                                    )}
+                                    ) : null}
                                 </div>
                             </div>
                         </div>
                         
-                        <div className="flex items-center gap-4 shrink-0">
+                        <div className="flex items-center gap-1.5 sm:gap-2.5 shrink-0 ml-auto">
+                            <DeviceProfileSwitchButton />
                             <GlobalSearch />
+
+                            {/* Bouton direct visible sur tous les écrans pour quitter vers le portail */}
+                            <button
+                                onClick={handleExit}
+                                className="flex items-center justify-center gap-1.5 p-2 sm:px-3 sm:py-1.5 rounded-xl bg-red-500/10 hover:bg-red-500/20 border border-red-500/30 text-red-400 text-xs font-bold transition-all active:scale-95 shrink-0 cursor-pointer"
+                                title="Quitter le module et revenir à la sélection des espaces"
+                            >
+                                <ArrowUturnLeftIcon className="w-3.5 h-3.5 text-red-400" />
+                                <span className="hidden sm:inline">Quitter</span>
+                            </button>
                             
-                            {/* Unified workspace indicators (visible on desktop and tablet screens for fluent display) */}
-                            <div className="flex items-center gap-2.5 sm:gap-3">
+                            {/* Unified workspace indicators */}
+                            <div className="flex items-center gap-1.5 sm:gap-2">
                                 {authReady && !isMobileLandscape && (
                                     user ? (
                                         <button 
                                             onClick={signOutUser}
-                                            className="hidden md:flex items-center gap-2 text-[10px] font-black uppercase tracking-widest px-3 py-1.5 rounded-full border border-red-500/30 bg-red-500/10 text-red-500 hover:text-red-400 hover:bg-red-500/20 transition-all active:scale-95 shrink-0"
+                                            className="hidden md:flex items-center gap-2 text-[10px] font-black uppercase tracking-widest px-3 py-1.5 rounded-full border border-red-500/30 bg-red-500/10 text-red-500 hover:text-red-400 hover:bg-red-500/20 transition-all active:scale-95 shrink-0 cursor-pointer"
                                             title={`Connecté : ${user.displayName || user.email}. Cliquer pour vous déconnecter.`}
                                         >
                                             {user.photoURL && (
@@ -296,7 +384,7 @@ const DashboardLayout: React.FC<DashboardLayoutProps> = ({ title, navItems, chil
                                     ) : (
                                         <button 
                                             onClick={signInWithGoogle}
-                                            className="hidden md:flex items-center gap-2 text-[10px] font-black uppercase tracking-widest px-3 py-1.5 rounded-full border border-blue-500/10 bg-blue-500/5 text-blue-400 hover:bg-blue-500/10 transition-all active:scale-95 shrink-0"
+                                            className="hidden md:flex items-center gap-2 text-[10px] font-black uppercase tracking-widest px-3 py-1.5 rounded-full border border-blue-500/10 bg-blue-500/5 text-blue-400 hover:bg-blue-500/10 transition-all active:scale-95 shrink-0 cursor-pointer"
                                             title="Se connecter avec Google pour synchroniser de manière sécurisée"
                                         >
                                             <div className="w-1.5 h-1.5 rounded-full bg-blue-400"></div>
@@ -304,13 +392,14 @@ const DashboardLayout: React.FC<DashboardLayoutProps> = ({ title, navItems, chil
                                         </button>
                                     )
                                 )}
-                                <div className="hidden xs:block sm:block shrink-0">
+                                <div className="hidden lg:block shrink-0">
                                     <DriveStatusBadge />
                                 </div>
-                                <div className="hidden xs:block sm:block shrink-0">
+                                <div className="hidden lg:block shrink-0" title="Santé Stockage Local">
                                     <StorageHealthIndicator />
                                 </div>
-                                <div className="shrink-0">
+                                {/* Syncthing & Stockage maintenu proprement dans l'angle sans gêner */}
+                                <div className="shrink-0" title="Synchronisation Cloud & Santé Stockage">
                                     <SyncStatusIndicator />
                                 </div>
                             </div>
@@ -319,20 +408,11 @@ const DashboardLayout: React.FC<DashboardLayoutProps> = ({ title, navItems, chil
                 </header>
 
                 {/* MAIN CHRONICLE CHILDREN AREA */}
-                <main className={`flex-1 ${isMobileLandscape ? 'mt-14' : 'mt-20'} flex flex-col`}>
-                    <div className={`max-w-[1800px] w-full mx-auto ${isMobileLandscape ? 'p-3' : 'p-4 md:p-10'}`}>
+                <main className={`flex-1 ${isMobileLandscape ? 'pt-14' : 'pt-16 md:pt-20'} flex flex-col`}>
+                    <div className={`max-w-[1800px] w-full mx-auto ${isMobileLandscape ? 'p-3' : 'p-3 sm:p-4 md:p-10'} pb-28 md:pb-12`}>
                         {children}
                     </div>
                 </main>
-                
-                {/* Micro-devices action bar */}
-                <div className="sm:hidden fixed bottom-8 left-1/2 -translate-x-1/2 z-[100]">
-                    <div className="bg-black/80 backdrop-blur-xl border border-white/10 rounded-full p-2.5 shadow-2xl flex items-center gap-4">
-                        <SyncStatusIndicator />
-                        <div className="w-px h-4 bg-white/10"></div>
-                        <StorageHealthIndicator />
-                    </div>
-                </div>
             </div>
 
             {/* OVERLAY MENU MOBILE */}
@@ -344,10 +424,29 @@ const DashboardLayout: React.FC<DashboardLayoutProps> = ({ title, navItems, chil
                         exit={{ opacity: 0, y: -20 }}
                         className="fixed inset-0 z-[120] bg-black/95 backdrop-blur-3xl flex flex-col pt-24 px-6 pb-12 overflow-y-auto"
                     >
-                        <div className="max-w-lg mx-auto w-full space-y-12">
-                            <div className="text-center space-y-2">
+                        <div className="max-w-lg mx-auto w-full space-y-8">
+                            {/* Barre supérieure rapide du menu mobile avec bouton direct Quitter */}
+                            <div className="flex items-center justify-between p-3 bg-white/[0.03] border border-white/10 rounded-2xl">
+                                <button
+                                    onClick={handleExit}
+                                    className="flex items-center gap-2 px-4 py-2 bg-red-600/20 hover:bg-red-600/30 border border-red-500/40 rounded-xl text-xs font-black uppercase tracking-wider text-red-300 transition-all active:scale-95 cursor-pointer shadow-md"
+                                >
+                                    <LogOutIcon className="w-4 h-4 text-red-400" />
+                                    <span>Quitter le module</span>
+                                </button>
+
+                                <button
+                                    onClick={() => setIsMobileMenuOpen(false)}
+                                    className="flex items-center gap-1.5 px-3 py-2 bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl text-xs font-bold text-zinc-400 hover:text-white transition-all cursor-pointer"
+                                >
+                                    <span>Fermer</span>
+                                    <span className="text-zinc-500 font-mono">✕</span>
+                                </button>
+                            </div>
+
+                            <div className="text-center space-y-1.5">
                                 <p className="text-apple-blue font-black uppercase tracking-[0.4em] text-[10px]">REPARERMONMAC Ecosystem</p>
-                                <h2 className="text-4xl font-black text-white tracking-tighter uppercase italic">Navigation</h2>
+                                <h2 className="text-3xl font-black text-white tracking-tighter uppercase italic">Navigation Rapide</h2>
                             </div>
                             
                             <div className="grid grid-cols-2 gap-4">
@@ -358,27 +457,46 @@ const DashboardLayout: React.FC<DashboardLayoutProps> = ({ title, navItems, chil
                                         whileTap={{ scale: 0.98 }}
                                         onClick={() => handleNavClick(item.onClick)}
                                         className={`
-                                            flex flex-col items-center justify-center aspect-square rounded-[40px] border transition-all gap-4 p-6
+                                            flex flex-col items-center justify-center aspect-square rounded-[32px] border transition-all gap-3 p-5
                                             ${item.isActive 
                                                 ? 'bg-apple-blue border-blue-400 text-white shadow-2xl shadow-blue-500/30' 
                                                 : 'bg-white/5 border-white/5 text-apple-muted hover:bg-white/10 hover:border-white/10'
                                             }
                                         `}
                                     >
-                                        <div className={`p-4 rounded-2xl ${item.isActive ? 'bg-white/20' : 'bg-apple-blue/10'}`}>
-                                            <item.icon className={`w-8 h-8 ${item.isActive ? 'text-white' : 'text-apple-blue'}`} />
+                                        <div className={`p-3.5 rounded-2xl ${item.isActive ? 'bg-white/20' : 'bg-apple-blue/10'}`}>
+                                            <item.icon className={`w-7 h-7 ${item.isActive ? 'text-white' : 'text-apple-blue'}`} />
                                         </div>
-                                        <span className="text-[11px] font-black uppercase text-center leading-tight tracking-widest">{item.label}</span>
+                                        <div className="flex flex-col items-center gap-1 text-center">
+                                            <span className="text-[11px] font-black uppercase leading-tight tracking-wider">{item.label}</span>
+                                            {item.badge !== undefined && (
+                                                <span className="px-2 py-0.5 rounded-full bg-apple-blue text-white text-[9px] font-bold border border-white/20">
+                                                    {item.badge}
+                                                </span>
+                                            )}
+                                        </div>
                                     </motion.button>
                                 ))}
                             </div>
 
-                            <div className="pt-12 border-t border-white/5 flex flex-col gap-4">
+                            {/* Santé & Synchronisation dans le menu mobile */}
+                            <div className="p-4 bg-white/[0.03] border border-white/10 rounded-2xl flex items-center justify-between gap-3">
+                                <div>
+                                    <span className="text-[10px] font-black uppercase tracking-widest text-zinc-400">Cloud & Stockage</span>
+                                    <p className="text-[10px] text-zinc-500 mt-0.5">Données protégées localement et synchronisées</p>
+                                </div>
+                                <div className="flex items-center gap-2 shrink-0">
+                                    <StorageHealthIndicator />
+                                    <SyncStatusIndicator compact={false} />
+                                </div>
+                            </div>
+
+                            <div className="pt-6 border-t border-white/10 flex flex-col gap-3">
                                 {authReady && (
                                     user ? (
                                         <button 
                                             onClick={() => { signOutUser(); setIsMobileMenuOpen(false); }}
-                                            className="flex items-center justify-center gap-3 w-full py-5 bg-red-600/10 border border-red-500/20 rounded-3xl text-xs font-black uppercase tracking-widest text-red-500 hover:bg-red-500/20 transition-all"
+                                            className="flex items-center justify-center gap-3 w-full py-4 bg-red-600/10 border border-red-500/20 rounded-2xl text-xs font-black uppercase tracking-widest text-red-500 hover:bg-red-500/20 transition-all"
                                         >
                                             {user.photoURL && <img src={user.photoURL} alt="" className="w-5 h-5 rounded-full" referrerPolicy="no-referrer" />}
                                             <span>Déconnexion ({user.displayName || 'Google'})</span>
@@ -386,24 +504,24 @@ const DashboardLayout: React.FC<DashboardLayoutProps> = ({ title, navItems, chil
                                     ) : (
                                         <button 
                                             onClick={() => { signInWithGoogle(); setIsMobileMenuOpen(false); }}
-                                            className="flex items-center justify-center gap-3 w-full py-5 bg-blue-600/10 border border-blue-500/20 rounded-3xl text-xs font-black uppercase tracking-widest text-blue-400 hover:bg-blue-500/20 transition-all"
+                                            className="flex items-center justify-center gap-3 w-full py-4 bg-blue-600/10 border border-blue-500/20 rounded-2xl text-xs font-black uppercase tracking-widest text-blue-400 hover:bg-blue-500/20 transition-all"
                                         >
                                             Connexion Google Sync
                                         </button>
                                     )
                                 )}
                                 <button 
-                                    onClick={onExitRole}
-                                    className="flex items-center justify-center gap-3 w-full py-5 bg-zinc-900 border border-white/5 rounded-3xl text-xs font-black uppercase tracking-widest text-red-500 hover:bg-red-500/10 transition-all"
+                                    onClick={handleExit}
+                                    className="flex items-center justify-center gap-3 w-full py-4 bg-red-600/20 hover:bg-red-600/30 border border-red-500/40 rounded-2xl text-xs font-black uppercase tracking-widest text-red-300 transition-all cursor-pointer shadow-lg active:scale-95"
                                 >
-                                    <LogOutIcon className="w-4 h-4" />
-                                    <span>Quitter le module</span>
+                                    <LogOutIcon className="w-4 h-4 text-red-400" />
+                                    <span>Quitter le module (Accueil)</span>
                                 </button>
                                 <button 
                                     onClick={() => setIsMobileMenuOpen(false)} 
-                                    className="w-full py-5 text-xs font-black uppercase text-slate-500 hover:text-white transition-colors tracking-[0.3em]"
+                                    className="w-full py-3 text-xs font-bold uppercase text-zinc-400 hover:text-white transition-colors tracking-widest"
                                 >
-                                    Fermer le menu
+                                    Fermer ce menu (rester ici)
                                 </button>
                             </div>
                         </div>

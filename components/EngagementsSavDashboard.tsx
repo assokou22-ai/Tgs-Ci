@@ -128,7 +128,11 @@ const isThisWeek = (dateStr: string): boolean => {
     return target >= startOfWeek && target <= endOfWeek;
 };
 
-const EngagementsSavDashboard: React.FC = () => {
+interface EngagementsSavDashboardProps {
+    onExitRole?: () => void;
+}
+
+const EngagementsSavDashboard: React.FC<EngagementsSavDashboardProps> = ({ onExitRole }) => {
     const { showToast } = useToastContext();
     const [engagements, setEngagements] = useState<EngagementSav[]>([]);
     const [loading, setLoading] = useState(true);
@@ -336,6 +340,10 @@ const EngagementsSavDashboard: React.FC = () => {
     };
 
     const handleExitRole = () => {
+        if (onExitRole) {
+            onExitRole();
+            return;
+        }
         const url = new URL(window.location.href);
         url.searchParams.delete('role');
         window.history.pushState({}, '', url);
@@ -397,7 +405,7 @@ const EngagementsSavDashboard: React.FC = () => {
             navItems={navItems}
             onExitRole={handleExitRole}
         >
-            <div className="max-w-7xl mx-auto space-y-8 p-4 md:p-6 animate-fade-in text-white">
+            <div className="relative z-10 max-w-7xl mx-auto space-y-8 p-4 md:p-6 animate-fade-in text-white">
                 
                 {/* Visual Title Header */}
                 <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-white/5 pb-6">

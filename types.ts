@@ -14,7 +14,7 @@ export interface ColorPalette {
 }
 
 export type FeatureId = 
-    | 'menu_accueil' | 'menu_technicien' | 'menu_editeur' | 'menu_finance' | 'menu_engagements_sav' | 'menu_actions_du_jour'
+    | 'menu_accueil' | 'menu_technicien' | 'menu_editeur' | 'menu_finance' | 'menu_engagements_sav' | 'menu_assistant_clientele' | 'menu_actions_du_jour'
     | 'tool_ai_reports' | 'tool_ai_diag' | 'tool_ai_price' | 'tool_ai_correction' | 'tool_ai_search'
     | 'mod_stock' | 'mod_clients' | 'mod_documents' | 'mod_knowledge' | 'mod_multimedia' | 'mod_appointments'
     | 'mod_backup' | 'mod_exports' | 'mod_legal_folder' | 'mod_diagnostic_b' | 'mod_enterprise_clients' | 'mod_daily_actions';
@@ -24,7 +24,7 @@ export interface AppFeatures {
     requireSession: Record<FeatureId, boolean>;
 }
 
-export type Role = 'Accueil' | 'Technicien' | 'Editeur' | 'Facture et Commande' | 'Engagements SAV' | 'Actions du jour' | 'Système';
+export type Role = 'Accueil' | 'Technicien' | 'Editeur' | 'Facture et Commande' | 'Engagements SAV' | 'Assistant Clientèle' | 'Actions du jour' | 'Système';
 
 export enum RepairStatus {
     A_DIAGNOSTIQUER = 'À diagnostiquer',
@@ -168,6 +168,28 @@ export type LegalTemplateId = 'bon' | 'attestation' | 'cession';
 
 export type TechnicalReportLevel = 'express' | 'standard' | 'expert_p3';
 
+export interface TechnicalBlockageReport {
+    id: string;
+    createdAt: string;
+    technicianName: string;
+    replacedComponents: string[];
+    customComponentsText?: string;
+    symptoms: string[];
+    technicalDetails: string;
+    clientExplanation: string;
+    requestedDays: number;
+    previousRdvDate?: string;
+    calculatedRdvDate: string;
+    calculatedRdvTime?: string;
+    status: 'DEMANDEE' | 'CLIENT_INFORME' | 'ACCEPTEE' | 'REFUSEE';
+    clientFeedback?: string;
+    notifiedViaWhatsApp?: boolean;
+    notifiedViaSms?: boolean;
+    notifiedViaEmail?: boolean;
+    notifiedViaCall?: boolean;
+    updatedAt?: string;
+}
+
 export interface TechnicalInterventionReport {
     enabled?: boolean;
     level?: TechnicalReportLevel;
@@ -199,6 +221,9 @@ export interface RepairTicket {
     modelNumber?: string; // Ajout du numéro AXXXX
     macColor?: string;
     serialNumber?: string;
+    emc?: string; // Code EMC détecté sur le couvre arrière (ex: EMC 3347)
+    backCoverImage?: string; // Cliché identifié du couvre arrière (contenant S/N + Modèle + EMC)
+    backCoverImageIndex?: number; // Index de la photo correspondant au couvre arrière dans intakeImages
     problemDescription: string;
     declaredSymptomsDetails?: DeclaredSymptomsDetails;
     technicianNotes?: string;
@@ -219,6 +244,7 @@ export interface RepairTicket {
     history: HistoryEntry[];
     diagnosticReport?: DiagnosticCheck[];
     diagnosticImages?: string[];
+    intakeImages?: string[]; // Photos prises lors de l'enregistrement (capot, écran, dos/numéro de série, etc.)
     attachments?: Attachment[];
     customFields?: Record<string, string>;
     diagnosticSheetB?: DiagnosticSheetBData;
@@ -228,6 +254,7 @@ export interface RepairTicket {
     printFunctionalTests?: boolean; // NOUVEAU P4
     printTechnicalReportP3?: boolean; // NOUVEAU P3 RAPPORT DE FIN D'INTERVENTION
     technicalReport?: TechnicalInterventionReport;
+    technicalBlockageReport?: TechnicalBlockageReport; // Rapport de blocage en cours de travaux & rallonge de délai
     printLegalDocument?: boolean;
     selectedLegalTemplate?: LegalTemplateId;
     
@@ -263,7 +290,85 @@ export interface RepairTicket {
     waitingReason?: string; // motif détaillé
     waitingFollowUpDate?: string; // YYYY-MM-DD
     waitingFollowUpTime?: string; // HH:mm
+
+    // Règle comptable : Fiche annulée mentionnée automatiquement comme infacturable (aucun fond intégrable au point)
+    isInfacturable?: boolean;
+    infacturableReason?: string;
+
+    // NOUVEAU : Mode de réception de l'ordinateur
+    receptionMode?: ReceptionMode;
+    yangoDetails?: YangoDeliveryInfo;
+
+    // NOUVEAU : Règlements électroniques (Wave, OM, etc.) et justificatifs
+    paymentsList?: PaymentEntry[];
+
+    // NOUVEAU : Photos Avant / Après intervention & Restitution
+    restitutionPhotos?: string[]; // Clichés pris avant restitution
+    restitutionDetails?: RestitutionDetails;
 }
+
+// ==================== MODE DE RÉCEPTION (ATELIER VS YANGO) ====================
+export type ReceptionMode = 'depot_atelier' | 'livraison_yango';
+
+export interface YangoDeliveryInfo {
+    clientName?: string;
+    clientPhone?: string;
+    receptionDate: string; // YYYY-MM-DD
+    deliveryReference?: string; // N° de course / référence Yango
+    deliveryNotes?: string;
+    driverType: 'yango_affilie' | 'livreur_independant';
+    driverName?: string;
+    driverPhone?: string;
+    whatsappScreenshot?: string; // Capture écran WhatsApp du formulaire renseigné par le client
+    driverScreenshot?: string;   // Capture écran de la course ou photo du livreur
+    deliveryProofDoc?: string;   // Fichier image ou PDF de preuve de livraison
+    deliveryProofDocName?: string;
+}
+
+// ==================== PAIEMENTS ÉLECTRONIQUES & JUSTIFICATIFS ====================
+export type PaymentMethod = 
+    | 'wave' 
+    | 'orange_money' 
+    | 'mtn_momo' 
+    | 'moov_money' 
+    | 'especes' 
+    | 'virement' 
+    | 'carte_bancaire' 
+    | 'cheque' 
+    | 'autre';
+
+export interface PaymentEntry {
+    id: string;
+    amount: number;
+    date: string; // YYYY-MM-DD ou ISO
+    method: PaymentMethod;
+    reference?: string; // Référence de transaction (ex: Wave Tx ID, OM Ref)
+    proofUrl?: string;  // Justificatif image JPG/PNG ou document PDF (Base64)
+    proofName?: string;
+    proofType?: 'image' | 'pdf';
+    notes?: string;
+    recordedBy?: string;
+    createdAt: string;
+}
+
+// ==================== RESTITUTION & PHOTOS AVANT / APRÈS ====================
+export type RepairOutcomeStatus = 'oui' | 'non' | 'preciser';
+
+export interface RestitutionDetails {
+    isRepaired: RepairOutcomeStatus; // Réparé : OUI / NON / Préciser
+    repairPrecision?: string; // Précisions si statut "Préciser" ou "Non"
+    repairedComponents?: string[]; // Composants réparés ou remplacés
+    generalExitState?: string; // État général avant remise au client
+    restitutionMode: 'retrait_atelier' | 'livraison_yango';
+    restitutionDate?: string; // Date de restitution
+    yangoExpeditionPhotos?: string[]; // Photos prises avant l'expédition Yango
+    yangoDeliveryProofDoc?: string; // Preuve de livraison Yango remise au client
+    yangoDeliveryProofDocName?: string;
+    yangoExpeditionDriverName?: string;
+    yangoExpeditionDriverPhone?: string;
+    notes?: string;
+}
+
 
 export type DailyActionStatus = 'A_FAIRE' | 'FAIT' | 'EN_RETARD';
 export type DailyActionType = 'RAPPEL_J3' | 'CONFIRMATION_J1' | 'JOUR_J0_8H' | 'RELANCE_DEVIS' | 'ATTENTE_PIECE' | 'RDV_CLIENT' | 'SAV_PROMESSE' | 'AUTRE';

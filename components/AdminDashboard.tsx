@@ -10,7 +10,8 @@ import AnalyticsReport from './DailyReport.tsx';
 import CalendarView from './CalendarView.tsx';
 import TicketArchive from './TicketArchive.tsx';
 import DiagnosticWorkboard from './DiagnosticWorkboard.tsx';
-import { ChartBarIcon, ListBulletIcon, CalendarDaysIcon, SparklesIcon, BookOpenIcon, DocumentMagnifyingGlassIcon, ClockIcon } from './icons.tsx';
+import TicketFinancialPointManager from './TicketFinancialPointManager.tsx';
+import { ChartBarIcon, ListBulletIcon, CalendarDaysIcon, SparklesIcon, BookOpenIcon, DocumentMagnifyingGlassIcon, ClockIcon, BanknotesIcon } from './icons.tsx';
 import DashboardLayout, { NavItem } from './DashboardLayout.tsx';
 import ActionsDuJourView from './ActionsDuJourView.tsx';
 import PreviewModal from './PreviewModal.tsx';
@@ -24,6 +25,7 @@ interface AdminDashboardProps {
     updateTicket: (ticket: RepairTicket) => Promise<void>;
     deleteTicket: (ticketId: string) => Promise<void>;
     loading: boolean;
+    onExitRole?: () => void;
 }
 
 const TicketListsView: React.FC<{
@@ -122,11 +124,11 @@ const TicketListsView: React.FC<{
 };
 
 
-const AdminDashboard: React.FC<AdminDashboardProps> = ({ tickets, updateTicket, deleteTicket, loading }) => {
+const AdminDashboard: React.FC<AdminDashboardProps> = ({ tickets, updateTicket, deleteTicket, loading, onExitRole }) => {
   const [ticketToEdit, setTicketToEdit] = useState<RepairTicket | null>(null); 
   const [ticketToPrint, setTicketToPrint] = useState<RepairTicket | null>(null);
   const [ticketToDelete, setTicketToDelete] = useState<RepairTicket | null>(null);
-  const [currentView, setCurrentView] = useState<'lists' | 'diagnostics' | 'dashboard' | 'report' | 'calendar' | 'archive' | 'actions'>('lists');
+  const [currentView, setCurrentView] = useState<'lists' | 'diagnostics' | 'dashboard' | 'report' | 'calendar' | 'archive' | 'actions' | 'point_financier'>('lists');
   const [locationSearch, setLocationSearch] = useState(window.location.search);
   const [isLoading, setIsLoading] = useState(false);
   
@@ -173,11 +175,6 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ tickets, updateTicket, 
     return null;
   }, [tickets, locationSearch]);
 
-  useEffect(() => {
-    if (selectedTicket && ticketToEdit) {
-      setTimeout(() => setTicketToEdit(null), 0);
-    }
-  }, [selectedTicket, ticketToEdit]);
 
   const handleSelectTicket = (ticket: RepairTicket) => {
     const newUrl = new URL(window.location.href);
@@ -210,6 +207,10 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ tickets, updateTicket, 
   };
 
   const handleExitRole = () => {
+      if (onExitRole) {
+          onExitRole();
+          return;
+      }
       const url = new URL(window.location.href);
       url.searchParams.delete('role');
       url.searchParams.delete('ticketId');
@@ -223,13 +224,11 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ tickets, updateTicket, 
   
   const handleSaveTicket = async (ticketData: Partial<RepairTicket>, action: 'new' | 'close' | 'print', oldId?: string) => {
     await updateTicket(ticketData as RepairTicket, oldId);
+    setTicketToEdit(null);
     if (action === 'print') {
-        setTicketToEdit(null);
         setTimeout(() => setTicketToPrint(ticketData as RepairTicket), 100);
-    } else if (action === 'close') {
-        setTicketToEdit(null);
-        handleSelectTicket(ticketData as RepairTicket);
     }
+    handleSelectTicket(ticketData as RepairTicket);
   };
 
   const confirmDelete = async () => {
@@ -253,16 +252,17 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ tickets, updateTicket, 
       { id: 'dashboard', label: 'Stats Atelier', icon: ChartBarIcon, isActive: currentView === 'dashboard', onClick: () => handleSetView('dashboard') },
       { id: 'report', label: 'Rapports IA', icon: SparklesIcon, isActive: currentView === 'report', onClick: () => handleSetView('report') },
       { id: 'calendar', label: 'Calendrier', icon: CalendarDaysIcon, isActive: currentView === 'calendar', onClick: () => handleSetView('calendar') },
+      { id: 'point_financier', label: 'Point Financier', icon: BanknotesIcon, isActive: currentView === 'point_financier', onClick: () => handleSetView('point_financier') },
       { id: 'archive', label: 'Archives', icon: BookOpenIcon, isActive: currentView === 'archive', onClick: () => handleSetView('archive') },
   ];
 
   const renderContent = () => {
       if (ticketToEdit) {
           const activeTicketToEdit = tickets.find(t => t.id === ticketToEdit.id) || ticketToEdit;
-          if (activeTicketToEdit.client.isEnterprise) {
-              return <EnterpriseRepairForm tickets={tickets} ticketToEdit={activeTicketToEdit} onSave={handleSaveTicket} onCancel={handleCancelForm} />;
+          if (activeTicketToEdit.client?.isEnterprise) {
+              return <EnterpriseRepairForm key={activeTicketToEdit.id} tickets={tickets} ticketToEdit={activeTicketToEdit} onSave={handleSaveTicket} onCancel={handleCancelForm} />;
           }
-          return <RepairForm tickets={tickets} ticketToEdit={activeTicketToEdit} onSave={handleSaveTicket} onCancel={handleCancelForm} role="Technicien" />;
+          return <RepairForm key={activeTicketToEdit.id} tickets={tickets} ticketToEdit={activeTicketToEdit} onSave={handleSaveTicket} onCancel={handleCancelForm} role="Technicien" />;
       }
       if (selectedTicket) {
         return (
@@ -282,6 +282,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ tickets, updateTicket, 
         case 'diagnostics': return <DiagnosticWorkboard tickets={searchedTickets} onSelectTicket={handleSelectTicket} onUpdateTicket={updateTicket} />;
         case 'report': return <AnalyticsReport tickets={tickets} onBack={handleBackToList} />;
         case 'calendar': return <CalendarView tickets={searchedTickets} onSelectTicket={handleSelectTicket} />;
+        case 'point_financier': return <TicketFinancialPointManager tickets={tickets} onSelectTicket={handleSelectTicket} onBack={handleBackToList} />;
         case 'archive': return (
           <TicketArchive 
             tickets={searchedTickets} 
@@ -312,7 +313,9 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ tickets, updateTicket, 
         onBack={(selectedTicket || ticketToEdit || currentView !== 'lists') ? handleBackToList : undefined}
         onExitRole={handleExitRole}
     >
-        {renderContent()}
+        <div className="relative z-10">
+            {renderContent()}
+        </div>
         {ticketToPrint && (
             <PreviewModal isOpen={!!ticketToPrint} onClose={() => setTicketToPrint(null)} fileName={`fiche_${ticketToPrint.id}.pdf`}>
                 <PrintableTicket ticket={ticketToPrint} printSettings={settings.print} customFieldDefs={settings.customFields.ticket} />

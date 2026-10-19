@@ -51,6 +51,8 @@ const DiagnosticWorkboard: React.FC<DiagnosticWorkboardProps> = ({ tickets, onSe
             diagnosticReport: report,
             diagnosticImages: images,
             diagnosticCreatedAt: activeTicketForDiag.diagnosticCreatedAt || now,
+            updatedAt: now,
+            printDiagnosticIntegrated: true,
             status: activeTicketForDiag.status === RepairStatus.A_DIAGNOSTIQUER ? RepairStatus.DIAGNOSTIC_EN_COURS : activeTicketForDiag.status,
             diagnosticSheetB: {
                 ...(activeTicketForDiag.diagnosticSheetB || {
@@ -61,6 +63,10 @@ const DiagnosticWorkboard: React.FC<DiagnosticWorkboardProps> = ({ tickets, onSe
                     visualInspection: ''
                 }),
                 entryCondition: selectedScenario
+            },
+            customFields: {
+                ...(activeTicketForDiag.customFields || {}),
+                diagnostic: (activeTicketForDiag.customFields?.diagnostic) || `Diagnostic technique validé (Scénario: ${selectedScenario})`
             },
             history: [
                 ...activeTicketForDiag.history,
@@ -79,8 +85,14 @@ const DiagnosticWorkboard: React.FC<DiagnosticWorkboardProps> = ({ tickets, onSe
         const updatedTicket = { 
             ...activeTicketForSheetB, 
             diagnosticSheetB: data,
+            showExpertiseB: true,
             diagnosticCreatedAt: activeTicketForSheetB.diagnosticCreatedAt || now,
+            updatedAt: now,
             status: activeTicketForSheetB.status === RepairStatus.A_DIAGNOSTIQUER ? RepairStatus.DIAGNOSTIC_EN_COURS : activeTicketForSheetB.status,
+            customFields: {
+                ...(activeTicketForSheetB.customFields || {}),
+                diagnostic: (activeTicketForSheetB.customFields?.diagnostic) || data.visualInspection || "Expertise électronique validée (Carte Mère)"
+            },
             history: [
                 ...activeTicketForSheetB.history,
                 { timestamp: now, user: 'Technicien', action: 'Validation de l\'expertise électronique (Expertise B).' }

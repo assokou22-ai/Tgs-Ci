@@ -374,9 +374,12 @@ const AppSettingsManager: React.FC = () => {
             color: "text-blue-500",
             items: [
                 { id: 'menu_accueil', label: 'Tableau d\'Accueil' },
+                { id: 'menu_assistant_clientele', label: 'Assistant(e) Clientèle & Admin' },
                 { id: 'menu_technicien', label: 'Espace Technicien' },
                 { id: 'menu_editeur', label: 'Console Éditeur' },
                 { id: 'menu_finance', label: 'Gestion Finance' },
+                { id: 'menu_engagements_sav', label: 'Engagements SAV' },
+                { id: 'menu_actions_du_jour', label: 'Actions du Jour' },
             ]
         },
         {

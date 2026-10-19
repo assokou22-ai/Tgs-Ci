@@ -45,17 +45,20 @@
         }
       }
     </script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
     <style>
-      @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap');
-      
       :root {
-        font-family: 'Inter', -apple-system, system-ui, sans-serif;
+        font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        font-feature-settings: "cv02", "cv03", "cv04", "cv11";
       }
 
       body {
-        background-color: #000000;
-        color: #f5f5f7;
+        background-color: #07080a;
+        color: #f1f2f6;
         -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
         padding-top: env(safe-area-inset-top, 0px);
         padding-bottom: env(safe-area-inset-bottom, 0px);
         padding-left: env(safe-area-inset-left, 0px);
@@ -65,6 +68,64 @@
       /* Inertial scrolling for touch viewports */
       * {
         -webkit-overflow-scrolling: touch;
+      }
+
+      /* OPTIMISATION TACTILE ATELIER (MODE TABLETTE & MOBILE) */
+      html.device-touch {
+        touch-action: manipulation;
+      }
+
+      /* Agrandissement des zones de boutons tactiles (≥ 44px sur tablette, ≥ 48px sur mobile) */
+      html.device-touch button,
+      html.device-touch [role="button"],
+      html.device-touch a[role="button"] {
+        min-height: 44px;
+        touch-action: manipulation;
+      }
+
+      html.device-mobile button,
+      html.device-mobile [role="button"] {
+        min-height: 48px;
+      }
+
+      /* Formulaires atelier : Police ≥ 16px sur mobile/tactile pour éviter les zooms automatiques iOS/Android */
+      html.device-touch input:not([type="checkbox"]):not([type="radio"]),
+      html.device-touch select,
+      html.device-touch textarea {
+        font-size: 16px !important;
+        min-height: 44px;
+      }
+
+      html.device-mobile input:not([type="checkbox"]):not([type="radio"]),
+      html.device-mobile select,
+      html.device-mobile textarea {
+        min-height: 48px;
+      }
+
+      /* Zone de clic élargie pour les cases à cocher en atelier */
+      html.device-touch input[type="checkbox"],
+      html.device-touch input[type="radio"] {
+        min-width: 20px;
+        min-height: 20px;
+        cursor: pointer;
+      }
+
+      /* Feedback tactile instantané sur les boutons */
+      html.device-touch button:active,
+      html.device-touch [role="button"]:active {
+        transform: scale(0.97);
+        transition: transform 0.08s ease;
+      }
+
+      /* Espacement et confort visuel en mode tactile */
+      html.device-touch .apple-card {
+        padding: 1.25rem !important;
+      }
+
+      @media (min-width: 640px) {
+        html.device-touch .apple-card {
+          padding: 1.75rem !important;
+        }
       }
 
       /* STRUCTURE A4 UNIFIÉE (ÉCRAN & PRINT) */
@@ -252,7 +313,6 @@
   }
 }
 </script>
-<link rel="stylesheet" href="/index.css">
 </head>
   <body class="dark overflow-x-hidden">
     <div id="root"></div>

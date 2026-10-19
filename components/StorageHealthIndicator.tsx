@@ -26,14 +26,18 @@ const StorageHealthIndicator: React.FC = () => {
         <motion.div 
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
-            className="flex items-center gap-2 px-3 py-1.5 bg-white/5 border border-white/10 rounded-xl"
-            title={`Stockage : ${usageGo} Go / ${quotaGo} Go`}
+            className="flex items-center gap-1.5 sm:gap-2 px-2 sm:px-3 py-1.5 bg-white/5 border border-white/10 rounded-xl shrink-0"
+            title={`Santé Stockage : ${usageGo} Go / ${quotaGo} Go (${estimate.percent}% utilisé)`}
         >
-            <HardDriveIcon className={`w-3.5 h-3.5 ${estimate.percent > 80 ? 'text-red-500' : 'text-emerald-500'}`} />
-            <div className="flex flex-col">
+            <div className="relative flex items-center justify-center">
+                <HardDriveIcon className={`w-3.5 h-3.5 ${estimate.percent > 80 ? 'text-red-400' : 'text-emerald-400'}`} />
+                <span className={`absolute -top-1 -right-1 w-1.5 h-1.5 rounded-full sm:hidden ${estimate.percent > 80 ? 'bg-red-500' : 'bg-emerald-500'}`} />
+            </div>
+
+            <div className="hidden sm:flex flex-col">
                 <span className="text-[8px] font-black text-slate-500 uppercase tracking-widest leading-none mb-0.5">Stockage</span>
                 <div className="flex items-center gap-1.5">
-                    <div className="w-12 h-1 bg-white/10 rounded-full overflow-hidden">
+                    <div className="w-10 sm:w-12 h-1 bg-white/10 rounded-full overflow-hidden">
                         <div 
                             className={`h-full ${estimate.percent > 80 ? 'bg-red-500' : 'bg-emerald-500'}`}
                             style={{ width: `${estimate.percent}%` }}

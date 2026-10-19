@@ -3,6 +3,7 @@ import { RepairTicket, PowerOnStatus, EntryCondition } from '../types.ts';
 import { AppleLogo } from './icons.tsx';
 import { getStatusStyle } from '../utils/statusStyles.ts';
 import SecureQrCode from './SecureQrCode.tsx';
+import { getTicketFinancialSummary } from '../utils/ticketHelpers.ts';
 
 interface PrintableTechnicalReportProps {
   ticket: RepairTicket;
@@ -26,11 +27,12 @@ const PrintableTechnicalReport: React.FC<PrintableTechnicalReportProps> = ({ tic
     year: 'numeric'
   }) : 'N/A';
 
-  const diagCost = ticket.costs?.diagnostic || 0;
-  const servicesTotal = ticket.services?.reduce((sum, s) => sum + s.price, 0) || 0;
-  const total = diagCost + servicesTotal;
-  const advance = ticket.costs?.advance || 0;
-  const balance = Math.max(0, total - advance);
+  const fin = getTicketFinancialSummary(ticket);
+  const diagCost = fin.diagnosticCost;
+  const servicesTotal = fin.repairCost;
+  const total = fin.totalBilled;
+  const advance = fin.advanceReceived;
+  const balance = fin.balanceDue;
 
   const getPowerStatusLabel = (status: PowerOnStatus) => {
     switch(status) {
@@ -307,8 +309,11 @@ const PrintableTechnicalReport: React.FC<PrintableTechnicalReportProps> = ({ tic
                 <td style={{ ...styles.value, padding: '0.5mm 0' }}>{ticket.macBrand} {ticket.macModel}</td>
               </tr>
               <tr>
-                <td style={{ ...styles.label, padding: '0.5mm 0' }}>N° Modèle (A_XXX) :</td>
-                <td style={{ ...styles.value, padding: '0.5mm 0', color: '#0071e3' }}>{ticket.modelNumber || 'Vérifié à l\'expertise'}</td>
+                <td style={{ ...styles.label, padding: '0.5mm 0' }}>N° Modèle (A_XXX) / EMC :</td>
+                <td style={{ ...styles.value, padding: '0.5mm 0', color: '#0071e3' }}>
+                  {ticket.modelNumber || 'Vérifié à l\'expertise'}
+                  {(ticket.emc || ticket.customFields?.emc) ? ` · ${ticket.emc || ticket.customFields?.emc}` : ''}
+                </td>
               </tr>
               <tr>
                 <td style={{ ...styles.label, padding: '0.5mm 0' }}>Numéro de Série :</td>
@@ -554,6 +559,12 @@ const PrintableTechnicalReport: React.FC<PrintableTechnicalReportProps> = ({ tic
                 <td style={{ ...styles.td, textAlign: 'right', fontWeight: 'bold' }}>{item.price.toLocaleString()}</td>
               </tr>
             ))
+          ) : servicesTotal > 0 ? (
+            <tr>
+              <td style={styles.td}>⚙️ Forfait Réparation / Pièces & Main-d'œuvre</td>
+              <td style={{ ...styles.td, textAlign: 'right', color: '#666' }}>{servicesTotal.toLocaleString()}</td>
+              <td style={{ ...styles.td, textAlign: 'right', fontWeight: 'bold' }}>{servicesTotal.toLocaleString()}</td>
+            </tr>
           ) : (
             <tr>
               <td colSpan={3} style={{ ...styles.td, fontStyle: 'italic', color: '#86868b', textAlign: 'center', padding: '3mm' }}>
@@ -563,17 +574,40 @@ const PrintableTechnicalReport: React.FC<PrintableTechnicalReportProps> = ({ tic
           )}
 
           {/* Financial calculations */}
+          {fin.isInfacturable && (
+            <tr>
+              <td colSpan={3} style={{ ...styles.td, padding: '2mm', backgroundColor: '#fff5f5', border: '0.5pt solid #feb2b2', textAlign: 'center' }}>
+                <div style={{ fontSize: '7.5pt', fontWeight: '900', color: '#c53030' }}>
+                  🚫 FICHE ANNULÉE — MENTION : INFACTURABLE
+                </div>
+                <div style={{ fontSize: '6.5pt', color: '#742a2a', marginTop: '0.2mm' }}>
+                  Dossier annulé : aucun fond n'est intégrable dans notre point (Chiffre d'affaires et solde = 0 F CFA).
+                  {fin.rawAdvanceReceived > 0 && ` Avance initiale versée de ${fin.rawAdvanceReceived.toLocaleString()} F CFA exclue de notre point.`}
+                </div>
+              </td>
+            </tr>
+          )}
           <tr style={{ backgroundColor: '#f5f5f7' }}>
-            <td colSpan={2} style={{ ...styles.td, textAlign: 'right', fontWeight: '900', color: '#515154' }}>MONTANT TOTAL ESTIMÉ ET VALIDÉ :</td>
-            <td style={{ ...styles.td, textAlign: 'right', fontWeight: '900', fontSize: '9pt', color: '#002244' }}>{total.toLocaleString()} F CFA</td>
+            <td colSpan={2} style={{ ...styles.td, textAlign: 'right', fontWeight: '900', color: '#515154' }}>
+              {fin.isInfacturable ? 'MONTANT FACTURABLE AU POINT :' : 'MONTANT TOTAL ESTIMÉ ET VALIDÉ :'}
+            </td>
+            <td style={{ ...styles.td, textAlign: 'right', fontWeight: '900', fontSize: '9pt', color: fin.isInfacturable ? '#c53030' : '#002244' }}>
+              {total.toLocaleString()} F CFA {fin.isInfacturable ? '(INFACTURABLE)' : ''}
+            </td>
           </tr>
           <tr>
-            <td colSpan={2} style={{ ...styles.td, textAlign: 'right', fontWeight: 'bold', color: '#c53030' }}>ACOMPTE TECHNIQUE REÇU (-) :</td>
-            <td style={{ ...styles.td, textAlign: 'right', fontWeight: '900', color: '#c53030' }}>{advance.toLocaleString()} F CFA</td>
+            <td colSpan={2} style={{ ...styles.td, textAlign: 'right', fontWeight: 'bold', color: '#c53030' }}>
+              {fin.isInfacturable ? 'ACOMPTE COMPTABILISÉ AU POINT (-) :' : 'ACOMPTE TECHNIQUE REÇU (-) :'}
+            </td>
+            <td style={{ ...styles.td, textAlign: 'right', fontWeight: '900', color: '#c53030' }}>
+              {advance.toLocaleString()} F CFA {fin.isInfacturable ? '(0 F AU POINT)' : ''}
+            </td>
           </tr>
-          <tr style={{ backgroundColor: '#0071e3', color: '#ffffff' }}>
+          <tr style={{ backgroundColor: fin.isInfacturable ? '#718096' : '#0071e3', color: '#ffffff' }}>
             <td colSpan={2} style={{ ...styles.td, textAlign: 'right', fontWeight: '900', color: '#ffffff', border: 'none' }}>SOLDE À PAYER À LA LIVRAISON :</td>
-            <td style={{ ...styles.td, textAlign: 'right', fontWeight: '900', fontSize: '10pt', color: '#ffffff', border: 'none' }}>{balance.toLocaleString()} F CFA</td>
+            <td style={{ ...styles.td, textAlign: 'right', fontWeight: '900', fontSize: '10pt', color: '#ffffff', border: 'none' }}>
+              {balance.toLocaleString()} F CFA {fin.isInfacturable ? '(ANNULÉ)' : ''}
+            </td>
           </tr>
         </tbody>
       </table>

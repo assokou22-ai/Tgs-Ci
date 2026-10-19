@@ -75,17 +75,24 @@ export const compressTicketImages = async (ticket: RepairTicket): Promise<Repair
             updated.clientSignature = await compressImageBase64(updated.clientSignature, 600, 300, 0.6);
         }
         
-        // 2. Compress diagnosticImages
+        // 2. Compress intakeImages (1024x1024 @ 0.68: perfectly crisp text and serial number, ~40-50KB per image)
+        if (updated.intakeImages && updated.intakeImages.length > 0) {
+            updated.intakeImages = await Promise.all(
+                updated.intakeImages.map(img => compressImageBase64(img, 1024, 1024, 0.68))
+            );
+        }
+
+        // 3. Compress diagnosticImages
         if (updated.diagnosticImages && updated.diagnosticImages.length > 0) {
             updated.diagnosticImages = await Promise.all(
-                updated.diagnosticImages.map(img => compressImageBase64(img, 800, 800, 0.6))
+                updated.diagnosticImages.map(img => compressImageBase64(img, 1024, 1024, 0.68))
             );
         }
         
-        // 3. Compress diagnosticSheetB images
+        // 4. Compress diagnosticSheetB images
         if (updated.diagnosticSheetB && updated.diagnosticSheetB.images && updated.diagnosticSheetB.images.length > 0) {
             const bImages = await Promise.all(
-                updated.diagnosticSheetB.images.map(img => compressImageBase64(img, 800, 800, 0.6))
+                updated.diagnosticSheetB.images.map(img => compressImageBase64(img, 1024, 1024, 0.68))
             );
             updated.diagnosticSheetB = {
                 ...updated.diagnosticSheetB,
@@ -93,12 +100,12 @@ export const compressTicketImages = async (ticket: RepairTicket): Promise<Repair
             };
         }
         
-        // 4. Compress attachments (only if type is image)
+        // 5. Compress attachments (only if type is image)
         if (updated.attachments && updated.attachments.length > 0) {
             updated.attachments = await Promise.all(
                 updated.attachments.map(async (att: Attachment) => {
                     if (att.type === 'image' && att.data) {
-                        const compressedData = await compressImageBase64(att.data, 800, 800, 0.6);
+                        const compressedData = await compressImageBase64(att.data, 800, 800, 0.65);
                         return {
                             ...att,
                             data: compressedData
@@ -125,26 +132,31 @@ export const optimizeTicketForFirestore = async (ticket: RepairTicket): Promise<
     
     // Check total character length (roughly corresponds to byte size)
     let serialized = JSON.stringify(optimized);
-    const LIMIT = 900000; // Under 900KB to be safe with overhead
+    const LIMIT = 800000; // Under 800KB to stay well clear of 1MB Firestore limit
     
     if (serialized.length < LIMIT) {
         return optimized;
     }
     
-    console.warn(`Ticket ${ticket.id} is too large (${serialized.length} chars). Applying aggressive image compression...`);
+    console.warn(`Ticket ${ticket.id} is large (${serialized.length} chars). Applying medium image compression for cloud sync...`);
     
-    // Apply more aggressive compression
+    // Pass 2: Medium compression (800x800, quality 0.58)
     if (optimized.clientSignature) {
         optimized.clientSignature = await compressImageBase64(optimized.clientSignature, 400, 200, 0.4);
     }
+    if (optimized.intakeImages && optimized.intakeImages.length > 0) {
+        optimized.intakeImages = await Promise.all(
+            optimized.intakeImages.map(img => compressImageBase64(img, 800, 800, 0.58))
+        );
+    }
     if (optimized.diagnosticImages && optimized.diagnosticImages.length > 0) {
         optimized.diagnosticImages = await Promise.all(
-            optimized.diagnosticImages.map(img => compressImageBase64(img, 600, 600, 0.5))
+            optimized.diagnosticImages.map(img => compressImageBase64(img, 800, 800, 0.58))
         );
     }
     if (optimized.diagnosticSheetB && optimized.diagnosticSheetB.images && optimized.diagnosticSheetB.images.length > 0) {
         const bImages = await Promise.all(
-            optimized.diagnosticSheetB.images.map(img => compressImageBase64(img, 600, 600, 0.5))
+            optimized.diagnosticSheetB.images.map(img => compressImageBase64(img, 700, 700, 0.55))
         );
         optimized.diagnosticSheetB = {
             ...optimized.diagnosticSheetB,
@@ -171,9 +183,26 @@ export const optimizeTicketForFirestore = async (ticket: RepairTicket): Promise<
         return optimized;
     }
     
-    console.warn(`Ticket ${ticket.id} is still too large (${serialized.length} chars). Truncating heavy attachments for Cloud Sync...`);
+    console.warn(`Ticket ${ticket.id} is still over limit (${serialized.length} chars). Applying high compression...`);
     
-    // Truncate/replace heaviest attachment payloads to stay under limit
+    // Pass 3: High compression (600x600, quality 0.45)
+    if (optimized.intakeImages && optimized.intakeImages.length > 0) {
+        optimized.intakeImages = await Promise.all(
+            optimized.intakeImages.map(img => compressImageBase64(img, 600, 600, 0.45))
+        );
+    }
+    if (optimized.diagnosticImages && optimized.diagnosticImages.length > 0) {
+        optimized.diagnosticImages = await Promise.all(
+            optimized.diagnosticImages.map(img => compressImageBase64(img, 600, 600, 0.45))
+        );
+    }
+
+    serialized = JSON.stringify(optimized);
+    if (serialized.length < LIMIT) {
+        return optimized;
+    }
+
+    // Pass 4: Truncate heavy attachment payloads to stay under limit
     if (optimized.attachments && optimized.attachments.length > 0) {
         const sortedAttachments = [...optimized.attachments].map((att, idx) => ({ 
             att, 
@@ -181,15 +210,13 @@ export const optimizeTicketForFirestore = async (ticket: RepairTicket): Promise<
             len: att.data ? att.data.length : 0 
         }));
         
-        // Sort by size descending
         sortedAttachments.sort((a, b) => b.len - a.len);
         
         for (const item of sortedAttachments) {
-            if (item.len > 20000) { // Anything over ~20KB
+            if (item.len > 15000) {
                 const target = optimized.attachments[item.idx];
                 if (target.data && !target.data.startsWith('[Fichier')) {
                     target.data = `[Fichier lourd stocké localement uniquement - taille: ${Math.round(item.len / 1024)}KB]`;
-                    
                     serialized = JSON.stringify(optimized);
                     if (serialized.length < LIMIT) {
                         break;

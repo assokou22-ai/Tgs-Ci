@@ -7,6 +7,7 @@ import AccueilDashboard from './components/AccueilDashboard.tsx';
 import EditorDashboard from './components/EditorDashboard.tsx';
 import FactureCommandeDashboard from './components/FactureCommandeDashboard.tsx';
 import EngagementsSavDashboard from './components/EngagementsSavDashboard.tsx';
+import AssistantClienteleDashboard from './components/AssistantClienteleDashboard.tsx';
 import CustomStyleInjector from './components/CustomStyleInjector.tsx';
 import useRepairTickets from './hooks/useRepairTickets.ts';
 import useAppointments from './hooks/useAppointments.ts';
@@ -19,6 +20,8 @@ import { checkAndTriggerAutoDailyBackup } from './services/backupService.ts';
 import { parseUserAgent, fetchConnectionDetails } from './utils/connectionHelper.ts';
 import { auth } from './services/firebase.ts';
 import { useGoogleDriveAutoSync } from './hooks/useGoogleDriveAutoSync.ts';
+import { useDeviceProfile } from './context/DeviceProfileContext.tsx';
+import StartupDeviceScreen from './components/StartupDeviceScreen.tsx';
 
 interface ErrorBoundaryProps {
   children?: ReactNode;
@@ -98,6 +101,8 @@ const AppContent: React.FC = () => {
         if (roleParam) {
             const roleMap: Record<string, Role> = {
                 'accueil': 'Accueil',
+                'assistantclientele': 'Assistant Clientèle',
+                'assistant': 'Assistant Clientèle',
                 'technicien': 'Technicien',
                 'editeur': 'Editeur',
                 'factureetcommande': 'Facture et Commande',
@@ -109,7 +114,6 @@ const AppContent: React.FC = () => {
     });
     const { tickets, addTicket, updateTicket, deleteTicket, bulkUpdateTickets, loading } = useRepairTickets(!!storeId);
     const { appointments } = useAppointments();
-    useGoogleDriveAutoSync();
 
     useEffect(() => {
         if (storeId) {
@@ -155,6 +159,8 @@ const AppContent: React.FC = () => {
             if (roleParam) {
                 const roleMap: Record<string, Role> = {
                     'accueil': 'Accueil',
+                    'assistantclientele': 'Assistant Clientèle',
+                    'assistant': 'Assistant Clientèle',
                     'technicien': 'Technicien',
                     'editeur': 'Editeur',
                     'factureetcommande': 'Facture et Commande',
@@ -183,6 +189,21 @@ const AppContent: React.FC = () => {
         setRole(selectedRole);
     };
 
+    const handleExitCurrentRole = () => {
+        const newUrl = new URL(window.location.href);
+        newUrl.searchParams.delete('role');
+        newUrl.searchParams.delete('ticketId');
+        window.history.pushState({}, '', newUrl);
+        setRole(null);
+    };
+
+    const { hasConfirmedProfile, confirmProfile } = useDeviceProfile();
+
+    // TOUTE PREMIÈRE INTERFACE : Sélection et mémorisation du mode d'affichage avant tout accès
+    if (!hasConfirmedProfile) {
+        return <StartupDeviceScreen onConfirm={confirmProfile} />;
+    }
+
     if (!storeId) return <StoreSelection onSelectStore={handleSelectStore} />;
     if (!isAuthenticated) return <LoginScreen onSuccess={() => setIsAuthenticated(true)} />;
     if (!role) return <RoleSelection onSelectRole={handleSelectRole} />;
@@ -190,26 +211,32 @@ const AppContent: React.FC = () => {
     return (
         <>
             <CustomStyleInjector />
-            {role === 'Accueil' && <AccueilDashboard tickets={tickets} addTicket={addTicket} updateTicket={updateTicket} deleteTicket={deleteTicket} loading={loading} />}
-            {role === 'Technicien' && <AdminDashboard tickets={tickets} updateTicket={updateTicket} deleteTicket={deleteTicket} loading={loading} />}
-            {role === 'Editeur' && <EditorDashboard tickets={tickets} updateTicket={updateTicket} deleteTicket={deleteTicket} appointments={appointments} bulkUpdateTickets={bulkUpdateTickets} />}
-            {role === 'Facture et Commande' && <FactureCommandeDashboard />}
-            {role === 'Engagements SAV' && <EngagementsSavDashboard />}
+            {role === 'Accueil' && <AccueilDashboard tickets={tickets} addTicket={addTicket} updateTicket={updateTicket} deleteTicket={deleteTicket} loading={loading} onExitRole={handleExitCurrentRole} />}
+            {role === 'Assistant Clientèle' && <AssistantClienteleDashboard tickets={tickets} updateTicket={updateTicket} deleteTicket={deleteTicket} loading={loading} onExitRole={handleExitCurrentRole} />}
+            {role === 'Technicien' && <AdminDashboard tickets={tickets} updateTicket={updateTicket} deleteTicket={deleteTicket} loading={loading} onExitRole={handleExitCurrentRole} />}
+            {role === 'Editeur' && <EditorDashboard tickets={tickets} updateTicket={updateTicket} deleteTicket={deleteTicket} appointments={appointments} bulkUpdateTickets={bulkUpdateTickets} onExitRole={handleExitCurrentRole} />}
+            {role === 'Facture et Commande' && <FactureCommandeDashboard onExitRole={handleExitCurrentRole} />}
+            {role === 'Engagements SAV' && <EngagementsSavDashboard onExitRole={handleExitCurrentRole} />}
         </>
     );
 };
 
 import { ToastProvider } from './context/ToastContext.tsx';
 import { FirebaseProvider } from './context/FirebaseContext.tsx';
+import { DeviceProfileProvider } from './context/DeviceProfileContext.tsx';
+import { DeviceProfileModal } from './components/DeviceProfileModal.tsx';
 
 const App: React.FC = () => {
     return (
         <ErrorBoundary>
-            <ToastProvider>
-                <FirebaseProvider>
-                    <AppContent />
-                </FirebaseProvider>
-            </ToastProvider>
+            <DeviceProfileProvider>
+                <ToastProvider>
+                    <FirebaseProvider>
+                        <DeviceProfileModal />
+                        <AppContent />
+                    </FirebaseProvider>
+                </ToastProvider>
+            </DeviceProfileProvider>
         </ErrorBoundary>
     );
 };

@@ -21,8 +21,10 @@ import {
     SparklesIcon,
     GlobeAltIcon,
     ShoppingCartIcon,
-    BuildingStorefrontIcon
+    BuildingStorefrontIcon,
+    BanknotesIcon
 } from './icons.tsx';
+import TicketFinancialPointManager from './TicketFinancialPointManager.tsx';
 import { RepairServiceItem, LogEntry, RepairTicket, Client, Appointment } from '../types.ts';
 import ERPDashboard from './ERPDashboard.tsx';
 import useLogs from '../hooks/useLogs.ts';
@@ -326,11 +328,12 @@ interface EditorDashboardProps {
     deleteTicket: (ticketId: string) => Promise<void>;
     appointments: Appointment[];
     bulkUpdateTickets: (tickets: RepairTicket[]) => Promise<void>;
+    onExitRole?: () => void;
 }
 
-type EditorView = 'stats' | 'matrix' | 'stock' | 'services' | 'clients' | 'fiches' | 'settings' | 'design' | 'history' | 'logs' | 'docsearch' | 'websearch' | 'exports' | 'backup' | 'knowledge' | 'simpledocs' | 'ongoing_orders' | 'enterprise';
+type EditorView = 'stats' | 'matrix' | 'stock' | 'services' | 'clients' | 'fiches' | 'settings' | 'design' | 'history' | 'logs' | 'docsearch' | 'websearch' | 'exports' | 'backup' | 'knowledge' | 'simpledocs' | 'ongoing_orders' | 'enterprise' | 'point_financier';
 
-const EditorDashboard: React.FC<EditorDashboardProps> = ({ tickets, updateTicket, deleteTicket, appointments, bulkUpdateTickets }) => {
+const EditorDashboard: React.FC<EditorDashboardProps> = ({ tickets, updateTicket, deleteTicket, appointments, bulkUpdateTickets, onExitRole }) => {
   const { addLog } = useLogs();
   const { showToast } = useToastContext();
   const [isUnlocked, setIsUnlocked] = useState(() => {
@@ -416,11 +419,6 @@ const EditorDashboard: React.FC<EditorDashboardProps> = ({ tickets, updateTicket
     }
   }, []);
 
-  useEffect(() => {
-    if (selectedTicket && ticketToEdit) {
-      setTimeout(() => setTicketToEdit(null), 0);
-    }
-  }, [selectedTicket, ticketToEdit]);
 
   const handleSelectTicket = (ticket: RepairTicket) => {
     const newUrl = new URL(window.location.href);
@@ -502,6 +500,10 @@ const EditorDashboard: React.FC<EditorDashboardProps> = ({ tickets, updateTicket
   };
 
   const handleExitRole = () => {
+      if (onExitRole) {
+          onExitRole();
+          return;
+      }
       const url = new URL(window.location.href);
       url.searchParams.delete('role');
       url.searchParams.delete('ticketId');
@@ -522,6 +524,7 @@ const EditorDashboard: React.FC<EditorDashboardProps> = ({ tickets, updateTicket
       {id: 'matrix', label: 'Matrice Pannes', icon: ExclamationTriangleIcon, isActive: currentView === 'matrix', onClick: () => setCurrentView('matrix') },
       {id: 'fiches', label: 'Archives Fiches', icon: ListBulletIcon, isActive: currentView === 'fiches', onClick: () => setCurrentView('fiches') },
       {id: 'ongoing_orders', label: 'Suivi Commandes', icon: ShoppingCartIcon, isActive: currentView === 'ongoing_orders', onClick: () => setCurrentView('ongoing_orders'), featureId: 'menu_finance' },
+      {id: 'point_financier', label: 'Point Financier Fiches', icon: BanknotesIcon, isActive: currentView === 'point_financier', onClick: () => setCurrentView('point_financier') },
       {id: 'exports', label: 'Exports', icon: DocumentArrowDownIcon, isActive: currentView === 'exports', onClick: () => setCurrentView('exports'), featureId: 'mod_exports' },
       {id: 'settings', label: 'Paramètres', icon: PencilIcon, isActive: currentView === 'settings', onClick: () => setCurrentView('settings') },
       {id: 'design', label: 'Design CSS', icon: SparklesIcon, isActive: currentView === 'design', onClick: () => setCurrentView('design') },
@@ -535,6 +538,7 @@ const EditorDashboard: React.FC<EditorDashboardProps> = ({ tickets, updateTicket
       matrix: 'Analyse Pannes',
       fiches: 'Archives Clients',
       ongoing_orders: 'Suivi Commandes en Cours',
+      point_financier: 'Point Financier d\'Atelier',
       stock: 'Gestion Matériel',
       services: 'Tarification',
       clients: 'Fichier Clients',
@@ -554,6 +558,7 @@ const EditorDashboard: React.FC<EditorDashboardProps> = ({ tickets, updateTicket
   const renderCurrentView = () => {
     switch (currentView) {
       case 'stats': return <ERPDashboard tickets={tickets} appointments={appointments} />;
+      case 'point_financier': return <TicketFinancialPointManager tickets={tickets} onSelectTicket={handleSelectTicket} onBack={() => setCurrentView('stats')} />;
       case 'matrix': return <ProblemModelMatrix tickets={tickets} />;
       case 'fiches': return <TicketArchive tickets={searchedTickets} onSelectTicket={handleSelectTicket} onPrintTicket={setTicketToPrint} onEditTicket={handleEdit} onDeleteTicket={deleteTicket} onUpdateTicket={updateTicket} />;
       case 'ongoing_orders': return <OngoingOrdersView />;
@@ -653,10 +658,10 @@ const EditorDashboard: React.FC<EditorDashboardProps> = ({ tickets, updateTicket
     return (
         <DashboardLayout title="Éditeur" navItems={navItems} onBack={handleBackToList} onExitRole={handleExitRole}>
             <ErrorBoundaryWrapper name="Formulaire Édition">
-                {activeTicketToEdit.client.isEnterprise ? (
-                   <EnterpriseRepairForm tickets={tickets} ticketToEdit={activeTicketToEdit} onSave={handleSaveTicket} onCancel={handleCancelForm} />
+                {activeTicketToEdit.client?.isEnterprise ? (
+                   <EnterpriseRepairForm key={activeTicketToEdit.id} tickets={tickets} ticketToEdit={activeTicketToEdit} onSave={handleSaveTicket} onCancel={handleCancelForm} />
                 ) : (
-                   <RepairForm tickets={tickets} ticketToEdit={activeTicketToEdit} onSave={handleSaveTicket} onCancel={handleCancelForm} role="Editeur" />
+                   <RepairForm key={activeTicketToEdit.id} tickets={tickets} ticketToEdit={activeTicketToEdit} onSave={handleSaveTicket} onCancel={handleCancelForm} role="Editeur" />
                 )}
             </ErrorBoundaryWrapper>
         </DashboardLayout>
@@ -693,9 +698,11 @@ const EditorDashboard: React.FC<EditorDashboardProps> = ({ tickets, updateTicket
         onBack={currentView !== 'stats' ? () => setCurrentView('stats') : undefined}
         onExitRole={handleExitRole}
     >
-        <ErrorBoundaryWrapper name={viewLabels[currentView] || 'Vue Console'}>
-            {renderCurrentView()}
-        </ErrorBoundaryWrapper>
+        <div className="relative z-10">
+            <ErrorBoundaryWrapper name={viewLabels[currentView] || 'Vue Console'}>
+                {renderCurrentView()}
+            </ErrorBoundaryWrapper>
+        </div>
         {ticketToPrint && (
             <PreviewModal
                 isOpen={!!ticketToPrint}

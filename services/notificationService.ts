@@ -1,6 +1,16 @@
 
 import { RepairTicket } from '../types.ts';
 import { formatPhone, generateWhatsAppUrl } from '../utils/formatters.ts';
+import { generateWorkshopMessage } from './workshopCommunicationService.ts';
+
+export type NotificationMessageType = 
+    | 'ready' 
+    | 'quote' 
+    | 'update' 
+    | 'unrepairable'
+    | 'two_options'
+    | 'nand_voltages'
+    | 'session_password';
 
 /**
  * Utility to get correct separator for SMS links (iPhone vs Android)
@@ -15,7 +25,7 @@ const getSMSDivider = () => {
  */
 export const generateSMSMessage = (
     ticket: RepairTicket,
-    type: 'ready' | 'quote' | 'update' | 'unrepairable',
+    type: NotificationMessageType,
     reason?: string
 ): string => {
     const recipientPhone = ticket.client.smsPhone || ticket.client.phone;
@@ -34,6 +44,15 @@ export const generateSMSMessage = (
         case 'quote':
             message = `${prefix}Devis dispo pour votre ${ticket.macModel}. Montant total : ${totalCost.toLocaleString('fr-FR')} F CFA. Merci de nous donner votre accord.`;
             break;
+        case 'two_options':
+            message = `${prefix}Bonjour ${ticket.client.name}, point sur votre Mac (${ticket.macModel}) : deux options s'offrent à vous (poursuite réparation ou remplacement carte mère 72h). Merci de consulter notre message WhatsApp ou nous appeler.`;
+            break;
+        case 'nand_voltages':
+            message = `${prefix}Bonjour ${ticket.client.name}, point sur votre ${ticket.macModel} : tensions rétablies mais puces NAND à remplacer (perte de données). Merci de consulter WhatsApp pour le point complet.`;
+            break;
+        case 'session_password':
+            message = `${prefix}Urgent TGS-CI : votre Mac (${ticket.macModel}) redémarre. Mot de passe de session obligatoire pour l'activation Apple et les tests. Merci de nous le transmettre par SMS/WhatsApp.`;
+            break;
         case 'update':
             message = `${prefix}Votre ${ticket.macModel} est en cours de réparation. Nous vous prévenons dès la fin des tests.`;
             break;
@@ -50,7 +69,7 @@ export const generateSMSMessage = (
  */
 export const generateWhatsAppMessage = (
     ticket: RepairTicket,
-    type: 'ready' | 'quote' | 'update' | 'unrepairable',
+    type: NotificationMessageType,
     reason?: string
 ): string => {
     const phone = ticket.client?.phone || ticket.clientPhone || '';
@@ -64,6 +83,12 @@ export const generateWhatsAppMessage = (
     const intro = `*TGS CI - RÉPARER MON MACBOOK*\n📌 *FICHE N°${ticket.id}*\n👤 *CLIENT :* ${clientName}\n\n`;
 
     switch (type) {
+        case 'two_options':
+            return generateWorkshopMessage('two_options_t2_nand', ticket);
+        case 'nand_voltages':
+            return generateWorkshopMessage('nand_voltages_dataloss', ticket);
+        case 'session_password':
+            return generateWorkshopMessage('apple_session_password', ticket);
         case 'ready':
             message = `${intro}✅ *VOTRE APPAREIL EST PRÊT !*\n\nBonjour ${clientName},\nVotre *${model}* est entièrement réparé, testé et disponible dans nos ateliers.\n\n💰 *Total des travaux :* ${totalCost.toLocaleString('fr-FR')} F CFA\n💳 *Acompte versé :* ${advance.toLocaleString('fr-FR')} F CFA\n💵 *SOLDE À RÉGLER AU RETRAIT :* ${balance.toLocaleString('fr-FR')} F CFA\n\n📍 *Atelier TGS CI :* Cocody Faya, Abidjan\n📞 *Contact :* +225 07 57 13 35 07\n\nVous pouvez passer récupérer votre appareil aux horaires d'ouverture. Merci de votre confiance !`;
             break;

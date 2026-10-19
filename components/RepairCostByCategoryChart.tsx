@@ -38,8 +38,10 @@ const RepairCostByCategoryChart: React.FC<RepairCostByCategoryChartProps> = ({ t
         if (ticket.services && ticket.services.length > 0) {
             ticket.services.forEach(service => {
                 const cat = service.category || 'Autre';
-                categoryMap[cat] = (categoryMap[cat] || 0) + service.price;
+                categoryMap[cat] = (categoryMap[cat] || 0) + (Number(service.price) || 0);
             });
+        } else if (Number(ticket.costs?.repair) > 0) {
+            categoryMap['Réparation'] = (categoryMap['Réparation'] || 0) + Number(ticket.costs.repair);
         }
       }
     });

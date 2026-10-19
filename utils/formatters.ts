@@ -115,3 +115,33 @@ export const generateWhatsAppUrl = (phone: string | undefined | null, message: s
     return `https://wa.me/${formattedPhone}?text=${encodeURIComponent(message)}`;
 };
 
+/**
+ * Formats a date string (YYYY-MM-DD or ISO) into readable French format safely without timezone shift.
+ */
+export const formatDisplayDate = (dateStr: string | undefined | null, options?: Intl.DateTimeFormatOptions): string => {
+    if (!dateStr) return '';
+    try {
+        // If YYYY-MM-DD format, parse parts with midday time to avoid UTC midnight rollback
+        if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+            const [year, month, day] = dateStr.split('-').map(Number);
+            const dateObj = new Date(year, month - 1, day, 12, 0, 0);
+            return dateObj.toLocaleDateString('fr-FR', options || {
+                weekday: 'long',
+                day: 'numeric',
+                month: 'long',
+                year: 'numeric'
+            });
+        }
+        const d = new Date(dateStr);
+        if (isNaN(d.getTime())) return dateStr;
+        return d.toLocaleDateString('fr-FR', options || {
+            weekday: 'long',
+            day: 'numeric',
+            month: 'long',
+            year: 'numeric'
+        });
+    } catch {
+        return dateStr;
+    }
+};
+

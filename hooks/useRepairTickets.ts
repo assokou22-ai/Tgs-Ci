@@ -125,88 +125,13 @@ const useRepairTickets = (enabled = true) => {
         init();
         
         window.addEventListener('datareceived', refreshTickets);
-        return () => window.removeEventListener('datareceived', refreshTickets);
+        window.addEventListener('tickets-updated', refreshTickets);
+        return () => {
+            window.removeEventListener('datareceived', refreshTickets);
+            window.removeEventListener('tickets-updated', refreshTickets);
+        };
     }, [refreshTickets, enabled]);
 
-  const regroupOlderTicketsForTechnician = useCallback(async (currentTicket: RepairTicket) => {
-    if (currentTicket.client?.clientType !== 'subcontractor' || !currentTicket.client?.technicianName) {
-      return;
-    }
-
-    const techName = currentTicket.client.technicianName.trim().toUpperCase();
-    const techPhone = currentTicket.client.technicianPhone?.trim() || '';
-
-    try {
-        const allTickets = await dbGetTickets();
-        const updatedTickets: RepairTicket[] = [];
-
-        allTickets.forEach(t => {
-            if (t.id === currentTicket.id) return;
-
-            const isAlreadyFullySet = t.client?.clientType === 'subcontractor' && 
-                                      t.client?.technicianName?.trim().toUpperCase() === techName &&
-                                      t.client?.technicianPhone?.trim() === techPhone;
-
-            if (isAlreadyFullySet) return;
-
-            let isMatch = false;
-
-            const tClientName = t.client?.name?.trim().toUpperCase() || '';
-            const tClientFirstName = t.client?.firstName?.trim().toUpperCase() || '';
-            const tClientCompany = t.client?.company?.trim().toUpperCase() || '';
-            const tTechName = t.client?.technicianName?.trim().toUpperCase() || '';
-
-            if (techName) {
-                if (tTechName === techName) {
-                    isMatch = true;
-                } else if (tClientName === techName || tClientFirstName === techName || tClientCompany === techName) {
-                    isMatch = true;
-                }
-            }
-
-            const tPhone = t.client?.phone?.trim() || '';
-            const tTelephone = t.client?.telephone?.trim() || '';
-            const tTechPhone = t.client?.technicianPhone?.trim() || '';
-
-            if (techPhone) {
-                if (tPhone === techPhone || tTelephone === techPhone || tTechPhone === techPhone) {
-                    isMatch = true;
-                }
-            }
-
-            if (isMatch) {
-                const updatedTicket: RepairTicket = {
-                    ...t,
-                    client: {
-                        ...t.client,
-                        clientType: 'subcontractor',
-                        technicianName: currentTicket.client?.technicianName || t.client?.technicianName || techName,
-                        technicianPhone: techPhone || t.client?.technicianPhone || t.client?.phone || t.client?.telephone || '',
-                        finalClientName: t.client?.finalClientName || 
-                                         (tClientName !== techName ? t.client?.name : '')
-                    },
-                    updatedAt: new Date().toISOString(),
-                    history: [
-                        ...(t.history || []),
-                        {
-                            timestamp: new Date().toISOString(),
-                            user: 'Système',
-                            action: `Regroupement automatique intelligent : Fiche associée au technicien partenaire "${currentTicket.client?.technicianName}".`
-                        }
-                    ]
-                };
-                updatedTickets.push(updatedTicket);
-            }
-        });
-
-        if (updatedTickets.length > 0) {
-            await dbBulkPutTickets(updatedTickets);
-            showToast(`${updatedTickets.length} ancienne(s) fiches(s) regroupée(s) intelligemment sous le technicien ${currentTicket.client.technicianName} !`, "success");
-        }
-    } catch (e) {
-        console.error("Failed to auto-group older tickets:", e);
-    }
-  }, [showToast]);
 
   const addTicket = useCallback(async (ticket: Partial<RepairTicket>, role: Role): Promise<RepairTicket> => {
     if (role === 'Facture et Commande') {
@@ -258,9 +183,6 @@ const useRepairTickets = (enabled = true) => {
     }
 
     await dbAddTicket(compressedTicket);
-    if (compressedTicket.client?.clientType === 'subcontractor' && compressedTicket.client?.technicianName) {
-        await regroupOlderTicketsForTechnician(compressedTicket);
-    }
     await refreshTickets();
     window.dispatchEvent(new CustomEvent('requestsync'));
 
@@ -287,7 +209,7 @@ const useRepairTickets = (enabled = true) => {
     }
 
     return compressedTicket;
-  }, [refreshTickets, googleAccessToken, showToast, settings.forms.autoCreateGoogleContact, regroupOlderTicketsForTechnician]);
+  }, [refreshTickets, googleAccessToken, showToast, settings.forms.autoCreateGoogleContact]);
 
   const updateTicket = useCallback(async (updatedTicket: RepairTicket, oldId?: string, role?: Role) => {
     // Force set the updatedAt timestamp to current time to ensure real-time merge latest-wins works correctly on other devices
@@ -323,10 +245,17 @@ const useRepairTickets = (enabled = true) => {
             showToast("Attention: Erreur de mise à jour des stocks liée à cette fiche.", "warning");
         }
 
-        if (oldId && oldId !== compressedTicket.id) {
+        const normalizedOldId = (oldId || '').trim().toUpperCase();
+        const normalizedNewId = (compressedTicket.id || '').trim().toUpperCase();
+
+        if (normalizedOldId && normalizedOldId !== normalizedNewId) {
             const existing = await dbGetTickets();
-            if (existing.some(t => t.id === compressedTicket.id)) {
-                showToast(`Conflit : Le numéro ${compressedTicket.id} est déjà utilisé.`, "error");
+            const conflict = existing.some(t => {
+                const tid = (t.id || '').trim().toUpperCase();
+                return tid === normalizedNewId && tid !== normalizedOldId;
+            });
+            if (conflict) {
+                showToast(`Conflit : Le numéro ${compressedTicket.id} est déjà utilisé par un autre dossier.`, "error");
                 return;
             }
             await dbDeleteTicket(oldId);
@@ -362,9 +291,6 @@ const useRepairTickets = (enabled = true) => {
         }
         
         await dbUpdateTicket(compressedTicket);
-        if (compressedTicket.client?.clientType === 'subcontractor' && compressedTicket.client?.technicianName) {
-            await regroupOlderTicketsForTechnician(compressedTicket);
-        }
         await refreshTickets();
         window.dispatchEvent(new CustomEvent('requestsync'));
     } catch (error) {
@@ -372,7 +298,7 @@ const useRepairTickets = (enabled = true) => {
         showToast(`Erreur lors de la mise à jour.`, "error");
         throw error;
     }
-  }, [refreshTickets, showToast, regroupOlderTicketsForTechnician]);
+  }, [refreshTickets, showToast]);
 
   const bulkUpdateTickets = useCallback(async (ticketsToUpdate: RepairTicket[]) => {
     try {

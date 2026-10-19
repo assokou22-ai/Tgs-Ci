@@ -12,6 +12,7 @@ import PaginationControls from './PaginationControls.tsx';
 import { playTone } from '../utils/audio.ts';
 import { useToastContext } from '../context/ToastContext.tsx';
 import WhatsAppShareModal from './WhatsAppShareModal.tsx';
+import { getTicketFinancialSummary } from '../utils/ticketHelpers.ts';
 
 interface UniqueClient extends Client {
     ticketCount: number;
@@ -150,7 +151,7 @@ const ClientManager: React.FC<ClientManagerProps> = ({ tickets, onUpdateClient, 
             if (ticket.client?.clientType === 'subcontractor' && ticket.client?.technicianName) {
                 const name = ticket.client.technicianName.trim().toUpperCase();
                 const phone = ticket.client.technicianPhone?.trim() || '';
-                const billed = (ticket.costs?.diagnostic || 0) + (ticket.costs?.repair || 0);
+                const billed = getTicketFinancialSummary(ticket).totalBilled;
                 const isSuccess = ticket.status === 'Terminé' || ticket.status === 'Rendu';
                 const isCanceled = ticket.status === 'Annulé';
                 const isReturned = ticket.status === 'Rendu';
@@ -231,8 +232,9 @@ const ClientManager: React.FC<ClientManagerProps> = ({ tickets, onUpdateClient, 
 
         reportFilteredTickets.forEach(t => {
             const isCanceled = t.status === 'Annulé';
-            const advance = t.costs?.advance || 0;
-            const billed = (t.costs?.diagnostic || 0) + (t.costs?.repair || 0);
+            const fin = getTicketFinancialSummary(t);
+            const advance = fin.advanceReceived;
+            const billed = fin.totalBilled;
 
             if (isCanceled) {
                 if (advance > 0) {
@@ -284,8 +286,9 @@ const ClientManager: React.FC<ClientManagerProps> = ({ tickets, onUpdateClient, 
             });
 
             const financials = clientTickets.reduce((acc, curr) => {
-                acc.totalBilled += (curr.costs.diagnostic || 0) + (curr.costs.repair || 0);
-                acc.totalAdvanced += curr.costs.advance || 0;
+                const fin = getTicketFinancialSummary(curr);
+                acc.totalBilled += fin.totalBilled;
+                acc.totalAdvanced += fin.advanceReceived;
                 return acc;
             }, { totalBilled: 0, totalAdvanced: 0 });
 
@@ -758,7 +761,7 @@ const ClientManager: React.FC<ClientManagerProps> = ({ tickets, onUpdateClient, 
                                     </h4>
                                     <div className="max-h-80 overflow-y-auto space-y-2.5 pr-2">
                                         {currentTech.ticketsList.map(t => {
-                                            const ticketBilled = (t.costs?.diagnostic || 0) + (t.costs?.repair || 0);
+                                            const ticketBilled = getTicketFinancialSummary(t).totalBilled;
                                             return (
                                                 <div key={t.id} className="p-4 bg-zinc-900/10 dark:bg-zinc-950/40 border border-gray-200 dark:border-gray-800 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-4 hover:border-amber-500/35 transition-colors">
                                                     <div className="space-y-1">

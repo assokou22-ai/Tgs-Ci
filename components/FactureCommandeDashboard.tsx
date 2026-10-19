@@ -11,14 +11,16 @@ import RepairTypesFrequencyChart from './RepairTypesFrequencyChart.tsx';
 import BackupManager from './BackupManager.tsx';
 import SimpleDocumentGenerator from './SimpleDocumentGenerator.tsx';
 import { ClientFinancialReport } from './ClientFinancialReport.tsx';
+import TicketFinancialPointManager from './TicketFinancialPointManager.tsx';
 import useFactures from '../hooks/useFactures.ts';
 import useCommandes from '../hooks/useCommandes.ts';
 import useRepairTickets from '../hooks/useRepairTickets.ts';
 import { DocumentDuplicateIcon, BanknotesIcon, ShoppingCartIcon, ArrowPathIcon, ChartBarIcon, BookOpenIcon, UserIcon, ExclamationTriangleIcon, PhoneIcon, CheckCircleIcon, ClockIcon } from './icons.tsx';
 import DashboardLayout, { NavItem } from './DashboardLayout.tsx';
+import { getTicketFinancialSummary } from '../utils/ticketHelpers.ts';
 
 
-type View = 'dashboard' | 'factures' | 'proformas' | 'commandes' | 'backup' | 'documents' | 'client_statement';
+type View = 'dashboard' | 'factures' | 'proformas' | 'commandes' | 'backup' | 'documents' | 'client_statement' | 'fiches_statement';
 
 const StatCard: React.FC<{ title: string; value: string; icon: React.ReactNode }> = ({ title, value, icon }) => (
     <div className="glass-card p-6 rounded-2xl flex items-center shadow-xl border border-white/5">
@@ -216,9 +218,8 @@ const DashboardContent: React.FC = () => {
         // Fiches > 10 jours avec solde restant dû (exclut Annulé)
         const overdueTickets = tickets.filter(t => {
             if (t.status === 'Annulé') return false;
-            const total = (t.costs?.diagnostic || 0) + (t.costs?.repair || 0);
-            const due = total - (t.costs?.advance || 0);
-            if (due <= 0) return false;
+            const fin = getTicketFinancialSummary(t);
+            if (fin.balanceDue <= 0) return false;
 
             const itemDate = new Date(t.createdAt);
             itemDate.setHours(0, 0, 0, 0);
@@ -229,15 +230,16 @@ const DashboardContent: React.FC = () => {
             const itemDate = new Date(t.createdAt);
             itemDate.setHours(0, 0, 0, 0);
             const diffDays = Math.floor((now.getTime() - itemDate.getTime()) / (1000 * 60 * 60 * 24));
+            const fin = getTicketFinancialSummary(t);
             return {
                 id: t.id,
                 numero: `FICHE-${t.id.slice(-5).toUpperCase()}`,
                 clientName: t.client?.name || 'Inconnu',
                 clientPhone: t.client?.phone || 'Aucun',
                 macModel: t.macModel || 'Non spécifié',
-                total: (t.costs?.diagnostic || 0) + (t.costs?.repair || 0),
-                advance: t.costs?.advance || 0,
-                due: ((t.costs?.diagnostic || 0) + (t.costs?.repair || 0)) - (t.costs?.advance || 0),
+                total: fin.totalBilled,
+                advance: fin.advanceReceived,
+                due: fin.balanceDue,
                 diffDays,
                 date: t.createdAt.split('T')[0]
             };
@@ -302,9 +304,8 @@ const DashboardContent: React.FC = () => {
         const unpaidTickets = tickets
             .filter(t => t.status !== 'Annulé')
             .reduce((sum, t) => {
-                const totalComp = (t.costs?.diagnostic || 0) + (t.costs?.repair || 0);
-                const advance = t.costs?.advance || 0;
-                return sum + (totalComp - advance);
+                const fin = getTicketFinancialSummary(t);
+                return sum + fin.balanceDue;
             }, 0);
 
         const totalImpayes = unpaidFactures + unpaidCommandes + unpaidTickets;
@@ -658,11 +659,16 @@ const DashboardContent: React.FC = () => {
 };
 
 
-const FactureCommandeDashboard: React.FC = () => {
+interface FactureCommandeDashboardProps {
+  onExitRole?: () => void;
+}
+
+const FactureCommandeDashboard: React.FC<FactureCommandeDashboardProps> = ({ onExitRole }) => {
+  const { tickets } = useRepairTickets();
   const [view, setView] = useState<View>(() => {
     const urlParams = new URLSearchParams(window.location.search);
     const viewFromUrl = urlParams.get('view') as View;
-    if (viewFromUrl && ['factures', 'proformas', 'commandes', 'backup', 'documents', 'client_statement'].includes(viewFromUrl)) {
+    if (viewFromUrl && ['factures', 'proformas', 'commandes', 'backup', 'documents', 'client_statement', 'fiches_statement'].includes(viewFromUrl)) {
         return viewFromUrl;
     }
     return 'dashboard';
@@ -691,6 +697,10 @@ const FactureCommandeDashboard: React.FC = () => {
   };
 
   const handleExitRole = () => {
+      if (onExitRole) {
+          onExitRole();
+          return;
+      }
       const url = new URL(window.location.href);
       url.searchParams.delete('role');
       window.history.pushState({}, '', url);
@@ -704,6 +714,7 @@ const FactureCommandeDashboard: React.FC = () => {
       { id: 'commandes', label: 'Commandes', icon: ShoppingCartIcon, isActive: view === 'commandes', onClick: () => setView('commandes') },
       { id: 'documents', label: 'Courriers', icon: BookOpenIcon, isActive: view === 'documents', onClick: () => setView('documents') },
       { id: 'client_statement', label: 'Point Client', icon: UserIcon, isActive: view === 'client_statement', onClick: () => setView('client_statement') },
+      { id: 'fiches_statement', label: 'Point Fiches Atelier', icon: BanknotesIcon, isActive: view === 'fiches_statement', onClick: () => setView('fiches_statement') },
       { id: 'backup', label: 'Sauvegarde', icon: ArrowPathIcon, isActive: view === 'backup', onClick: () => setView('backup') },
   ];
 
@@ -714,6 +725,7 @@ const FactureCommandeDashboard: React.FC = () => {
       commandes: 'Approvisionnement',
       documents: 'Registre Courriers',
       client_statement: 'Point Financier Client',
+      fiches_statement: 'Point Financier des Fiches d\'Atelier',
       backup: 'Archivage Cloud'
   };
 
@@ -724,6 +736,7 @@ const FactureCommandeDashboard: React.FC = () => {
       case 'commandes': return <CommandeList onBack={handleBack} initialEditId={initialEditId} />;
       case 'documents': return <SimpleDocumentGenerator onBack={handleBack} />;
       case 'client_statement': return <ClientFinancialReport onBack={handleBack} />;
+      case 'fiches_statement': return <TicketFinancialPointManager tickets={tickets} onBack={handleBack} />;
       case 'backup': return <BackupManager />;
       case 'dashboard':
       default: return <DashboardContent />;
@@ -732,13 +745,15 @@ const FactureCommandeDashboard: React.FC = () => {
 
   return (
     <DashboardLayout 
-        title="Finance" 
+        title="Finance & Commandes" 
         subtitle={viewLabels[view]}
         navItems={navItems}
         onBack={view !== 'dashboard' ? handleBack : undefined}
         onExitRole={handleExitRole}
     >
-        {renderContent()}
+        <div className="relative z-10">
+            {renderContent()}
+        </div>
     </DashboardLayout>
   );
 };

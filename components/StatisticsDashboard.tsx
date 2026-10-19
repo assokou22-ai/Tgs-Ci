@@ -2,9 +2,12 @@ import React, { useState, useMemo } from 'react';
 import { RepairTicket, RepairStatus } from '../types.ts';
 import WeeklyRepairChart from './WeeklyRepairChart.tsx';
 import GlobalPerformanceModal from './GlobalPerformanceModal.tsx';
+import TicketFinancialPointManager from './TicketFinancialPointManager.tsx';
+import Modal from './Modal.tsx';
 import { exportToExcel, exportCompiledReportToExcel } from '../services/exportService.ts';
 import { motion } from 'framer-motion';
 import { TrendingUpIcon, DollarSignIcon, AlertTriangleIcon, TimerIcon, DownloadIcon, BarChart3Icon } from 'lucide-react';
+import { getTicketFinancialSummary } from '../utils/ticketHelpers.ts';
 
 interface StatisticsDashboardProps {
     tickets: RepairTicket[];
@@ -33,6 +36,7 @@ const StatCard: React.FC<{ title: string; value: string | number; description: s
 
 const StatisticsDashboard: React.FC<StatisticsDashboardProps> = ({ tickets }) => {
     const [isPerfModalOpen, setIsPerfModalOpen] = useState(false);
+    const [isPointModalOpen, setIsPointModalOpen] = useState(false);
 
     const stats = useMemo(() => {
         const thisMonth = new Date().getMonth();
@@ -44,7 +48,7 @@ const StatisticsDashboard: React.FC<StatisticsDashboardProps> = ({ tickets }) =>
         });
 
         const totalRevenueThisMonth = ticketsThisMonth.reduce((sum, t) => {
-            const ticketTotal = (t.costs.diagnostic || 0) + (t.costs.repair || 0);
+            const ticketTotal = getTicketFinancialSummary(t).totalBilled;
             return sum + ticketTotal;
         }, 0);
         
@@ -75,6 +79,13 @@ const StatisticsDashboard: React.FC<StatisticsDashboardProps> = ({ tickets }) =>
                     <p className="text-apple-muted text-xs font-bold uppercase tracking-widest mt-1">Analyse de performance de l'atelier</p>
                 </div>
                 <div className="flex flex-wrap gap-3">
+                    <button 
+                        onClick={() => setIsPointModalOpen(true)} 
+                        className="flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white rounded-2xl font-black uppercase text-[10px] tracking-widest hover:scale-105 active:scale-95 transition-all shadow-lg shadow-emerald-500/25"
+                    >
+                        <DollarSignIcon className="w-4 h-4" />
+                        Point Financier Fiches
+                    </button>
                     <button 
                         onClick={() => setIsPerfModalOpen(true)} 
                         className="flex items-center gap-2 px-6 py-3 bg-apple-blue text-white rounded-2xl font-black uppercase text-[10px] tracking-widest hover:scale-105 active:scale-95 transition-all shadow-lg shadow-blue-500/20"
@@ -159,6 +170,19 @@ const StatisticsDashboard: React.FC<StatisticsDashboardProps> = ({ tickets }) =>
                 onClose={() => setIsPerfModalOpen(false)}
                 tickets={tickets}
             />
+
+            {isPointModalOpen && (
+                <Modal
+                    isOpen={isPointModalOpen}
+                    onClose={() => setIsPointModalOpen(false)}
+                    containerClassName="bg-[#0b0d13] border border-white/10 rounded-[32px] w-full max-w-7xl max-h-[92vh] overflow-y-auto p-4 sm:p-6"
+                >
+                    <TicketFinancialPointManager
+                        tickets={tickets}
+                        onBack={() => setIsPointModalOpen(false)}
+                    />
+                </Modal>
+            )}
         </div>
     );
 };

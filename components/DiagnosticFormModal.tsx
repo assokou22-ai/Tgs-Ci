@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import Modal from './Modal.tsx';
 import { DiagnosticCheck, RepairTicket, EntryCondition } from '../types.ts';
-import { PlusCircleIcon, TrashIcon, CloudArrowDownIcon } from './icons.tsx';
+import { PlusCircleIcon, TrashIcon, CloudArrowDownIcon, CameraIcon, PhotoIcon } from './icons.tsx';
 import SmartAutocompleteInput from './SmartAutocompleteInput.tsx';
 import { learnFromData } from '../services/suggestionService.ts';
 import { compressImageBase64 } from '../utils/imageCompression.ts';
@@ -27,6 +27,7 @@ const DiagnosticFormModal: React.FC<DiagnosticFormModalProps> = ({ isOpen, onClo
   const [images, setImages] = useState<string[]>([]);
   const [newComponentName, setNewComponentName] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const cameraInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (isOpen) {
@@ -185,7 +186,7 @@ const DiagnosticFormModal: React.FC<DiagnosticFormModalProps> = ({ isOpen, onClo
         const reader = new FileReader();
         reader.onload = async (event) => {
             const base64 = event.target?.result as string;
-            const compressed = await compressImageBase64(base64);
+            const compressed = await compressImageBase64(base64, 1024, 1024, 0.68);
             setImages(prev => [...prev, compressed].slice(0, 6));
         };
         reader.readAsDataURL(file);
@@ -325,12 +326,34 @@ const DiagnosticFormModal: React.FC<DiagnosticFormModalProps> = ({ isOpen, onClo
           </div>
 
           <div className="bg-white/5 p-5 rounded-2xl border border-white/10 shadow-inner">
-              <div className="flex justify-between items-center mb-6">
-                  <h3 className="text-[10px] font-black text-apple-muted uppercase tracking-[0.2em] flex items-center gap-2">
-                      <CloudArrowDownIcon className="w-4 h-4 text-apple-blue"/> Preuves visuelles ({images.length}/6)
-                  </h3>
-                  <button type="button" onClick={() => fileInputRef.current?.click()} className="px-4 py-2 bg-apple-blue text-white text-[10px] font-black rounded-xl uppercase tracking-widest shadow-lg shadow-blue-900/20">Ajouter photos</button>
-                  <input type="file" ref={fileInputRef} onChange={handleImageUpload} multiple accept="image/*" className="hidden" />
+              <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 mb-6">
+                  <div>
+                      <h3 className="text-[10px] font-black text-apple-muted uppercase tracking-[0.2em] flex items-center gap-2">
+                          <CloudArrowDownIcon className="w-4 h-4 text-apple-blue"/> Preuves visuelles ({images.length}/6)
+                      </h3>
+                      <p className="text-[9px] text-slate-400 font-bold uppercase mt-0.5">Prenez ou importez des photos réelles pour le dossier</p>
+                  </div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                      <input type="file" ref={cameraInputRef} onChange={handleImageUpload} accept="image/*" capture="environment" className="hidden" />
+                      <input type="file" ref={fileInputRef} onChange={handleImageUpload} multiple accept="image/*" className="hidden" />
+                      
+                      <button 
+                          type="button" 
+                          onClick={() => cameraInputRef.current?.click()} 
+                          disabled={images.length >= 6}
+                          className="px-3.5 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white text-[10px] font-black rounded-xl uppercase tracking-widest shadow-lg shadow-blue-900/20 flex items-center gap-1.5 transition-all"
+                      >
+                          <CameraIcon className="w-3.5 h-3.5" /> Prendre photo
+                      </button>
+                      <button 
+                          type="button" 
+                          onClick={() => fileInputRef.current?.click()} 
+                          disabled={images.length >= 6}
+                          className="px-3.5 py-2 bg-white/10 hover:bg-white/20 disabled:opacity-40 text-white text-[10px] font-black rounded-xl uppercase tracking-widest flex items-center gap-1.5 transition-all"
+                      >
+                          <PhotoIcon className="w-3.5 h-3.5 text-slate-300" /> Galerie
+                      </button>
+                  </div>
               </div>
 
               {images.length > 0 ? (

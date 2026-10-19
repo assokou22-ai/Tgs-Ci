@@ -274,7 +274,7 @@ const PrintableTechnicalReportP3: React.FC<PrintableTechnicalReportP3Props> = ({
                 {ticket.macBrand} {ticket.macModel}
               </div>
               <div style={{ fontSize: cfg.clientSubSize, color: '#475569', marginTop: '0.3mm' }}>
-                Réf. {ticket.modelNumber || 'AXXXX'} · S/N : {ticket.serialNumber || 'NON COMMUNIQUÉ'}
+                Réf. {ticket.modelNumber || 'AXXXX'} {(ticket.emc || ticket.customFields?.emc) ? `· ${ticket.emc || ticket.customFields?.emc}` : ''} · S/N : {ticket.serialNumber || 'NON COMMUNIQUÉ'}
               </div>
             </div>
           </div>

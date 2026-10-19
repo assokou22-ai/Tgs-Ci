@@ -3,7 +3,7 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { RepairTicket, RepairStatus, Role, Attachment, PowerOnStatus, Commande } from '../types.ts';
 import { mergeUpdates } from '../utils/merge.ts';
 import SignaturePad from './SignaturePad.tsx';
-import { MacbookIcon, UserIcon, TrashIcon, CloudArrowDownIcon, SparklesIcon, CalendarDaysIcon, ChevronDownIcon, ArrowPathIcon, PrinterIcon, ShoppingCartIcon, DocumentArrowDownIcon } from './icons.tsx';
+import { MacbookIcon, UserIcon, TrashIcon, CloudArrowDownIcon, SparklesIcon, CalendarDaysIcon, ChevronDownIcon, ArrowPathIcon, PrinterIcon, ShoppingCartIcon, DocumentArrowDownIcon, CameraIcon, PhotoIcon } from './icons.tsx';
 import PreviewModal from './PreviewModal.tsx';
 import PrintableTicket from './PrintableTicket.tsx';
 import PrintableEnterpriseBon from './PrintableEnterpriseBon.tsx';
@@ -20,6 +20,14 @@ import useAppointments from '../hooks/useAppointments.ts';
 import { calculateFutureDate } from '../utils/dateCalculator.ts';
 import { compressImageBase64 } from '../utils/imageCompression.ts';
 import { generateNextTicketSequence, isFallbackTicketId } from '../utils/idGenerator.ts';
+import { 
+  findMatchingRecurrentClients, 
+  checkIsSameMac, 
+  ClientRecurrenceProfile 
+} from '../utils/clientRecurrenceHelper.ts';
+import { ReceptionModeField } from './ReceptionModeField.tsx';
+import { useDeviceProfile } from '../context/DeviceProfileContext.tsx';
+
 
 interface RepairFormProps {
   tickets: RepairTicket[];
@@ -55,6 +63,9 @@ const initialTicketState: Partial<RepairTicket> = {
   modelNumber: '',
   macColor: '',
   serialNumber: '',
+  emc: '',
+  backCoverImage: undefined,
+  backCoverImageIndex: -1,
   problemDescription: '',
   costs: { diagnostic: 5000, repair: 0, advance: 0 },
   powersOn: false,
@@ -73,6 +84,7 @@ const initialTicketState: Partial<RepairTicket> = {
   customFields: {},
   isReIntervention: false,
   reInterventionReason: '',
+  receptionMode: 'depot_atelier',
 };
 
 import { useToastContext } from '../context/ToastContext.tsx';
@@ -82,12 +94,28 @@ const RepairForm: React.FC<RepairFormProps> = ({ tickets, ticketToEdit, onSave, 
   const { commandes, updateCommande } = useCommandes();
   const { addAppointment } = useAppointments();
   const [ticket, setTicket] = useState<Partial<RepairTicket>>(() => {
-    const base = {
+    const base: Partial<RepairTicket> = {
       ...initialTicketState,
       ...(ticketToEdit || {}),
-      attachments: ticketToEdit?.attachments || []
+      client: {
+        ...initialTicketState.client,
+        ...(ticketToEdit?.client || {})
+      },
+      costs: {
+        ...initialTicketState.costs,
+        ...(ticketToEdit?.costs || {})
+      },
+      customFields: {
+        ...initialTicketState.customFields,
+        ...(ticketToEdit?.customFields || {})
+      },
+      services: ticketToEdit?.services ? [...ticketToEdit.services] : [],
+      attachments: ticketToEdit?.attachments ? [...ticketToEdit.attachments] : [],
+      history: ticketToEdit?.history ? [...ticketToEdit.history] : [],
+      ligneVentes: ticketToEdit?.ligneVentes ? [...ticketToEdit.ligneVentes] : [],
+      paymentsList: ticketToEdit?.paymentsList ? [...ticketToEdit.paymentsList] : []
     };
-    
+        
     // Use decompileServicesToLignesVente helper to convert old services into sales lines if the ticket has services but missing or empty sales lines.
     if (ticketToEdit && ticketToEdit.services && ticketToEdit.services.length > 0 && (!ticketToEdit.ligneVentes || ticketToEdit.ligneVentes.length === 0)) {
       base.ligneVentes = decompileServicesToLignesVente(
@@ -96,7 +124,7 @@ const RepairForm: React.FC<RepairFormProps> = ({ tickets, ticketToEdit, onSave, 
         ticketToEdit.macModel || ''
       );
     }
-    
+        
     return base;
   });
 
@@ -124,6 +152,339 @@ const RepairForm: React.FC<RepairFormProps> = ({ tickets, ticketToEdit, onSave, 
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
   const signaturePadRef = useRef<{ getSignature: () => string; clear: () => void }>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const cameraInputRef = useRef<HTMLInputElement>(null);
+  const galleryInputRef = useRef<HTMLInputElement>(null);
+  const [isAnalyzingPhoto, setIsAnalyzingPhoto] = useState(false);
+  const [previewImageModal, setPreviewImageModal] = useState<string | null>(null);
+  const { isTouch } = useDeviceProfile();
+
+  // Clients récurrents & identification machine (Règle utilisateur: ≥ 2 fiches pour suggestion, comparaison même Mac / nouveau Mac)
+  const [selectedRecurrentClient, setSelectedRecurrentClient] = useState<ClientRecurrenceProfile | null>(null);
+  const [dismissedRecurrentPrompt, setDismissedRecurrentPrompt] = useState(false);
+  
+  // Règle métier : "Nouveau Mac pour ce client (Numéro distinct) est le choix par défaut"
+  const [sameMacHandlingMode, setSameMacHandlingMode] = useState<'distinct_new' | 'reintervention_same_id' | 'new_service_same_id'>('distinct_new');
+
+  // Initialisation du client récurrent si ticket en édition ou déjà connu
+  useEffect(() => {
+    if (ticketToEdit?.client?.name && tickets && tickets.length > 0) {
+      const matches = findMatchingRecurrentClients(ticketToEdit.client.name, tickets);
+      if (matches.length > 0) {
+        setSelectedRecurrentClient(matches[0]);
+      }
+    }
+  }, [ticketToEdit, tickets]);
+
+  // Détection des clients récurrents (≥ 2 fiches enregistrées chez nous) lors de la saisie du nom ou téléphone
+  const matchingRecurrentClients = useMemo(() => {
+    if (dismissedRecurrentPrompt) return [];
+    const nameQuery = ticket.client?.name || '';
+    const phoneQuery = ticket.client?.phone || '';
+    const activeQuery = nameQuery.trim().length >= 2 ? nameQuery : (phoneQuery.trim().length >= 4 ? phoneQuery : '');
+    if (!activeQuery) return [];
+
+    const matches = findMatchingRecurrentClients(activeQuery, tickets || []);
+    // Si déjà sélectionné et nom correspond, ne pas spammer la popup
+    if (selectedRecurrentClient && matches.some(m => m.normalizedName === selectedRecurrentClient.normalizedName && ticket.client?.name === m.clientName)) {
+      return [];
+    }
+    return matches;
+  }, [ticket.client?.name, ticket.client?.phone, tickets, dismissedRecurrentPrompt, selectedRecurrentClient]);
+
+  const handleSelectRecurrentClient = (match: ClientRecurrenceProfile) => {
+    const isSub = match.isSubcontractor;
+    setTicket(prev => ({
+      ...prev,
+      client: {
+        ...prev.client!,
+        name: match.clientName,
+        phone: match.phone,
+        smsPhone: match.secondaryPhone || prev.client?.smsPhone || '',
+        email: match.email || prev.client?.email || '',
+        clientType: isSub ? 'subcontractor' : (prev.client?.clientType || 'direct'),
+        technicianName: isSub ? match.clientName : prev.client?.technicianName,
+        technicianPhone: isSub ? match.phone : prev.client?.technicianPhone,
+      },
+      costs: {
+        ...prev.costs!,
+        diagnostic: isSub ? 0 : (prev.costs?.diagnostic ?? 15000)
+      }
+    }));
+    setSelectedRecurrentClient(match);
+    setSameMacHandlingMode('distinct_new');
+    playTone(880, 150);
+    showToast(`Coordonnées de ${match.clientName} reportées (${match.ticketCount} dossiers archivés). Choix par défaut : Nouveau Mac (Numéro distinct).`, "success");
+  };
+
+  const sameMacCheck = useMemo(() => {
+    if (!selectedRecurrentClient || selectedRecurrentClient.uniqueMacs.length === 0) {
+      return { isSameMac: false };
+    }
+    return checkIsSameMac({
+      serialNumber: ticket.serialNumber,
+      modelNumber: ticket.modelNumber || ticket.customFields?.modelA,
+      macModel: ticket.macModel
+    }, selectedRecurrentClient.uniqueMacs);
+  }, [selectedRecurrentClient, ticket.serialNumber, ticket.modelNumber, ticket.customFields?.modelA, ticket.macModel]);
+
+  // Détection lorsque le NOM + le NUMÉRO DE SÉRIE du MacBook existent déjà dans la base
+  const matchingExistingMac = useMemo(() => {
+    const currentName = (ticket.client?.name || '').trim().toLowerCase();
+    const currentPhone = (ticket.client?.phone || '').replace(/\s+/g, '');
+    const currentSn = (ticket.serialNumber || '').trim().toUpperCase();
+
+    if (!currentSn || currentSn.length < 5 || (ticketToEdit && ticketToEdit.id)) {
+      return null;
+    }
+
+    // 1. Chercher dans les tickets archivés existants
+    const found = (tickets || []).find(t => {
+      if (ticketToEdit && t.id === ticketToEdit.id) return false;
+      const tSn = (t.serialNumber || '').trim().toUpperCase();
+      if (!tSn || tSn !== currentSn) return false;
+      
+      const tName = (t.client?.name || '').trim().toLowerCase();
+      const tPhone = (t.client?.phone || '').replace(/\s+/g, '');
+      const nameMatches = currentName && (tName === currentName || tName.includes(currentName) || currentName.includes(tName));
+      const phoneMatches = currentPhone && tPhone && currentPhone === tPhone;
+
+      return nameMatches || phoneMatches;
+    });
+
+    if (found) {
+      return {
+        ticketId: found.id,
+        serialNumber: found.serialNumber || currentSn,
+        macModel: found.macModel,
+        modelNumber: found.modelNumber,
+        createdAt: found.createdAt,
+        clientName: found.client?.name || ticket.client?.name
+      };
+    }
+
+    // 2. Ou dans selectedRecurrentClient.uniqueMacs si concordance même Mac
+    if (sameMacCheck.isSameMac && sameMacCheck.matchedMac) {
+      return {
+        ticketId: sameMacCheck.matchedMac.lastTicketId,
+        serialNumber: sameMacCheck.matchedMac.serialNumber || currentSn,
+        macModel: sameMacCheck.matchedMac.macModel,
+        modelNumber: sameMacCheck.matchedMac.modelNumber,
+        createdAt: new Date().toISOString(),
+        clientName: ticket.client?.name
+      };
+    }
+
+    return null;
+  }, [ticket.client?.name, ticket.client?.phone, ticket.serialNumber, tickets, ticketToEdit, sameMacCheck]);
+
+  // Handlers pour les propositions utilisateur sur machine existante
+  const handleSelectReinterventionSameId = (pastInfo: { ticketId: string; serialNumber: string; macModel?: string; modelNumber?: string }) => {
+    setSameMacHandlingMode('reintervention_same_id');
+    setFullTicketId(pastInfo.ticketId);
+    setTicket(prev => ({
+      ...prev,
+      isReIntervention: true,
+      reInterventionReceiptDate: new Date().toISOString().split('T')[0],
+      reInterventionReason: `Réintervention / Retour SAV (S/N: ${pastInfo.serialNumber}, dossier initial #${pastInfo.ticketId})`,
+      macModel: pastInfo.macModel || prev.macModel,
+      modelNumber: pastInfo.modelNumber || prev.modelNumber,
+      serialNumber: pastInfo.serialNumber || prev.serialNumber
+    }));
+    playTone(700, 120);
+    showToast(`🔄 Dossier initial #${pastInfo.ticketId} conservé en Réintervention (Garantie/SAV).`, "success");
+  };
+
+  const handleSelectNewServiceSameId = (pastInfo: { ticketId: string; serialNumber: string; macModel?: string; modelNumber?: string }) => {
+    setSameMacHandlingMode('new_service_same_id');
+    setFullTicketId(pastInfo.ticketId);
+    setTicket(prev => ({
+      ...prev,
+      isReIntervention: false,
+      reInterventionReason: `Nouvelle prestation sur même machine (Dossier initial #${pastInfo.ticketId})`,
+      macModel: pastInfo.macModel || prev.macModel,
+      modelNumber: pastInfo.modelNumber || prev.modelNumber,
+      serialNumber: pastInfo.serialNumber || prev.serialNumber
+    }));
+    playTone(750, 120);
+    showToast(`🛠️ Dossier initial #${pastInfo.ticketId} conservé pour une Nouvelle Prestation.`, "success");
+  };
+
+  const handleSelectDistinctNewMac = () => {
+    setSameMacHandlingMode('distinct_new');
+    const targetYear = manualDate ? new Date(manualDate).getFullYear() : undefined;
+    const nextDistinctSeq = generateNextTicketSequence(tickets, ticket.client?.isEnterprise || false, targetYear);
+    setFullTicketId(nextDistinctSeq);
+    setTicket(prev => ({
+      ...prev,
+      isReIntervention: false,
+      reInterventionReason: ''
+    }));
+    playTone(600, 80);
+    showToast("✨ Nouveau Mac avec numéro distinct sélectionné (Prise en charge standard).", "info");
+  };
+
+  const handleAddIntakeImages = async (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+    const currentImages = ticket.intakeImages || [];
+    const remainingSlots = 6 - currentImages.length;
+    if (remainingSlots <= 0) {
+      showToast("Nombre maximal de 6 photos atteint pour ce dossier.", "warning");
+      return;
+    }
+
+    const filesToProcess = Array.from(files).slice(0, remainingSlots);
+    const newCompressed: string[] = [];
+
+    for (const file of filesToProcess) {
+      try {
+        const rawBase64 = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = (e) => resolve(e.target?.result as string);
+          reader.onerror = reject;
+          reader.readAsDataURL(file);
+        });
+
+        // Compression performante 1200x1200px @ 0.72 : qualité visuelle nette pour les inscriptions tout en restant ~60-80KB
+        const compressed = await compressImageBase64(rawBase64, 1200, 1200, 0.72);
+        newCompressed.push(compressed);
+      } catch (err) {
+        console.error("Erreur lecture photo:", err);
+      }
+    }
+
+    if (newCompressed.length === 0) return;
+
+    const updated = [...currentImages, ...newCompressed].slice(0, 6);
+    setTicket(prev => ({
+      ...prev,
+      intakeImages: updated
+    }));
+
+    showToast(`${newCompressed.length} photo(s) intégrée(s) et optimisée(s) !`, "success");
+    playTone(700, 100);
+
+    // Détection automatique intelligente du couvre arrière (peu importe l'ordre des photos)
+    autoDetectBackCoverAndDeviceInfo(updated);
+  };
+
+  const handleRemoveIntakeImage = (indexToRemove: number) => {
+    setTicket(prev => {
+      const nextImages = (prev.intakeImages || []).filter((_, i) => i !== indexToRemove);
+      const isRemovingBackCover = prev.backCoverImageIndex === indexToRemove;
+      return {
+        ...prev,
+        intakeImages: nextImages,
+        backCoverImage: isRemovingBackCover ? undefined : prev.backCoverImage,
+        backCoverImageIndex: isRemovingBackCover ? -1 : (
+          typeof prev.backCoverImageIndex === 'number' && prev.backCoverImageIndex > indexToRemove
+            ? prev.backCoverImageIndex - 1
+            : prev.backCoverImageIndex
+        )
+      };
+    });
+  };
+
+  const autoDetectBackCoverAndDeviceInfo = async (imagesToScan: string[], specificIndex?: number) => {
+    if (!imagesToScan || imagesToScan.length === 0) return;
+    setIsAnalyzingPhoto(true);
+    try {
+      // Si un index spécifique est ciblé manuellement, on envoie cette image précise ; sinon on envoie toutes les photos pour scan global
+      const payload = specificIndex !== undefined && imagesToScan[specificIndex]
+        ? { imageBase64: imagesToScan[specificIndex] }
+        : { imagesBase64: imagesToScan };
+
+      const res = await fetch('/api/gemini/extract-device-info', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        let detectedCount = 0;
+        const updates: Partial<RepairTicket> = {};
+        const messages: string[] = [];
+
+        // Modèle Apple AXXXX
+        if (data.modelNumber && /^A\d{4}$/i.test(data.modelNumber.trim())) {
+          const cleanModel = data.modelNumber.trim().toUpperCase();
+          updates.modelNumber = cleanModel;
+          messages.push(`Modèle ${cleanModel}`);
+          detectedCount++;
+          
+          const found = findMacByModel(cleanModel);
+          if (found && !ticket.macModel) {
+            updates.macModel = found.name;
+          }
+        }
+
+        // Numéro de série Apple
+        if (data.serialNumber && data.serialNumber.trim().length >= 8) {
+          const cleanSerial = data.serialNumber.trim().toUpperCase();
+          updates.serialNumber = cleanSerial;
+          messages.push(`S/N: ${cleanSerial}`);
+          detectedCount++;
+        }
+
+        // Code EMC (ex: EMC 3347)
+        if (data.emc && data.emc.trim().length > 0) {
+          let cleanEmc = data.emc.trim().toUpperCase();
+          if (!cleanEmc.startsWith('EMC') && /^\d{4}$/.test(cleanEmc)) {
+            cleanEmc = `EMC ${cleanEmc}`;
+          }
+          updates.emc = cleanEmc;
+          messages.push(cleanEmc);
+          detectedCount++;
+        }
+
+        // Couleur
+        if (data.color && (!ticket.macColor || ticket.macColor.trim() === '')) {
+          updates.macColor = data.color;
+        }
+
+        // Identification de la photo correspondant au Couvre Arrière
+        let targetIdx = -1;
+        if (specificIndex !== undefined) {
+          targetIdx = specificIndex;
+        } else if (typeof data.backCoverIndex === 'number' && data.backCoverIndex >= 0 && data.backCoverIndex < imagesToScan.length) {
+          targetIdx = data.backCoverIndex;
+        } else if (data.isBackCoverDetected) {
+          targetIdx = 0;
+        }
+
+        if (targetIdx >= 0 && imagesToScan[targetIdx]) {
+          updates.backCoverImage = imagesToScan[targetIdx];
+          updates.backCoverImageIndex = targetIdx;
+        }
+
+        if (detectedCount > 0 || updates.backCoverImage) {
+          const customFields = { ...(ticket.customFields || {}) };
+          if (updates.modelNumber) customFields.modelA = updates.modelNumber;
+          if (updates.emc) customFields.emc = updates.emc;
+          if (updates.serialNumber) customFields.serialNumber = updates.serialNumber;
+          updates.customFields = customFields;
+
+          setTicket(prev => ({ 
+            ...prev, 
+            ...updates,
+            customFields: { ...(prev.customFields || {}), ...customFields }
+          }));
+
+          const coverNote = targetIdx >= 0 ? ` [Photo #${targetIdx + 1} identifiée comme Couvre Arrière]` : '';
+          showToast(`✨ Couvre arrière détecté automatiquement : ${messages.join(' | ')}${coverNote}`, "success");
+          playTone(880, 180);
+        } else {
+          if (specificIndex !== undefined) {
+            showToast("Aucun numéro de modèle, série ou EMC lisible sur cette photo.", "info");
+          }
+        }
+      }
+    } catch (err) {
+      console.warn("Échec requête OCR IA:", err);
+    } finally {
+      setIsAnalyzingPhoto(false);
+    }
+  };
 
   const getPreviewTicket = (): RepairTicket => {
     const signature = signaturePadRef.current?.getSignature() || ticket.clientSignature;
@@ -152,9 +513,15 @@ const RepairForm: React.FC<RepairFormProps> = ({ tickets, ticketToEdit, onSave, 
     } as RepairTicket;
   };
 
-  const [manualDate, setManualDate] = useState<string>(
-    ticketToEdit?.createdAt ? new Date(ticketToEdit.createdAt).toISOString().split('T')[0] : new Date().toISOString().split('T')[0]
-  );
+  const [manualDate, setManualDate] = useState<string>(() => {
+    if (ticketToEdit?.createdAt) {
+      try {
+        const d = new Date(ticketToEdit.createdAt);
+        if (!isNaN(d.getTime())) return d.toISOString().split('T')[0];
+      } catch { /* fallback below */ }
+    }
+    return new Date().toISOString().split('T')[0];
+  });
 
   const foundMacInfo = useMemo(() => {
     if (ticket.modelNumber && ticket.modelNumber.length >= 3) {
@@ -208,8 +575,15 @@ const RepairForm: React.FC<RepairFormProps> = ({ tickets, ticketToEdit, onSave, 
   }, [ticketToEdit, tickets, isManualEdit, manualDate]);
 
   const isDuplicateId = useMemo(() => {
-      if (ticketToEdit && fullTicketId === ticketToEdit.id) return false;
-      return tickets.some(t => t.id.trim().toUpperCase() === fullTicketId.trim().toUpperCase());
+      const cleanInput = (fullTicketId || '').trim().toUpperCase();
+      const currentOriginalId = (ticketToEdit?.id || '').trim().toUpperCase();
+      if (!cleanInput) return false;
+      if (ticketToEdit && cleanInput === currentOriginalId) return false;
+      return tickets.some(t => {
+          const tid = (t.id || '').trim().toUpperCase();
+          if (ticketToEdit && tid === currentOriginalId) return false;
+          return tid === cleanInput;
+      });
   }, [fullTicketId, tickets, ticketToEdit]);
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -327,12 +701,17 @@ const RepairForm: React.FC<RepairFormProps> = ({ tickets, ticketToEdit, onSave, 
 
   const handleSave = async (action: 'new' | 'close' | 'print') => {
       if (isDuplicateId) return showToast("Cet ID de fiche existe déjà.", "error");
-      if (!ticket.client?.name || !ticket.client?.phone) return showToast("Nom et téléphone client requis.", "error");
+      const clientName = ticket.client?.name?.trim();
+      const clientPhone = ticket.client?.phone?.trim();
+      if (!clientName) return showToast("Nom du client requis.", "error");
+      if (!ticketToEdit && !clientPhone) return showToast("Numéro de téléphone requis pour un nouveau dossier.", "error");
       
       setIsSaving(true);
       try {
           const signature = signaturePadRef.current?.getSignature() || ticket.clientSignature;
-          const servicesSum = ticket.services?.reduce((sum, s) => sum + s.price, 0) || 0;
+          const servicesSum = (ticket.services && ticket.services.length > 0)
+              ? ticket.services.reduce((sum, s) => sum + (Number(s.price) || 0), 0)
+              : (Number(ticket.costs?.repair) || 0);
 
           // Assurer un identifiant officiel valide et non vide
           let cleanTicketId = fullTicketId.trim().toUpperCase();
@@ -342,20 +721,33 @@ const RepairForm: React.FC<RepairFormProps> = ({ tickets, ticketToEdit, onSave, 
               setFullTicketId(cleanTicketId);
           }
 
-          const now = new Date();
-          const timePart = now.toTimeString().split(' ')[0];
-          const isoCreatedAt = ticketToEdit 
-              ? ticketToEdit.createdAt 
-              : new Date(`${manualDate}T${timePart}`).toISOString();
+          let isoCreatedAt = new Date().toISOString();
+          if (manualDate) {
+              try {
+                  const now = new Date();
+                  const timePart = (ticketToEdit?.createdAt ? new Date(ticketToEdit.createdAt).toTimeString() : now.toTimeString()).split(' ')[0];
+                  const d = new Date(`${manualDate}T${timePart}`);
+                  if (!isNaN(d.getTime())) isoCreatedAt = d.toISOString();
+                  else if (ticketToEdit?.createdAt) isoCreatedAt = ticketToEdit.createdAt;
+              } catch {
+                  if (ticketToEdit?.createdAt) isoCreatedAt = ticketToEdit.createdAt;
+              }
+          } else if (ticketToEdit?.createdAt) {
+              try {
+                  const d = new Date(ticketToEdit.createdAt);
+                  if (!isNaN(d.getTime())) isoCreatedAt = d.toISOString();
+              } catch { /* keep current */ }
+          }
 
           const finalTicket = {
               ...ticket,
               id: cleanTicketId,
               costs: {
-                  ...ticket.costs!,
+                  ...(ticket.costs || { diagnostic: 5000, repair: 0, advance: 0 }),
                   repair: servicesSum
               },
               createdAt: isoCreatedAt,
+              updatedAt: new Date().toISOString(),
               clientSignature: signature,
               cancellationReturnDate: ticket.isReopenedAfterCancellation && !ticket.cancellationReturnDate
                   ? new Date().toISOString().split('T')[0]
@@ -452,7 +844,11 @@ const RepairForm: React.FC<RepairFormProps> = ({ tickets, ticketToEdit, onSave, 
       }
   };
 
-  const totalCost = (ticket.costs?.diagnostic || 0) + (ticket.services?.reduce((sum, s) => sum + s.price, 0) || 0);
+  const totalCost = (Number(ticket.costs?.diagnostic) || 0) + (
+    ticket.services && ticket.services.length > 0
+      ? ticket.services.reduce((sum, s) => sum + (Number(s?.price) || 0), 0)
+      : (Number(ticket.costs?.repair) || 0)
+  );
 
   const checkboxClass = "w-6 h-6 rounded border-white/10 bg-black/40 accent-apple-blue transition-all cursor-pointer";
   const labelSubStyle = "text-[10px] font-black text-slate-500 uppercase tracking-widest block mb-2";
@@ -508,8 +904,8 @@ const RepairForm: React.FC<RepairFormProps> = ({ tickets, ticketToEdit, onSave, 
             </button>
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-            <div className="lg:col-span-8 space-y-8">
+        <div className={`grid grid-cols-1 ${isTouch ? 'gap-6' : 'lg:grid-cols-12 gap-8'}`}>
+            <div className={`${isTouch ? 'w-full space-y-6' : 'lg:col-span-8 space-y-8'}`}>
                 {/* DOSSIER & DATE */}
                 {ticketToEdit && isFallbackTicketId(ticketToEdit.id) && (
                     <div className="p-4 bg-amber-500/10 border border-amber-500/30 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3">
@@ -938,6 +1334,262 @@ const RepairForm: React.FC<RepairFormProps> = ({ tickets, ticketToEdit, onSave, 
                                     </div>
                                 </div>
                             </div>
+
+                            {/* BANNIÈRE DE CONFIRMATION SI CLIENT RÉCURRENT DÉJÀ SÉLECTIONNÉ */}
+                            {selectedRecurrentClient && (
+                                <div className="p-3 bg-blue-500/10 border border-blue-500/30 rounded-2xl flex flex-wrap items-center justify-between gap-2 animate-fade-in">
+                                    <div className="flex items-center gap-2">
+                                        <span className="text-sm">👤</span>
+                                        <span className="text-xs font-black text-blue-300 uppercase">Client Récurrent :</span>
+                                        <span className="text-xs font-bold text-white">{selectedRecurrentClient.clientName}</span>
+                                        <span className="px-2 py-0.5 rounded-full text-[9px] font-black bg-blue-500/20 text-blue-300 border border-blue-500/30">
+                                            {selectedRecurrentClient.ticketCount} machines enregistrées
+                                        </span>
+                                        {selectedRecurrentClient.isSubcontractor && (
+                                            <span className="px-2 py-0.5 rounded-full text-[9px] font-black bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                                                ⚡ Sous-traitant Partenaire (Diag: 0 F CFA)
+                                            </span>
+                                        )}
+                                    </div>
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            setSelectedRecurrentClient(null);
+                                            setDismissedRecurrentPrompt(false);
+                                        }}
+                                        className="text-[10px] font-bold text-zinc-400 hover:text-white uppercase transition-colors"
+                                    >
+                                        Changer
+                                    </button>
+                                </div>
+                            )}
+
+                            {/* PROMPT CLIENT RÉCURRENT (RÈGLE STRICTE UTILISATEUR : AU MOINS 2 MACHINES ENREGISTRÉES) */}
+                            {matchingRecurrentClients.length > 0 && !selectedRecurrentClient && (
+                                <div className="p-4 bg-gradient-to-r from-blue-950/50 via-indigo-950/40 to-purple-950/40 border border-blue-500/40 rounded-2xl space-y-3 animate-slide-up shadow-xl">
+                                    <div className="flex items-start justify-between gap-3">
+                                        <div className="flex items-center gap-2">
+                                            <span className="text-lg">❓</span>
+                                            <div>
+                                                <p className="text-xs font-black uppercase text-blue-300 tracking-wider m-0">
+                                                    S'agit-il de la même personne déjà enregistrée chez nous ?
+                                                </p>
+                                                <p className="text-[11px] text-zinc-300 mt-0.5">
+                                                    Ce nom ou contact a été enregistré au moins 2 fois dans nos registres ({matchingRecurrentClients[0].ticketCount} machines). Vous pouvez reporter ses informations en un clic.
+                                                </p>
+                                            </div>
+                                        </div>
+                                        <button
+                                            type="button"
+                                            onClick={() => setDismissedRecurrentPrompt(true)}
+                                            className="text-zinc-400 hover:text-white p-1 text-xs cursor-pointer"
+                                            title="Ignorer cette suggestion"
+                                        >
+                                            ✕
+                                        </button>
+                                    </div>
+
+                                    <div className="space-y-2">
+                                        {matchingRecurrentClients.slice(0, 3).map((match) => (
+                                            <div
+                                                key={match.normalizedName}
+                                                className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3 bg-black/50 hover:bg-black/70 border border-white/10 hover:border-blue-500/50 rounded-xl transition-all"
+                                            >
+                                                <div>
+                                                    <div className="flex flex-wrap items-center gap-2">
+                                                        <span className="text-xs font-black text-white">{match.clientName}</span>
+                                                        <span className="text-[11px] font-mono text-zinc-300 font-bold">{match.phone}</span>
+                                                        <span className="px-2 py-0.5 rounded-full text-[9px] font-black bg-blue-500/20 text-blue-300 border border-blue-500/30">
+                                                            {match.ticketCount} dossiers
+                                                        </span>
+                                                        {match.isSubcontractor && (
+                                                            <span className="px-2 py-0.5 rounded-full text-[9px] font-black bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                                                                ⚡ Sous-traitant Partenaire (Diagnostic Offert)
+                                                            </span>
+                                                        )}
+                                                    </div>
+                                                    {match.uniqueMacs.length > 0 && (
+                                                        <p className="text-[10px] text-zinc-400 mt-1">
+                                                            Machines connues : {match.uniqueMacs.map(m => m.macModel || m.modelNumber || m.serialNumber).filter(Boolean).join(' • ')}
+                                                        </p>
+                                                    )}
+                                                </div>
+
+                                                <button
+                                                    type="button"
+                                                    onClick={() => handleSelectRecurrentClient(match)}
+                                                    className="px-3.5 py-2 bg-apple-blue hover:bg-blue-500 text-white font-black text-[10px] uppercase tracking-wider rounded-xl transition-all shadow-md active:scale-95 shrink-0 flex items-center gap-1.5 cursor-pointer"
+                                                >
+                                                    <span>✓ Oui, reporter nom & numéro</span>
+                                                </button>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
+
+                            {/* NOUVEAU : MODE DE RÉCEPTION DE L'ORDINATEUR (DÉPÔT ATELIER VS YANGO) */}
+                            <div className="pt-2">
+                                <ReceptionModeField
+                                    receptionMode={ticket.receptionMode || 'depot_atelier'}
+                                    yangoDetails={ticket.yangoDetails}
+                                    onChangeMode={(mode) => setTicket(p => ({ ...p, receptionMode: mode }))}
+                                    onChangeYangoDetails={(details) => setTicket(p => ({ ...p, yangoDetails: details }))}
+                                    clientName={ticket.client?.name}
+                                    clientPhone={ticket.client?.phone}
+                                />
+                            </div>
+
+                            {/* SECTION PHOTOS DE L'APPAREIL & IDENTIFICATION PHYSIQUE */}
+                            <div className="pt-4 border-t border-white/5 space-y-3">
+                                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                                    <div>
+                                        <label className="text-[10px] font-black text-apple-blue uppercase tracking-widest flex items-center gap-2">
+                                            <CameraIcon className="w-4 h-4 text-apple-blue" />
+                                            Photos de l'appareil (Max 6)
+                                        </label>
+                                        <p className="text-[9px] text-slate-400 font-bold uppercase mt-0.5">
+                                            Face fermée, face ouverte et coque arrière avec N° de série et Modèle
+                                        </p>
+                                    </div>
+                                    <span className="px-2 py-0.5 rounded-full text-[9px] font-mono font-bold bg-white/5 border border-white/10 text-slate-300 self-start sm:self-auto">
+                                        {(ticket.intakeImages?.length || 0)} / 6
+                                    </span>
+                                </div>
+
+                                {/* Inputs cachés pour Tablette / Mobile / Desktop */}
+                                <input 
+                                    type="file" 
+                                    accept="image/*" 
+                                    capture="environment" 
+                                    ref={cameraInputRef} 
+                                    onChange={e => { handleAddIntakeImages(e.target.files); e.target.value = ''; }} 
+                                    className="hidden" 
+                                />
+                                <input 
+                                    type="file" 
+                                    accept="image/*" 
+                                    multiple 
+                                    ref={galleryInputRef} 
+                                    onChange={e => { handleAddIntakeImages(e.target.files); e.target.value = ''; }} 
+                                    className="hidden" 
+                                />
+
+                                {/* Boutons d'action : Appareil photo ou Galerie */}
+                                <div className="flex flex-wrap items-center gap-2">
+                                    <button
+                                        type="button"
+                                        onClick={() => cameraInputRef.current?.click()}
+                                        disabled={(ticket.intakeImages?.length || 0) >= 6}
+                                        className="flex-1 min-w-[130px] px-3 py-2.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white rounded-xl text-[10px] font-black uppercase tracking-wider flex items-center justify-center gap-2 transition-all shadow-lg shadow-blue-900/30"
+                                        title="Ouvre directement la caméra sur tablette iPad, Android ou smartphone"
+                                    >
+                                        <CameraIcon className="w-4 h-4" />
+                                        Prendre photo
+                                    </button>
+
+                                    <button
+                                        type="button"
+                                        onClick={() => galleryInputRef.current?.click()}
+                                        disabled={(ticket.intakeImages?.length || 0) >= 6}
+                                        className="flex-1 min-w-[130px] px-3 py-2.5 bg-white/5 hover:bg-white/10 disabled:opacity-40 text-slate-200 border border-white/10 rounded-xl text-[10px] font-black uppercase tracking-wider flex items-center justify-center gap-2 transition-all"
+                                        title="Importer depuis la galerie photos ou les fichiers"
+                                    >
+                                        <PhotoIcon className="w-4 h-4 text-slate-400" />
+                                        Parcourir / Galerie
+                                    </button>
+                                </div>
+
+                                {isAnalyzingPhoto && (
+                                    <div className="p-3 bg-blue-600/10 border border-blue-500/30 rounded-xl flex items-center gap-3 animate-pulse text-blue-300 text-xs font-bold">
+                                        <SparklesIcon className="w-4 h-4 animate-spin text-blue-400 shrink-0" />
+                                        <span>Détection automatique en cours : analyse du couvre arrière (Modèle AXXXX, Numéro de série et EMC peu importe l'ordre)...</span>
+                                    </div>
+                                )}
+
+                                {/* Bandeau récapitulatif Couvre Arrière détecté */}
+                                {ticket.backCoverImage && (
+                                    <div className="p-3 bg-gradient-to-r from-emerald-950/40 via-emerald-900/20 to-teal-950/40 border border-emerald-500/40 rounded-xl flex flex-wrap items-center justify-between gap-2 text-emerald-300 text-xs">
+                                        <div className="flex items-center gap-2">
+                                            <span className="text-base">🛡️</span>
+                                            <span className="font-bold">
+                                                Couvre arrière identifié et intégré à la fiche numérique !
+                                                {ticket.modelNumber ? ` · Modèle: ${ticket.modelNumber}` : ''}
+                                                {ticket.serialNumber ? ` · S/N: ${ticket.serialNumber}` : ''}
+                                                {ticket.emc ? ` · ${ticket.emc}` : ''}
+                                            </span>
+                                        </div>
+                                        <span className="px-2 py-0.5 bg-emerald-500/20 border border-emerald-500/50 rounded font-black text-[9px] uppercase tracking-wider text-emerald-200">
+                                            ✓ Zone Renseignée
+                                        </span>
+                                    </div>
+                                )}
+
+                                {/* Grille des photos enregistrées */}
+                                {(ticket.intakeImages && ticket.intakeImages.length > 0) && (
+                                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5 pt-1">
+                                        {ticket.intakeImages.map((img, idx) => {
+                                            const isBackCover = (ticket.backCoverImage && ticket.backCoverImage === img) || (ticket.backCoverImageIndex === idx);
+                                            const label = isBackCover 
+                                                ? "🛡️ Couvre Arrière (Gravures S/N • Modèle • EMC)"
+                                                : `Photo ${idx + 1}`;
+
+                                            return (
+                                                <div 
+                                                    key={idx} 
+                                                    className={`relative group bg-black/60 rounded-xl overflow-hidden shadow-md flex flex-col transition-all border ${
+                                                        isBackCover 
+                                                            ? 'border-emerald-500/80 shadow-[0_0_15px_rgba(16,185,129,0.35)] ring-1 ring-emerald-400' 
+                                                            : 'border-white/10'
+                                                    }`}
+                                                >
+                                                    {isBackCover && (
+                                                        <div className="absolute top-1.5 left-1.5 z-10 px-2 py-0.5 rounded-md bg-emerald-600/90 backdrop-blur-md text-[8px] font-black uppercase text-white shadow-md flex items-center gap-1 border border-emerald-300/60">
+                                                            <span>🛡️</span>
+                                                            <span>Couvre Arrière</span>
+                                                        </div>
+                                                    )}
+
+                                                    <div className="relative aspect-video w-full cursor-pointer overflow-hidden bg-zinc-950 flex items-center justify-center" onClick={() => setPreviewImageModal(img)}>
+                                                        <img src={img} alt={label} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" />
+                                                        <div className="absolute inset-0 bg-black/30 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                                                            <span className="text-[9px] font-black text-white uppercase bg-black/70 px-2 py-1 rounded">Agrandir</span>
+                                                        </div>
+                                                    </div>
+
+                                                    <div className={`p-1.5 flex items-center justify-between gap-1 text-[8.5px] ${isBackCover ? 'bg-emerald-950/80 border-t border-emerald-500/30' : 'bg-zinc-900/90'}`}>
+                                                        <span className={`font-bold truncate ${isBackCover ? 'text-emerald-300 font-black' : 'text-slate-300'}`} title={label}>
+                                                            {label}
+                                                        </span>
+                                                        <div className="flex items-center gap-1 shrink-0">
+                                                            <button
+                                                                type="button"
+                                                                onClick={(e) => { e.stopPropagation(); autoDetectBackCoverAndDeviceInfo(ticket.intakeImages || [], idx); }}
+                                                                className={`p-1 rounded transition-colors ${
+                                                                    isBackCover 
+                                                                        ? 'text-emerald-300 hover:text-white hover:bg-emerald-600/40' 
+                                                                        : 'text-blue-400 hover:text-white hover:bg-blue-600/30'
+                                                                }`}
+                                                                title="Analyser cette photo pour détecter le couvre arrière, modèle, série et EMC"
+                                                            >
+                                                                <SparklesIcon className="w-3 h-3" />
+                                                            </button>
+                                                            <button
+                                                                type="button"
+                                                                onClick={(e) => { e.stopPropagation(); handleRemoveIntakeImage(idx); }}
+                                                                className="p-1 text-red-400 hover:text-red-300 hover:bg-red-600/20 rounded transition-colors"
+                                                                title="Supprimer cette photo"
+                                                            >
+                                                                <TrashIcon className="w-3 h-3" />
+                                                            </button>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                )}
+                            </div>
                         </div>
                     </div>
 
@@ -945,6 +1597,200 @@ const RepairForm: React.FC<RepairFormProps> = ({ tickets, ticketToEdit, onSave, 
                     <div className="apple-card p-8">
                         <h3 className="text-[10px] font-black text-apple-blue uppercase tracking-[0.2em] mb-6 flex items-center gap-3"><MacbookIcon className="w-5 h-5"/> Appareil</h3>
                         <div className="space-y-5">
+                            {/* PROPOSITION LORSQUE LE NOM + NUMÉRO DE SÉRIE DU MACBOOK EXISTENT DÉJÀ */}
+                            {matchingExistingMac && (
+                                <div className="p-4 bg-gradient-to-r from-blue-950/60 via-slate-900 to-indigo-950/60 border-2 border-blue-500/40 rounded-2xl space-y-3.5 animate-slide-up shadow-xl">
+                                    <div className="flex items-start justify-between gap-3 flex-wrap">
+                                        <div className="flex items-center gap-2.5">
+                                            <span className="text-xl">💻</span>
+                                            <div>
+                                                <h4 className="text-xs font-black text-white uppercase tracking-wider m-0">
+                                                    Machine déjà enregistrée pour ce client !
+                                                </h4>
+                                                <p className="text-[11px] text-zinc-300 mt-0.5">
+                                                    Ce MacBook (S/N: <strong className="font-mono text-blue-300">{matchingExistingMac.serialNumber}</strong>) a déjà été traité pour <strong>{matchingExistingMac.clientName}</strong> sous le dossier initial <strong className="font-mono text-amber-300">#{matchingExistingMac.ticketId}</strong>.
+                                                </p>
+                                            </div>
+                                        </div>
+                                        <span className="px-2.5 py-1 rounded-xl bg-blue-500/20 text-blue-300 text-[9px] font-black uppercase border border-blue-500/30 shrink-0">
+                                            Numéro Connu
+                                        </span>
+                                    </div>
+
+                                    <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">
+                                        Sélectionnez l'option de prise en charge :
+                                    </p>
+
+                                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 pt-0.5">
+                                        {/* OPTION 1 : NOUVEAU MAC (CHOIX PAR DÉFAUT) */}
+                                        <button
+                                            type="button"
+                                            onClick={handleSelectDistinctNewMac}
+                                            className={`p-3 rounded-xl border text-left transition-all relative flex flex-col justify-between gap-2 cursor-pointer ${
+                                                sameMacHandlingMode === 'distinct_new'
+                                                    ? 'bg-emerald-600/25 border-emerald-500 text-white shadow-lg ring-1 ring-emerald-500/40'
+                                                    : 'bg-black/40 border-white/10 hover:border-white/20 text-zinc-300'
+                                            }`}
+                                        >
+                                            <div>
+                                                <div className="flex items-center justify-between gap-1">
+                                                    <span className="text-xs font-black uppercase text-emerald-400">✨ Nouveau Mac</span>
+                                                    {sameMacHandlingMode === 'distinct_new' && (
+                                                        <span className="text-[8px] bg-emerald-500 text-black font-black px-1.5 py-0.5 rounded-full uppercase">Par défaut</span>
+                                                    )}
+                                                </div>
+                                                <p className="text-[10px] font-bold text-white mt-1">Numéro distinct ({fullTicketId})</p>
+                                                <p className="text-[9px] text-zinc-400 mt-0.5 leading-tight">
+                                                    Nouvelle prise en charge indépendante avec numéro séquentiel propre.
+                                                </p>
+                                            </div>
+                                        </button>
+
+                                        {/* OPTION 2 : RÉINTERVENTION EN CONSERVANT LE MÊME NUMÉRO */}
+                                        <button
+                                            type="button"
+                                            onClick={() => handleSelectReinterventionSameId(matchingExistingMac)}
+                                            className={`p-3 rounded-xl border text-left transition-all relative flex flex-col justify-between gap-2 cursor-pointer ${
+                                                sameMacHandlingMode === 'reintervention_same_id'
+                                                    ? 'bg-red-600/25 border-red-500 text-white shadow-lg ring-1 ring-red-500/40'
+                                                    : 'bg-black/40 border-white/10 hover:border-white/20 text-zinc-300'
+                                            }`}
+                                        >
+                                            <div>
+                                                <div className="flex items-center justify-between gap-1">
+                                                    <span className="text-xs font-black uppercase text-red-400">🔄 Réintervention</span>
+                                                    {sameMacHandlingMode === 'reintervention_same_id' && (
+                                                        <span className="text-[8px] bg-red-500 text-white font-black px-1.5 py-0.5 rounded-full uppercase">Actif</span>
+                                                    )}
+                                                </div>
+                                                <p className="text-[10px] font-bold text-white mt-1">Même numéro (#{matchingExistingMac.ticketId})</p>
+                                                <p className="text-[9px] text-zinc-400 mt-0.5 leading-tight">
+                                                    Retour SAV / Garantie en conservant l'identifiant initial du dossier.
+                                                </p>
+                                            </div>
+                                        </button>
+
+                                        {/* OPTION 3 : NOUVELLE PRESTATION EN CONSERVANT LE MÊME NUMÉRO */}
+                                        <button
+                                            type="button"
+                                            onClick={() => handleSelectNewServiceSameId(matchingExistingMac)}
+                                            className={`p-3 rounded-xl border text-left transition-all relative flex flex-col justify-between gap-2 cursor-pointer ${
+                                                sameMacHandlingMode === 'new_service_same_id'
+                                                    ? 'bg-purple-600/25 border-purple-500 text-white shadow-lg ring-1 ring-purple-500/40'
+                                                    : 'bg-black/40 border-white/10 hover:border-white/20 text-zinc-300'
+                                            }`}
+                                        >
+                                            <div>
+                                                <div className="flex items-center justify-between gap-1">
+                                                    <span className="text-xs font-black uppercase text-purple-400">🛠️ Nouvelle prestation</span>
+                                                    {sameMacHandlingMode === 'new_service_same_id' && (
+                                                        <span className="text-[8px] bg-purple-500 text-white font-black px-1.5 py-0.5 rounded-full uppercase">Actif</span>
+                                                    )}
+                                                </div>
+                                                <p className="text-[10px] font-bold text-white mt-1">Même numéro (#{matchingExistingMac.ticketId})</p>
+                                                <p className="text-[9px] text-zinc-400 mt-0.5 leading-tight">
+                                                    Nouvelle intervention / devis sur la même machine sous le même numéro.
+                                                </p>
+                                            </div>
+                                        </button>
+                                    </div>
+                                </div>
+                            )}
+
+                            {/* BANNIÈRE PAR DÉFAUT : NOUVEAU MAC POUR CE CLIENT (NUMÉRO DISTINCT) */}
+                            {sameMacHandlingMode === 'distinct_new' && (
+                                <div className="p-3.5 bg-gradient-to-r from-emerald-950/30 to-zinc-900 border border-emerald-500/30 rounded-2xl flex items-center justify-between gap-3 animate-fade-in">
+                                    <div className="flex items-center gap-2.5">
+                                        <span className="text-base">✨</span>
+                                        <div>
+                                            <p className="text-xs font-black text-emerald-400 uppercase tracking-wider m-0">
+                                                Nouveau Mac pour ce client (Numéro distinct)
+                                            </p>
+                                            <p className="text-[10px] text-zinc-400 mt-0.5">
+                                                Cette machine n'a pas été identifiée parmi les précédentes. Photos de réception et prise en charge standard actives.
+                                            </p>
+                                        </div>
+                                    </div>
+                                    <span className="px-2.5 py-1 rounded-xl bg-emerald-500/20 text-emerald-300 text-[9px] font-black uppercase border border-emerald-500/30 shrink-0">
+                                        Choix par défaut
+                                    </span>
+                                </div>
+                            )}
+
+                            {/* SÉLECTEUR DE PARC : MACHINES PRÉCÉDEMMENT ENREGISTRÉES POUR CE CLIENT */}
+                            {selectedRecurrentClient && selectedRecurrentClient.uniqueMacs.length > 0 && (
+                                <div className="p-4 bg-black/40 border border-white/10 rounded-2xl space-y-3">
+                                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-white/5 pb-2">
+                                        <div className="flex items-center gap-2">
+                                            <span className="text-xs">💻</span>
+                                            <span className="text-[10px] font-black text-slate-300 uppercase tracking-wider">
+                                                Parc de machines enregistrées chez nous ({selectedRecurrentClient.uniqueMacs.length} Mac{selectedRecurrentClient.uniqueMacs.length > 1 ? 's' : ''})
+                                            </span>
+                                        </div>
+                                        <span className="text-[9px] text-zinc-500">
+                                            Cliquez pour basculer en réintervention ou configurez un nouveau Mac
+                                        </span>
+                                    </div>
+
+                                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                        {selectedRecurrentClient.uniqueMacs.map((pastMac, idx) => {
+                                            const isSelected = (ticket.serialNumber && ticket.serialNumber === pastMac.serialNumber) ||
+                                                (ticket.modelNumber && ticket.modelNumber === pastMac.modelNumber && ticket.isReIntervention);
+                                            return (
+                                                <div
+                                                    key={idx}
+                                                    className={`p-3 rounded-xl border transition-all flex items-center justify-between gap-3 ${
+                                                        isSelected
+                                                            ? 'bg-red-500/15 border-red-500/50 shadow-md ring-1 ring-red-400/30'
+                                                            : 'bg-black/40 border-white/5 hover:border-white/20'
+                                                    }`}
+                                                >
+                                                    <div className="min-w-0">
+                                                        <div className="flex items-center gap-1.5">
+                                                            <p className="text-xs font-black text-white truncate m-0">
+                                                                {pastMac.macModel || pastMac.modelNumber || 'MacBook'}
+                                                            </p>
+                                                            {pastMac.modelNumber && (
+                                                                <span className="text-[9px] font-mono text-blue-400 font-bold">
+                                                                    ({pastMac.modelNumber})
+                                                                </span>
+                                                            )}
+                                                        </div>
+                                                        <p className="text-[10px] font-mono text-zinc-400 truncate mt-0.5">
+                                                            S/N: {pastMac.serialNumber || 'Non gravé'} {pastMac.macColor ? `• ${pastMac.macColor}` : ''}
+                                                        </p>
+                                                        <p className="text-[9px] text-zinc-500 mt-0.5">
+                                                            Dossier #{pastMac.lastTicketId} ({pastMac.ticketCount} passage{pastMac.ticketCount > 1 ? 's' : ''})
+                                                        </p>
+                                                    </div>
+
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => handleSelectPastMacForReintervention(pastMac)}
+                                                        className={`px-3 py-1.5 rounded-xl text-[9px] font-black uppercase tracking-wider transition-all shrink-0 cursor-pointer ${
+                                                            isSelected
+                                                                ? 'bg-red-600 text-white shadow-lg'
+                                                                : 'bg-white/10 hover:bg-white/20 text-white'
+                                                        }`}
+                                                    >
+                                                        {isSelected ? '✓ Même Mac' : 'C\'est ce Mac'}
+                                                    </button>
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+
+                                    <div className="pt-1 flex items-center justify-between">
+                                        <button
+                                            type="button"
+                                            onClick={handleSetAsNewMac}
+                                            className="text-[10px] font-black uppercase tracking-wider text-apple-blue hover:text-blue-300 transition-colors flex items-center gap-1.5 cursor-pointer"
+                                        >
+                                            <span>✨ C'est un Nouveau Mac pour ce client (Nouvelle identification & photos)</span>
+                                        </button>
+                                    </div>
+                                </div>
+                            )}
                             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                                 <div>
                                     <label className="block text-[9px] font-black text-slate-500 uppercase mb-1 ml-1">Model Number (A2485)</label>
@@ -1055,9 +1901,46 @@ const RepairForm: React.FC<RepairFormProps> = ({ tickets, ticketToEdit, onSave, 
                                     className="w-full p-3 bg-black/40 border border-white/10 rounded-xl text-sm text-white font-bold outline-none focus:border-apple-blue transition-all" 
                                 />
                             </div>
-                            <div>
-                                <label className="block text-[9px] font-black text-slate-500 uppercase mb-1 ml-1">Numéro de série (S/N)</label>
-                                <input placeholder="S/N" value={ticket.serialNumber} onChange={e => setTicket(p => ({...p, serialNumber: e.target.value.toUpperCase()}))} className="w-full p-3 bg-black/40 border border-white/10 rounded-xl text-sm text-white font-mono font-bold outline-none focus:border-apple-blue transition-all" />
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                <div>
+                                    <div className="flex items-center justify-between mb-1 ml-1">
+                                        <label className="block text-[9px] font-black text-slate-500 uppercase">Numéro de série (S/N)</label>
+                                        {ticket.serialNumber && ticket.backCoverImage && (
+                                            <span className="text-[8px] font-black text-emerald-400 bg-emerald-500/10 border border-emerald-500/30 px-1.5 py-0.5 rounded">
+                                                ✨ Détecté couvre arrière
+                                            </span>
+                                        )}
+                                    </div>
+                                    <input 
+                                        placeholder="ex: C02XXXXXXXXX" 
+                                        value={ticket.serialNumber} 
+                                        onChange={e => setTicket(p => ({...p, serialNumber: e.target.value.toUpperCase()}))} 
+                                        className="w-full p-3 bg-black/40 border border-white/10 rounded-xl text-sm text-white font-mono font-bold outline-none focus:border-apple-blue transition-all" 
+                                    />
+                                </div>
+                                <div>
+                                    <div className="flex items-center justify-between mb-1 ml-1">
+                                        <label className="block text-[9px] font-black text-slate-500 uppercase">Code EMC (Gravure dos)</label>
+                                        {ticket.emc && (
+                                            <span className="text-[8px] font-black text-emerald-400 bg-emerald-500/10 border border-emerald-500/30 px-1.5 py-0.5 rounded">
+                                                ✨ Détecté couvre arrière
+                                            </span>
+                                        )}
+                                    </div>
+                                    <input 
+                                        placeholder="ex: EMC 3347" 
+                                        value={ticket.emc || ''} 
+                                        onChange={e => {
+                                            const val = e.target.value.toUpperCase();
+                                            setTicket(p => ({
+                                                ...p, 
+                                                emc: val,
+                                                customFields: { ...(p.customFields || {}), emc: val }
+                                            }));
+                                        }} 
+                                        className="w-full p-3 bg-black/40 border border-white/10 rounded-xl text-sm text-white font-mono font-bold outline-none focus:border-apple-blue transition-all" 
+                                    />
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -1133,7 +2016,7 @@ const RepairForm: React.FC<RepairFormProps> = ({ tickets, ticketToEdit, onSave, 
                                                                     <span className="px-2 py-0.5 bg-amber-500/10 text-amber-400 rounded-md text-[9px] font-bold">{cmd.status}</span>
                                                                 </div>
                                                                 <p className="text-[10px] text-slate-300 font-bold mt-1">Client : {cmd.clientName || 'STOCK'} ({cmd.clientPhone}) | Modèle : {cmd.macModel}</p>
-                                                                <p className="text-[10px] text-slate-400 font-mono mt-1">Total : {cmd.total.toLocaleString()} F | Avance payée : {cmd.advance.toLocaleString()} F</p>
+                                                                <p className="text-[10px] text-slate-400 font-mono mt-1">Total : {(Number(cmd.total) || 0).toLocaleString()} F | Avance payée : {(Number(cmd.advance) || 0).toLocaleString()} F</p>
                                                             </div>
                                                             <button
                                                                 type="button"
@@ -1170,7 +2053,7 @@ const RepairForm: React.FC<RepairFormProps> = ({ tickets, ticketToEdit, onSave, 
                                                         .filter(c => !c.isLinkedToTicket && c.status !== 'Payé' && c.status !== 'Annulé')
                                                         .map(c => (
                                                             <option key={c.id} value={c.id}>
-                                                                CMD #{c.numero} - {c.clientName || 'Interne'} - {c.macModel} (Total: {c.total} F | Avance: {c.advance} F)
+                                                                CMD #{c.numero} - {c.clientName || 'Interne'} - {c.macModel} (Total: {(Number(c.total) || 0).toLocaleString()} F | Avance: {(Number(c.advance) || 0).toLocaleString()} F)
                                                             </option>
                                                         ))}
                                                 </select>
@@ -1466,18 +2349,43 @@ const RepairForm: React.FC<RepairFormProps> = ({ tickets, ticketToEdit, onSave, 
                 </div>
             </div>
 
-            <div className="lg:col-span-4 space-y-8">
+            <div className={`${isTouch ? 'w-full space-y-6' : 'lg:col-span-4 space-y-8'}`}>
                 {/* FINANCE */}
                 <div className="apple-card p-8 bg-apple-blue/5 border-apple-blue/20">
-                    <h3 className="text-[10px] font-black text-apple-blue uppercase tracking-widest mb-6">Synthèse Financière</h3>
+                    <div className="flex items-center justify-between mb-6 flex-wrap gap-2">
+                        <h3 className="text-[10px] font-black text-apple-blue uppercase tracking-widest">Synthèse Financière</h3>
+                        {(ticket.status === RepairStatus.ANNULE || ticket.isInfacturable) && (
+                            <span className="px-2.5 py-1 rounded-full bg-rose-500/20 text-rose-300 border border-rose-500/30 text-[9px] font-black uppercase tracking-wider">
+                                🚫 INFACTURABLE (0 F AU POINT)
+                            </span>
+                        )}
+                    </div>
+                    {(ticket.status === RepairStatus.ANNULE || ticket.isInfacturable) && (
+                        <div className="mb-6 p-4 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-200 text-xs space-y-1">
+                            <p className="font-black uppercase tracking-wide text-rose-300 flex items-center gap-1.5">
+                                <span>⚠️</span> Dossier Annulé — Mentionné comme Infacturable
+                            </p>
+                            <p className="text-[11px] leading-relaxed text-rose-200/90">
+                                Cette fiche est annulée : toute avance enregistrée ({ticket.costs?.advance || 0} F CFA) ou solde est automatiquement mentionnée comme <strong>infacturable</strong>. Aucun fond n'est intégrable dans notre point de caisse / comptabilité.
+                            </p>
+                        </div>
+                    )}
                     <div className="space-y-6">
                         <div className="space-y-1">
-                            <label className="block text-[9px] font-black text-slate-500 uppercase ml-1">Expertise fixe (F CFA)</label>
+                            <div className="flex items-center justify-between ml-1 mb-1">
+                                <label className="block text-[9px] font-black text-slate-500 uppercase">Expertise fixe (F CFA)</label>
+                                {ticket.client?.clientType === 'subcontractor' && (
+                                    <span className="text-[9px] font-black text-amber-400 bg-amber-500/10 border border-amber-500/30 px-2 py-0.5 rounded-full">
+                                        Exonéré (Sous-traitant : 0 F CFA)
+                                    </span>
+                                )}
+                            </div>
                             <input 
                                 type="number" 
-                                value={ticket.costs?.diagnostic} 
+                                value={ticket.client?.clientType === 'subcontractor' ? 0 : ticket.costs?.diagnostic} 
+                                disabled={ticket.client?.clientType === 'subcontractor'}
                                 onChange={e => setTicket(p => ({...p, costs: {...p.costs!, diagnostic: Number(e.target.value)}}))} 
-                                className="w-full p-3 bg-black/40 border border-white/10 rounded-xl text-white font-mono font-bold outline-none focus:border-apple-blue transition-all" 
+                                className={`w-full p-3 bg-black/40 border border-white/10 rounded-xl text-white font-mono font-bold outline-none focus:border-apple-blue transition-all ${ticket.client?.clientType === 'subcontractor' ? 'opacity-60 cursor-not-allowed text-amber-300' : ''}`} 
                             />
                         </div>
                         <div className="flex justify-between items-center py-4 border-y border-white/5">
@@ -1540,6 +2448,28 @@ const RepairForm: React.FC<RepairFormProps> = ({ tickets, ticketToEdit, onSave, 
                     {getPreviewTicket().client?.isEnterprise && <PrintableEnterpriseBon ticket={getPreviewTicket()} />}
                 </div>
             </PreviewModal>
+        )}
+
+        {previewImageModal && (
+            <div 
+                className="fixed inset-0 z-50 bg-black/90 backdrop-blur-md flex flex-col items-center justify-center p-4"
+                onClick={() => setPreviewImageModal(null)}
+            >
+                <div className="relative max-w-4xl max-h-[90vh] w-full flex flex-col items-center" onClick={e => e.stopPropagation()}>
+                    <button 
+                        type="button" 
+                        onClick={() => setPreviewImageModal(null)}
+                        className="self-end mb-2 px-3 py-1.5 bg-white/10 hover:bg-white/20 text-white rounded-xl text-xs font-black uppercase transition-colors"
+                    >
+                        ✕ Fermer
+                    </button>
+                    <img 
+                        src={previewImageModal} 
+                        alt="Zoom photo" 
+                        className="max-h-[80vh] w-auto max-w-full rounded-2xl border border-white/20 shadow-2xl object-contain" 
+                    />
+                </div>
+            </div>
         )}
     </div>
   );

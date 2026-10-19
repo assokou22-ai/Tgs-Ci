@@ -1,6 +1,7 @@
 import React from 'react';
 import { RepairTicket } from '../types.ts';
 import { AppleLogo } from './icons.tsx';
+import { getTicketFinancialSummary } from '../utils/ticketHelpers.ts';
 
 interface PrintableReportProps {
   periodType: 'week' | 'month' | 'year';
@@ -121,9 +122,10 @@ const PrintableReport: React.FC<PrintableReportProps> = ({
               .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
               .map((t) => {
                 const isCanceled = t.status === 'Annulé';
-                const billed = isCanceled ? 0 : ((t.costs.diagnostic || 0) + (t.costs.repair || 0));
-                const advance = isCanceled ? 0 : (t.costs.advance || 0);
-                const balance = billed - advance;
+                const fin = getTicketFinancialSummary(t);
+                const billed = isCanceled ? 0 : fin.totalBilled;
+                const advance = isCanceled ? 0 : fin.advanceReceived;
+                const balance = isCanceled ? 0 : fin.balanceDue;
                 return (
                   <tr key={t.id} style={{ borderBottom: '0.5px solid #DDD' }}>
                     <td style={{ padding: '6px 8px', fontWeight: 'bold', fontFamily: 'monospace' }}>{t.id}</td>
@@ -137,13 +139,13 @@ const PrintableReport: React.FC<PrintableReportProps> = ({
                       {t.modelNumber && <span style={{ fontSize: '7pt', color: '#666', fontFamily: 'monospace', marginLeft: '4px' }}>({t.modelNumber})</span>}
                     </td>
                     <td style={{ padding: '6px 8px', fontWeight: '900', textTransform: 'uppercase', fontSize: '7pt', color: isCanceled ? '#C62828' : '#000' }}>
-                      {isCanceled && (t.costs.advance || 0) > 0 ? 'Annulé (Remboursé)' : t.status}
+                      {isCanceled && fin.advanceReceived > 0 ? 'Annulé (Remboursé)' : t.status}
                     </td>
                     <td style={{ padding: '6px 8px', textAlign: 'right', fontFamily: 'monospace' }}>{billed.toLocaleString()}</td>
                     <td style={{ padding: '6px 8px', textAlign: 'right', fontFamily: 'monospace', color: isCanceled ? '#C62828' : '#2E7D32' }}>
-                      {isCanceled && (t.costs.advance || 0) > 0 ? (
+                      {isCanceled && fin.advanceReceived > 0 ? (
                         <span style={{ textDecoration: 'line-through' }}>
-                          {(t.costs.advance || 0).toLocaleString()}
+                          {fin.advanceReceived.toLocaleString()}
                         </span>
                       ) : (
                         advance > 0 ? advance.toLocaleString() : '0'

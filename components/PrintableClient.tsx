@@ -2,6 +2,7 @@
 import React from 'react';
 import { RepairTicket, Client } from '../types.ts';
 import { AppleLogo } from './icons.tsx';
+import { getTicketFinancialSummary } from '../utils/ticketHelpers.ts';
 
 interface PrintableClientProps {
   client: Client;
@@ -9,9 +10,9 @@ interface PrintableClientProps {
 }
 
 const PrintableClient: React.FC<PrintableClientProps> = ({ client, tickets }) => {
-  const totalBilled = tickets.reduce((acc, curr) => acc + (curr.costs.diagnostic || 0) + (curr.costs.repair || 0), 0);
-  const totalAdvanced = tickets.reduce((acc, curr) => acc + (curr.costs.advance || 0), 0);
-  const balance = totalBilled - totalAdvanced;
+  const totalBilled = tickets.reduce((acc, curr) => acc + getTicketFinancialSummary(curr).totalBilled, 0);
+  const totalAdvanced = tickets.reduce((acc, curr) => acc + getTicketFinancialSummary(curr).advanceReceived, 0);
+  const balance = Math.max(0, totalBilled - totalAdvanced);
 
   return (
     <div className="printable-page">
@@ -62,17 +63,22 @@ const PrintableClient: React.FC<PrintableClientProps> = ({ client, tickets }) =>
               </tr>
           </thead>
           <tbody>
-              {tickets.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()).map((ticket) => (
-                  <tr key={ticket.id} style={{ borderBottom: '0.5pt solid #EEE' }}>
-                      <td style={{ padding: '8px', fontSize: '9pt', fontWeight: 'bold', fontFamily: 'monospace' }}>{ticket.id}</td>
-                      <td style={{ padding: '8px', fontSize: '9pt' }}>{new Date(ticket.createdAt).toLocaleDateString('fr-FR')}</td>
-                      <td style={{ padding: '8px', fontSize: '9pt' }}>{ticket.macBrand} {ticket.macModel}</td>
-                      <td style={{ padding: '8px', fontSize: '8pt', fontWeight: 'bold', textTransform: 'uppercase' }}>{ticket.status}</td>
-                      <td style={{ padding: '8px', textAlign: 'right', fontSize: '9pt', fontWeight: 'bold' }}>
-                          {((ticket.costs.diagnostic || 0) + (ticket.costs.repair || 0)).toLocaleString()}
-                      </td>
-                  </tr>
-              ))}
+              {tickets.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()).map((ticket) => {
+                  const fin = getTicketFinancialSummary(ticket);
+                  return (
+                      <tr key={ticket.id} style={{ borderBottom: '0.5pt solid #EEE' }}>
+                          <td style={{ padding: '8px', fontSize: '9pt', fontWeight: 'bold', fontFamily: 'monospace' }}>{ticket.id}</td>
+                          <td style={{ padding: '8px', fontSize: '9pt' }}>{new Date(ticket.createdAt).toLocaleDateString('fr-FR')}</td>
+                          <td style={{ padding: '8px', fontSize: '9pt' }}>{ticket.macBrand} {ticket.macModel}</td>
+                          <td style={{ padding: '8px', fontSize: '8pt', fontWeight: 'bold', textTransform: 'uppercase', color: fin.isInfacturable ? '#c53030' : '#000' }}>
+                              {ticket.status} {fin.isInfacturable ? '• INFACTURABLE' : ''}
+                          </td>
+                          <td style={{ padding: '8px', textAlign: 'right', fontSize: '9pt', fontWeight: 'bold', color: fin.isInfacturable ? '#c53030' : '#000' }}>
+                              {fin.isInfacturable ? '0 F (INFACTURABLE)' : `${fin.totalBilled.toLocaleString()} F`}
+                          </td>
+                      </tr>
+                  );
+              })}
           </tbody>
       </table>
 

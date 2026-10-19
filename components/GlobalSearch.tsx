@@ -173,21 +173,21 @@ const GlobalSearch: React.FC = () => {
     };
 
     return (
-        <div ref={containerRef} className="relative w-44 sm:w-64 md:w-80 lg:w-[380px] z-[120]">
+        <div ref={containerRef} className={`relative transition-all duration-300 z-[120] ${isFocused ? 'w-44 sm:w-64 md:w-80 lg:w-[380px]' : 'w-24 sm:w-56 md:w-80 lg:w-[380px]'}`}>
             {/* Input persistent container */}
-            <div className={`flex items-center gap-2 px-3 py-2 bg-white/5 border rounded-2xl transition-all duration-300 ${
+            <div className={`flex items-center gap-1.5 sm:gap-2 px-2.5 sm:px-3 py-1.5 sm:py-2 bg-white/5 border rounded-2xl transition-all duration-300 ${
                 isFocused 
                 ? 'border-apple-blue bg-zinc-950/90 ring-4 ring-apple-blue/10' 
                 : 'border-white/10 hover:border-white/20'
             }`}>
-                <Search className={`w-4 h-4 shrink-0 transition-colors ${isFocused ? 'text-apple-blue' : 'text-zinc-500'}`} />
+                <Search className={`w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0 transition-colors ${isFocused ? 'text-apple-blue' : 'text-zinc-500'}`} />
                 <input
                     ref={inputRef}
                     type="text"
                     value={query}
                     onFocus={() => setIsFocused(true)}
                     onChange={(e) => handleQueryChange(e.target.value)}
-                    placeholder="Instantané (N°, client, série)..."
+                    placeholder={isFocused ? "N°, client, série..." : "Chercher..."}
                     className="w-full bg-transparent text-xs font-bold text-white outline-none placeholder:text-zinc-600 uppercase tracking-tight"
                 />
                 

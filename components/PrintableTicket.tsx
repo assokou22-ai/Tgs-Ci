@@ -4,6 +4,7 @@ import { RepairTicket, PowerOnStatus } from '../types.ts';
 import { AppleLogo } from './icons.tsx';
 import { useAppSettings } from '../hooks/useAppSettings.ts';
 import SecureQrCode from './SecureQrCode.tsx';
+import { getTicketFinancialSummary } from '../utils/ticketHelpers.ts';
 
 interface PrintableTicketProps {
   ticket: RepairTicket;
@@ -22,14 +23,12 @@ const PrintableTicket: React.FC<PrintableTicketProps> = ({ ticket, forceDiagnost
 
   if (!ticket) return null;
   
-  const diagCost = ticket.costs?.diagnostic || 0;
-  
-  // Calcul intelligent des prestations
-  const servicesTotal = ticket.services?.reduce((sum, s) => sum + s.price, 0) || 0;
-  const total = diagCost + servicesTotal;
-  
-  const advance = ticket.costs?.advance || 0;
-  const balance = Math.abs(total - advance);
+  const fin = getTicketFinancialSummary(ticket);
+  const diagCost = fin.diagnosticCost;
+  const servicesTotal = fin.repairCost;
+  const total = fin.totalBilled;
+  const advance = fin.advanceReceived;
+  const balance = fin.balanceDue;
 
   const dateStr = new Date(ticket.createdAt).toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric' });
   const hourStr = new Date(ticket.createdAt).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
@@ -177,9 +176,12 @@ const PrintableTicket: React.FC<PrintableTicketProps> = ({ ticket, forceDiagnost
           <div style={{ display: 'flex', alignItems: 'flex-start', gap: '3.5mm' }}>
               <SecureQrCode ticketId={ticket.id} size={cfg.qrSize} />
               <div style={{ textAlign: 'right' }}>
-                  <div style={{ fontSize: cfg.badgeSize, fontWeight: '900', color: '#FFF', background: forceDiagnosticOnly ? '#6b46c1' : '#000', padding: cfg.badgePadding, marginBottom: '0.8mm', borderRadius: '0.8mm', display: 'inline-block' }}>
-                    {forceDiagnosticOnly ? 'RAPPORT DE DIAGNOSTIC (P2)' : 'FICHE DE DÉPÔT'}
+                  <div style={{ fontSize: cfg.badgeSize, fontWeight: '900', color: '#FFF', background: forceDiagnosticOnly ? '#6b46c1' : fin.isInfacturable ? '#c53030' : '#000', padding: cfg.badgePadding, marginBottom: '0.8mm', borderRadius: '0.8mm', display: 'inline-block' }}>
+                    {forceDiagnosticOnly ? 'RAPPORT DE DIAGNOSTIC (P2)' : fin.isInfacturable ? 'FICHE ANNULÉE (INFACTURABLE)' : 'FICHE DE DÉPÔT'}
                   </div>
+                  {fin.isInfacturable && (
+                      <div style={{ fontSize: cfg.badgeSize, fontWeight: '900', color: '#FFF', background: '#e53e3e', padding: cfg.badgePadding, marginLeft: '1.5mm', borderRadius: '0.8mm', display: 'inline-block' }}>NON INTÉGRABLE AU POINT</div>
+                  )}
                   {ticket.isReIntervention && !forceDiagnosticOnly && (
                       <div style={{ fontSize: cfg.badgeSize, fontWeight: '900', color: '#FFF', background: '#c53030', padding: cfg.badgePadding, marginLeft: '1.5mm', borderRadius: '0.8mm', display: 'inline-block' }}>RÉ-INTERVENTION / SAV</div>
                   )}
@@ -216,7 +218,7 @@ const PrintableTicket: React.FC<PrintableTicketProps> = ({ ticket, forceDiagnost
               <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '0.5mm' }}>
                 <div>
                   <span style={textLabel}>Modèle : </span>
-                  <span style={textValue}>{ticket.macModel} {ticket.modelNumber ? `(${ticket.modelNumber})` : ''}</span>
+                  <span style={textValue}>{ticket.macModel} {ticket.modelNumber ? `(${ticket.modelNumber})` : ''} {(ticket.emc || ticket.customFields?.emc) ? `[${ticket.emc || ticket.customFields?.emc}]` : ''}</span>
                 </div>
                 <div>
                   <span style={textLabel}>N° de Série (S/N) : </span>
@@ -302,29 +304,56 @@ const PrintableTicket: React.FC<PrintableTicketProps> = ({ ticket, forceDiagnost
                         <td style={{ padding: cfg.tdPadding, textAlign: 'right', fontWeight: '900', fontSize: cfg.tableFontSize }}>{diagCost.toLocaleString()}</td>
                     </tr>
                     
-                    <tr style={{ borderBottom: '0.4pt solid #EEE', backgroundColor: '#f0f7ff' }}>
-                        <td style={{ padding: cfg.tdPadding, fontSize: cfg.tableFontSize, fontWeight: '900', color: '#0071e3' }}>Détails Devis & Prestations (Sous-total)</td>
-                        <td style={{ padding: cfg.tdPadding, textAlign: 'right', fontWeight: '900', fontSize: cfg.tableFontSize, color: '#0071e3' }}>{servicesTotal.toLocaleString()}</td>
-                    </tr>
-
-                    {ticket.services.map((s, i) => (
-                        <tr key={i} style={{ borderBottom: '0.4pt solid #EEE' }}>
-                            <td style={{ padding: cfg.tdPadding, paddingLeft: '4mm', fontSize: cfg.tableFontSize, color: '#444' }}>• {s.name}</td>
-                            <td style={{ padding: cfg.tdPadding, textAlign: 'right', fontSize: cfg.tableFontSize, color: '#444' }}>{s.price.toLocaleString()}</td>
+                    {ticket.services && ticket.services.length > 0 ? (
+                        ticket.services.map((s, i) => (
+                            <tr key={i} style={{ borderBottom: '0.4pt solid #EEE' }}>
+                                <td style={{ padding: cfg.tdPadding, paddingLeft: '4mm', fontSize: cfg.tableFontSize, color: '#333' }}>• {s.name}</td>
+                                <td style={{ padding: cfg.tdPadding, textAlign: 'right', fontSize: cfg.tableFontSize, color: '#000', fontWeight: '700' }}>{s.price.toLocaleString()}</td>
+                            </tr>
+                        ))
+                    ) : servicesTotal > 0 ? (
+                        <tr style={{ borderBottom: '0.4pt solid #EEE' }}>
+                            <td style={{ padding: cfg.tdPadding, paddingLeft: '4mm', fontSize: cfg.tableFontSize, color: '#333' }}>• Forfait Réparation / Pièces & Main-d'œuvre</td>
+                            <td style={{ padding: cfg.tdPadding, textAlign: 'right', fontSize: cfg.tableFontSize, color: '#000', fontWeight: '700' }}>{servicesTotal.toLocaleString()}</td>
                         </tr>
-                    ))}
+                    ) : null}
 
+                    {fin.isInfacturable && (
+                        <tr>
+                            <td colSpan={2} style={{ padding: '2mm', backgroundColor: '#fff5f5', border: '0.5pt solid #feb2b2', textAlign: 'center' }}>
+                                <div style={{ fontSize: '7pt', fontWeight: '900', color: '#c53030' }}>
+                                    🚫 DOSSIER ANNULÉ — MENTION : INFACTURABLE
+                                </div>
+                                <div style={{ fontSize: '6pt', color: '#742a2a', marginTop: '0.2mm' }}>
+                                    Aucun fond n'est intégrable dans notre point (Chiffre d'affaires = 0 F CFA, Solde = 0 F CFA).
+                                    {fin.rawAdvanceReceived > 0 && ` Avance déclarée de ${fin.rawAdvanceReceived.toLocaleString()} F CFA exclue de notre point.`}
+                                </div>
+                            </td>
+                        </tr>
+                    )}
                     <tr style={{ borderTop: '0.8pt solid #000' }}>
-                        <td style={{ padding: cfg.tdPadding, textAlign: 'right', fontWeight: '900', fontSize: cfg.tableTotalSize, color: '#555' }}>TOTAL ESTIMÉ</td>
-                        <td style={{ padding: cfg.tdPadding, textAlign: 'right', fontSize: cfg.tableTotalSize, fontWeight: '900' }}>{total.toLocaleString()}</td>
+                        <td style={{ padding: cfg.tdPadding, textAlign: 'right', fontWeight: '900', fontSize: cfg.tableTotalSize, color: '#555' }}>
+                            {fin.isInfacturable ? 'TOTAL FACTURABLE (AU POINT)' : 'TOTAL ESTIMÉ'}
+                        </td>
+                        <td style={{ padding: cfg.tdPadding, textAlign: 'right', fontSize: cfg.tableTotalSize, fontWeight: '900', color: fin.isInfacturable ? '#c53030' : '#000' }}>
+                            {total.toLocaleString()} {fin.isInfacturable ? '(INFACTURABLE)' : ''}
+                        </td>
                     </tr>
                     <tr style={{ color: '#c53030' }}>
-                        <td style={{ padding: cfg.tdPadding, textAlign: 'right', fontSize: cfg.tableFontSize, fontWeight: 'bold' }}>ACOMPTE VERSÉ (-)</td>
-                        <td style={{ padding: cfg.tdPadding, textAlign: 'right', fontSize: cfg.tableFontSize, fontWeight: '900' }}>{advance.toLocaleString()}</td>
+                        <td style={{ padding: cfg.tdPadding, textAlign: 'right', fontSize: cfg.tableFontSize, fontWeight: 'bold' }}>
+                            {fin.isInfacturable ? 'ACOMPTE COMPTABILISÉ AU POINT (-)' : 'ACOMPTE VERSÉ (-)'}
+                        </td>
+                        <td style={{ padding: cfg.tdPadding, textAlign: 'right', fontSize: cfg.tableFontSize, fontWeight: '900' }}>
+                            {advance.toLocaleString()} {fin.isInfacturable ? '(0 F AU POINT)' : ''}
+                        </td>
                     </tr>
-                    <tr style={{ background: '#0071e3', color: '#FFF' }}>
-                        <td style={{ padding: cfg.tdPadding, textAlign: 'right', fontSize: cfg.tableBalanceSize, fontWeight: '900' }}>SOLDE À RÉGLER</td>
-                        <td style={{ padding: cfg.tdPadding, textAlign: 'right', fontSize: cfg.tableBalanceSize, fontWeight: '900' }}>{balance.toLocaleString()} {shop.currency}</td>
+                    <tr style={{ background: fin.isInfacturable ? '#718096' : '#0071e3', color: '#FFF' }}>
+                        <td style={{ padding: cfg.tdPadding, textAlign: 'right', fontSize: cfg.tableBalanceSize, fontWeight: '900' }}>
+                            SOLDE À RÉGLER
+                        </td>
+                        <td style={{ padding: cfg.tdPadding, textAlign: 'right', fontSize: cfg.tableBalanceSize, fontWeight: '900' }}>
+                            {balance.toLocaleString()} {shop.currency} {fin.isInfacturable ? '(ANNULÉ)' : ''}
+                        </td>
                     </tr>
                 </tbody>
             </table>

@@ -10,9 +10,10 @@ interface PreviewModalProps {
   onClose: () => void;
   children: React.ReactNode;
   fileName: string;
+  headerTools?: React.ReactNode;
 }
 
-const PreviewModal: React.FC<PreviewModalProps> = ({ isOpen, onClose, children, fileName }) => {
+const PreviewModal: React.FC<PreviewModalProps> = ({ isOpen, onClose, children, fileName, headerTools }) => {
   const { showToast } = useToastContext();
   const contentRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -151,6 +152,12 @@ const PreviewModal: React.FC<PreviewModalProps> = ({ isOpen, onClose, children, 
           <XCircleIcon className="w-6 h-6 sm:w-8 sm:h-8 text-apple-muted hover:text-white" />
         </button>
       </header>
+
+      {headerTools && (
+        <div className="px-4 py-3 sm:px-6 bg-zinc-900/90 border-b border-white/10 z-10">
+          {headerTools}
+        </div>
+      )}
 
       {/* Floating Action Bar - Fixed at bottom right for desktop, full width bottom for mobile */}
       <div className="fixed bottom-0 left-0 right-0 md:bottom-8 md:right-8 md:left-auto p-4 md:p-0 bg-black/80 md:bg-transparent backdrop-blur-xl md:backdrop-blur-none border-t md:border-none border-white/10 z-[210] flex flex-row md:flex-col gap-3 pb-[calc(env(safe-area-inset-bottom,0px)+1rem)] md:pb-0 justify-center md:justify-end pointer-events-auto">

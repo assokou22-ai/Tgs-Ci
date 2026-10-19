@@ -83,19 +83,19 @@ const defaultSettings: AppSettings = {
   features: {
       enabled: {
           menu_accueil: true, menu_technicien: true, menu_editeur: true, menu_finance: true, menu_engagements_sav: true,
+          menu_assistant_clientele: true, menu_actions_du_jour: true,
           tool_ai_reports: true, tool_ai_diag: true, tool_ai_price: true, tool_ai_correction: true, tool_ai_search: true,
           mod_stock: true, mod_clients: true, mod_documents: true, mod_knowledge: true, mod_multimedia: true,
           mod_appointments: true, mod_backup: true, mod_exports: true, mod_legal_folder: true, mod_diagnostic_b: true,
-          // Fix: Added missing 'mod_enterprise_clients' property to satisfy Record<FeatureId, boolean> type
-          mod_enterprise_clients: true
+          mod_enterprise_clients: true, mod_daily_actions: true
       },
       requireSession: {
           menu_accueil: false, menu_technicien: false, menu_editeur: false, menu_finance: false, menu_engagements_sav: false,
+          menu_assistant_clientele: false, menu_actions_du_jour: false,
           tool_ai_reports: false, tool_ai_diag: false, tool_ai_price: false, tool_ai_correction: false, tool_ai_search: false,
           mod_stock: false, mod_clients: false, mod_documents: false, mod_knowledge: false, mod_multimedia: false,
           mod_appointments: false, mod_backup: false, mod_exports: false, mod_legal_folder: false, mod_diagnostic_b: false,
-          // Fix: Added missing 'mod_enterprise_clients' property to satisfy Record<FeatureId, boolean> type
-          mod_enterprise_clients: false
+          mod_enterprise_clients: false, mod_daily_actions: false
       }
   },
   print: {

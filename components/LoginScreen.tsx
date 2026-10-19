@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { ShieldAlert, LogIn, Sparkles, KeyRound } from 'lucide-react';
 import { useToastContext } from '../context/ToastContext.tsx';
 import BackgroundAnimation from './BackgroundAnimation.tsx';
+import { DeviceProfileStartupSelector } from './DeviceProfileStartupSelector.tsx';
 
 interface LoginScreenProps {
   onSuccess: () => void;
@@ -37,6 +38,10 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ onSuccess }) => {
         <div className="min-h-screen bg-black text-white flex flex-col items-center justify-center p-4 relative overflow-hidden font-sans">
             <BackgroundAnimation />
             
+            <div className="z-10 mb-5">
+                <DeviceProfileStartupSelector variant="compact" />
+            </div>
+
             <div className="w-full max-w-md bg-zinc-950/80 backdrop-blur-xl border border-white/10 p-8 rounded-[32px] shadow-2xl z-10 animate-fade-in relative">
                 {/* Visual Accent */}
                 <div className="absolute top-0 left-1/2 transform -translate-x-1/2 -translate-y-1/2 w-48 h-48 bg-blue-500/10 rounded-full blur-3xl pointer-events-none" />

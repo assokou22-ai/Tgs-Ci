@@ -4,10 +4,12 @@ import { useSyncStatus } from '../hooks/useSyncStatus.ts';
 import { useNetworkQuality } from '../hooks/useNetworkQuality.ts';
 import { useOnlineStatus } from '../hooks/useOnlineStatus.ts';
 import { useToastContext } from '../context/ToastContext.tsx';
-import { dbGetSyncQueue } from '../services/dbService.ts';
+import { HardDrive, Cloud, CloudOff } from 'lucide-react';
+import { dbGetSyncQueue, dbGetStorageEstimate } from '../services/dbService.ts';
 import { processSyncQueue, syncFromCloud } from '../services/syncService.ts';
 import { SyncQueueItem, EntityType } from '../types.ts';
 import { useFirebase } from '../context/FirebaseContext.tsx';
+import { useDeviceProfile } from '../context/DeviceProfileContext.tsx';
 import { 
     ArrowPathIcon, 
     WrenchScrewdriverIcon,
@@ -24,7 +26,13 @@ import {
     ClockIcon
 } from './icons.tsx';
 
-const SyncStatusIndicator: React.FC = () => {
+interface SyncStatusIndicatorProps {
+    compact?: boolean;
+}
+
+const SyncStatusIndicator: React.FC<SyncStatusIndicatorProps> = ({ compact }) => {
+    const { isMobile, isTablet } = useDeviceProfile();
+    const isCompactMode = compact !== undefined ? compact : (isMobile || isTablet);
     const { showToast } = useToastContext();
     const { user, googleAccessToken, signInWithGoogle, driveSyncStatus, driveMetadata } = useFirebase();
     const isOnline = useOnlineStatus();
@@ -34,6 +42,19 @@ const SyncStatusIndicator: React.FC = () => {
     const [isOpen, setIsOpen] = useState(false);
     const [queueItems, setQueueItems] = useState<SyncQueueItem[]>([]);
     const [expandedItem, setExpandedItem] = useState<number | null>(null);
+
+    // Santé du Stockage Local (IndexedDB)
+    const [storageEstimate, setStorageEstimate] = useState<{ usage: number; quota: number; percent: number } | null>(null);
+
+    useEffect(() => {
+        const checkStorage = async () => {
+            const res = await dbGetStorageEstimate();
+            setStorageEstimate(res);
+        };
+        checkStorage();
+        const interval = setInterval(checkStorage, 60000);
+        return () => clearInterval(interval);
+    }, []);
 
     // Google Drive Manual sync state
     const [gdriveSyncing, setGdriveSyncing] = useState(false);
@@ -290,56 +311,97 @@ const SyncStatusIndicator: React.FC = () => {
         );
     };
 
+    const isStorageWarning = storageEstimate?.percent ? storageEstimate.percent > 80 : false;
+    const finalIsRed = isRed || isStorageWarning;
+    const finalIsOrange = isOrange && !finalIsRed;
+
     return (
-        <div className="relative">
-            {/* Sync Header Trigger Pin */}
-            <button
-                id="sync-status-trigger-btn"
-                onClick={() => setIsOpen(true)}
-                className={`flex items-center gap-2.5 text-[10px] font-black uppercase tracking-widest px-3.5 py-2.5 rounded-full border transition-all active:scale-95 ${
-                    isRed
-                    ? 'text-red-400 bg-red-500/5 border-red-500/20 hover:bg-red-500/10'
-                    : isOrange
-                    ? 'text-orange-400 bg-orange-500/5 border-orange-500/20 hover:bg-orange-500/10'
-                    : 'text-emerald-400 bg-emerald-500/5 border-emerald-500/20 hover:bg-emerald-500/10'
-                }`}
-                title={
-                    isRed
-                    ? "Connexion interrompue ou signal trop faible (Rouge). Cliquez pour inspecter la file d'attente hors ligne."
-                    : isOrange
-                    ? `${pendingChanges} modifications en attente ou signal instable/sync active (Orange). Cliquez pour voir le panneau.`
-                    : "Connexion sécurisée, signal stable, entièrement synchronisé (Vert). Cliquez pour voir de près."
-                }
-            >
-                {/* Visual state dots/spinners */}
-                {isRed ? (
-                    <div className="w-2.5 h-2.5 rounded-full bg-red-500 animate-pulse shrink-0 shadow-[0_0_8px_rgba(239,68,68,0.6)]"></div>
-                ) : isOrange ? (
-                    isSyncing || isForcingSync ? (
-                        <ArrowPathIcon className="w-3.5 h-3.5 animate-spin text-orange-400 shrink-0" />
-                    ) : (
-                        <div className="w-2.5 h-2.5 rounded-full bg-orange-500 animate-pulse shrink-0 shadow-[0_0_8px_rgba(249,115,22,0.6)]"></div>
-                    )
-                ) : (
-                    <div className="w-2.5 h-2.5 rounded-full bg-emerald-500 shrink-0 shadow-[0_0_8px_rgba(16,185,129,0.6)]"></div>
-                )}
-
-                <span className="font-mono">
-                    {isRed 
-                        ? 'HORS LIGNE' 
-                        : isSyncing || isForcingSync 
-                        ? 'SYNC EN COURS' 
-                        : pendingChanges > 0 
-                        ? `ATTENTE (${pendingChanges})` 
-                        : 'SYNC CLOUD OK'
+        <div className="relative shrink-0">
+            {/* Sync Header Trigger Pin: En mode compact (mobile/tablette), icône discrète calée dans l'angle */}
+            {isCompactMode ? (
+                <button
+                    id="sync-status-trigger-btn"
+                    onClick={() => setIsOpen(true)}
+                    className={`w-9 h-9 sm:w-10 sm:h-10 rounded-xl border flex items-center justify-center transition-all active:scale-95 shrink-0 relative cursor-pointer ${
+                        finalIsRed
+                        ? 'text-red-400 bg-red-500/10 border-red-500/30 hover:bg-red-500/20 shadow-md shadow-red-500/10'
+                        : finalIsOrange
+                        ? 'text-orange-400 bg-orange-500/10 border-orange-500/30 hover:bg-orange-500/20 shadow-md shadow-orange-500/10'
+                        : 'text-emerald-400 bg-emerald-500/10 border-emerald-500/30 hover:bg-emerald-500/20'
+                    }`}
+                    title={
+                        finalIsRed
+                        ? "Attention réseau ou stockage faible (Rouge). Cliquer pour inspecter."
+                        : finalIsOrange
+                        ? `${pendingChanges} modification(s) en attente / sync active (Orange). Cliquer pour inspecter.`
+                        : "Synchronisation Cloud & Stockage sains (Vert). Cliquer pour ouvrir le régulateur."
                     }
-                </span>
+                >
+                    {isSyncing || isForcingSync ? (
+                        <ArrowPathIcon className="w-4 h-4 animate-spin text-orange-400" />
+                    ) : !isOnline ? (
+                        <CloudOff className="w-4 h-4 text-red-400" />
+                    ) : (
+                        <Cloud className="w-4 h-4 text-emerald-400" />
+                    )}
+                    {/* Pastille discrète dans l'angle supérieur de l'icône */}
+                    <span className={`absolute top-1 right-1 w-2 h-2 rounded-full ring-2 ring-zinc-950 ${
+                        finalIsRed 
+                        ? 'bg-red-500 animate-pulse' 
+                        : finalIsOrange 
+                        ? 'bg-orange-500 animate-pulse' 
+                        : 'bg-emerald-400'
+                    }`} />
+                </button>
+            ) : (
+                <button
+                    id="sync-status-trigger-btn"
+                    onClick={() => setIsOpen(true)}
+                    className={`flex items-center gap-2 text-[10px] font-black uppercase tracking-widest px-2.5 sm:px-3.5 py-1.5 sm:py-2 rounded-xl sm:rounded-full border transition-all active:scale-95 shrink-0 cursor-pointer ${
+                        finalIsRed
+                        ? 'text-red-400 bg-red-500/10 border-red-500/30 hover:bg-red-500/20'
+                        : finalIsOrange
+                        ? 'text-orange-400 bg-orange-500/10 border-orange-500/30 hover:bg-orange-500/20'
+                        : 'text-emerald-400 bg-emerald-500/10 border-emerald-500/30 hover:bg-emerald-500/20'
+                    }`}
+                    title={
+                        finalIsRed
+                        ? "Connexion interrompue ou signal trop faible (Rouge). Cliquez pour inspecter."
+                        : finalIsOrange
+                        ? `${pendingChanges} modifications en attente ou signal instable/sync active (Orange). Cliquez pour inspecter.`
+                        : "Connexion sécurisée, signal stable, entièrement synchronisé (Vert). Cliquez pour ouvrir."
+                    }
+                >
+                    {/* Visual state dots/spinners */}
+                    {finalIsRed ? (
+                        <div className="w-2.5 h-2.5 rounded-full bg-red-500 animate-pulse shrink-0 shadow-[0_0_8px_rgba(239,68,68,0.6)]"></div>
+                    ) : finalIsOrange ? (
+                        isSyncing || isForcingSync ? (
+                            <ArrowPathIcon className="w-3.5 h-3.5 animate-spin text-orange-400 shrink-0" />
+                        ) : (
+                            <div className="w-2.5 h-2.5 rounded-full bg-orange-500 animate-pulse shrink-0 shadow-[0_0_8px_rgba(249,115,22,0.6)]"></div>
+                        )
+                    ) : (
+                        <div className="w-2.5 h-2.5 rounded-full bg-emerald-500 shrink-0 shadow-[0_0_8px_rgba(16,185,129,0.6)]"></div>
+                    )}
 
-                {/* Micro Signal monitor inline */}
-                <div className="flex items-center gap-1 border-l border-white/10 pl-2">
-                    {renderBars()}
-                </div>
-            </button>
+                    <span className="font-mono hidden sm:inline">
+                        {finalIsRed && !isOnline
+                            ? 'HORS LIGNE' 
+                            : isSyncing || isForcingSync 
+                            ? 'SYNC EN COURS' 
+                            : pendingChanges > 0 
+                            ? `ATTENTE (${pendingChanges})` 
+                            : 'SYNC CLOUD OK'
+                        }
+                    </span>
+
+                    {/* Micro Signal monitor inline */}
+                    <div className="hidden md:flex items-center gap-1 border-l border-white/10 pl-2">
+                        {renderBars()}
+                    </div>
+                </button>
+            )}
 
             {/* Sidebar Slide-out Drawer Panel (TGS Sync Center) */}
             <AnimatePresence>
@@ -406,6 +468,46 @@ const SyncStatusIndicator: React.FC = () => {
                                             </p>
                                         </div>
                                     </div>
+                                </div>
+
+                                {/* État Stockage Local & Persistance */}
+                                <div className="bg-zinc-900/60 rounded-2xl border border-white/5 p-4 space-y-3.5">
+                                    <div className="flex items-center justify-between">
+                                        <div className="flex items-center gap-2">
+                                            <HardDrive className="w-4 h-4 text-emerald-400 shrink-0" />
+                                            <span className="text-[10px] font-black uppercase text-zinc-400 tracking-widest">Santé du Stockage Local (Appareil)</span>
+                                        </div>
+                                        {storageEstimate && (
+                                            <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full border ${
+                                                storageEstimate.percent > 80 
+                                                ? 'bg-red-500/10 text-red-400 border-red-500/30' 
+                                                : 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
+                                            }`}>
+                                                {storageEstimate.percent}% utilisé
+                                            </span>
+                                        )}
+                                    </div>
+                                    {storageEstimate ? (
+                                        <div className="space-y-2.5">
+                                            <div className="flex justify-between items-center text-xs">
+                                                <span className="text-zinc-400 text-[11px] font-semibold">Volume base locale :</span>
+                                                <span className="font-mono font-bold text-white">
+                                                    {(storageEstimate.usage / (1024 * 1024 * 1024)).toFixed(2)} Go / {(storageEstimate.quota / (1024 * 1024 * 1024)).toFixed(0)} Go
+                                                </span>
+                                            </div>
+                                            <div className="w-full h-2 bg-white/10 rounded-full overflow-hidden">
+                                                <div 
+                                                    className={`h-full transition-all duration-500 ${storageEstimate.percent > 80 ? 'bg-red-500' : 'bg-emerald-500'}`}
+                                                    style={{ width: `${Math.max(2, storageEstimate.percent)}%` }}
+                                                />
+                                            </div>
+                                            <p className="text-[10px] text-zinc-500 leading-relaxed">
+                                                Base IndexedDB locale active. Vos fiches, clients et stocks restent sécurisés même en cas de coupure réseau.
+                                            </p>
+                                        </div>
+                                    ) : (
+                                        <p className="text-[10px] text-zinc-500">Calcul du stockage local en cours...</p>
+                                    )}
                                 </div>
 
                                 {/* Google Drive Realtime Sync Section */}

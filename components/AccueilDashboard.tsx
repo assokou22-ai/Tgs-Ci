@@ -6,9 +6,10 @@ import { SyncDiagnosticPanel } from './SyncDiagnosticPanel.tsx';
 import RepairDetail from './RepairDetail.tsx';
 import RepairForm from './RepairForm.tsx';
 import EnterpriseRepairForm from './EnterpriseRepairForm.tsx';
-import { PlusCircleIcon, CalendarDaysIcon, ListBulletIcon, BookOpenIcon, BuildingStorefrontIcon, ClockIcon } from './icons.tsx';
+import { PlusCircleIcon, CalendarDaysIcon, ListBulletIcon, BookOpenIcon, BuildingStorefrontIcon, ClockIcon, BanknotesIcon } from './icons.tsx';
 import AppointmentCalendarView from './AppointmentCalendarView.tsx';
 import ActionsDuJourView from './ActionsDuJourView.tsx';
+import TicketFinancialPointManager from './TicketFinancialPointManager.tsx';
 import PreviewModal from './PreviewModal.tsx';
 import PrintableTicket from './PrintableTicket.tsx';
 import PrintableEnterpriseBon from './PrintableEnterpriseBon.tsx';
@@ -16,6 +17,7 @@ import ConfirmationModal from './ConfirmationModal.tsx';
 import DashboardLayout, { NavItem } from './DashboardLayout.tsx';
 import TicketArchive from './TicketArchive.tsx';
 import { useOrientation } from '../hooks/useOrientation.ts';
+import { useDeviceProfile } from '../context/DeviceProfileContext.tsx';
 
 interface AccueilDashboardProps {
     tickets: RepairTicket[];
@@ -23,17 +25,20 @@ interface AccueilDashboardProps {
     updateTicket: (ticket: RepairTicket, oldId?: string) => Promise<void>;
     deleteTicket: (ticketId: string) => Promise<void>;
     loading: boolean;
+    onExitRole?: () => void;
 }
 
-const AccueilDashboard: React.FC<AccueilDashboardProps> = ({ tickets, addTicket, updateTicket, deleteTicket, loading }) => {
+const AccueilDashboard: React.FC<AccueilDashboardProps> = ({ tickets, addTicket, updateTicket, deleteTicket, loading, onExitRole }) => {
     const { isMobile, isMobileLandscape } = useOrientation();
+    const { isMobile: isProfileMobile } = useDeviceProfile();
+    const effectiveMobile = isMobile || isProfileMobile || isMobileLandscape;
     const [isCreating, setIsCreating] = useState(false);
     const [isCreatingEnterprise, setIsCreatingEnterprise] = useState(false);
     const [ticketToEdit, setTicketToEdit] = useState<RepairTicket | null>(null);
     const [ticketToPrint, setTicketToPrint] = useState<RepairTicket | null>(null);
     const [printType, setPrintType] = useState<'standard' | 'diagnostic'>('standard');
     const [ticketToDelete, setTicketToDelete] = useState<RepairTicket | null>(null);
-    const [view, setView] = useState<'list' | 'calendar' | 'archive' | 'enterprise' | 'actions'>('list');
+    const [view, setView] = useState<'list' | 'calendar' | 'archive' | 'enterprise' | 'actions' | 'point_financier'>('list');
     const [locationSearch, setLocationSearch] = useState(window.location.search);
     const [activeCategoryMobile, setActiveCategoryMobile] = useState<'encours' | 'traites' | 'rendus'>('encours');
 
@@ -77,6 +82,10 @@ const AccueilDashboard: React.FC<AccueilDashboardProps> = ({ tickets, addTicket,
     };
 
     const handleExitRole = () => {
+        if (onExitRole) {
+            onExitRole();
+            return;
+        }
         const url = new URL(window.location.href);
         url.searchParams.delete('role');
         url.searchParams.delete('ticketId');
@@ -107,6 +116,9 @@ const AccueilDashboard: React.FC<AccueilDashboardProps> = ({ tickets, addTicket,
         if (ticketToEdit) {
             await updateTicket(ticketData as RepairTicket, oldId);
             setTicketToEdit(null);
+            if (action === 'print') {
+                setTicketToPrint(ticketData as RepairTicket);
+            }
             handleSelectTicket(ticketData as RepairTicket);
             return ticketData as RepairTicket;
         } else {
@@ -141,6 +153,7 @@ const AccueilDashboard: React.FC<AccueilDashboardProps> = ({ tickets, addTicket,
         { id: 'calendar', label: 'RDV', icon: CalendarDaysIcon, isActive: view === 'calendar' && !isCreating && !isCreatingEnterprise && !selectedTicket, onClick: () => { setView('calendar'); handleBack(); } },
         { id: 'new', label: 'Nouveau Dossier', icon: PlusCircleIcon, isActive: isCreating, onClick: () => { handleBack(); setIsCreating(true); } },
         { id: 'enterprise', label: 'Fiches client Entreprise', icon: BuildingStorefrontIcon, isActive: (view === 'enterprise' || isCreatingEnterprise) && !selectedTicket, onClick: () => { setView('enterprise'); handleBack(); } },
+        { id: 'point_financier', label: 'Point Financier', icon: BanknotesIcon, isActive: view === 'point_financier' && !isCreating && !isCreatingEnterprise && !selectedTicket, onClick: () => { setView('point_financier'); handleBack(); } },
     ];
 
     const searchQuery = useMemo(() => {
@@ -172,14 +185,21 @@ const AccueilDashboard: React.FC<AccueilDashboardProps> = ({ tickets, addTicket,
             onBack={(selectedTicket || isCreating || isCreatingEnterprise || ticketToEdit || view !== 'list') ? handleBack : undefined}
             onExitRole={handleExitRole}
         >
-            {isCreating || (ticketToEdit && !ticketToEdit.client.isEnterprise) ? (
-                <RepairForm tickets={tickets} onSave={handleSaveTicket} onCancel={handleBack} ticketToEdit={ticketToEdit ? (tickets.find(t => t.id === ticketToEdit.id) || ticketToEdit) : null} role="Accueil" />
-            ) : isCreatingEnterprise || (ticketToEdit && ticketToEdit.client.isEnterprise) ? (
-                <EnterpriseRepairForm tickets={tickets} onSave={handleSaveTicket} onCancel={handleBack} ticketToEdit={ticketToEdit ? (tickets.find(t => t.id === ticketToEdit.id) || ticketToEdit) : null} />
+            <div className="relative z-10">
+            {isCreating || (ticketToEdit && !ticketToEdit.client?.isEnterprise) ? (
+                <RepairForm key={ticketToEdit?.id || 'new-accueil'} tickets={tickets} onSave={handleSaveTicket} onCancel={handleBack} ticketToEdit={ticketToEdit ? (tickets.find(t => t.id === ticketToEdit.id) || ticketToEdit) : null} role="Accueil" />
+            ) : isCreatingEnterprise || (ticketToEdit && ticketToEdit.client?.isEnterprise) ? (
+                <EnterpriseRepairForm key={ticketToEdit?.id || 'new-ent-accueil'} tickets={tickets} onSave={handleSaveTicket} onCancel={handleBack} ticketToEdit={ticketToEdit ? (tickets.find(t => t.id === ticketToEdit.id) || ticketToEdit) : null} />
             ) : selectedTicket ? (
                 <RepairDetail ticket={selectedTicket} onBack={handleBack} onUpdate={handleUpdateTicket} onDelete={() => setTicketToDelete(selectedTicket)} role="Accueil" onEdit={handleEdit} />
             ) : view === 'actions' ? (
                 <ActionsDuJourView tickets={tickets} onSelectTicket={handleSelectTicket} />
+            ) : view === 'point_financier' ? (
+                <TicketFinancialPointManager
+                    tickets={tickets}
+                    onSelectTicket={handleSelectTicket}
+                    onBack={() => { setView('list'); handleBack(); }}
+                />
             ) : view === 'archive' ? (
                 <TicketArchive tickets={searchedTickets} onSelectTicket={handleSelectTicket} onPrintTicket={(t) => handlePrintTicket(t, 'standard')} onEditTicket={handleEdit} onDeleteTicket={deleteTicket} onUpdateTicket={updateTicket} />
             ) : view === 'enterprise' ? (
@@ -208,7 +228,7 @@ const AccueilDashboard: React.FC<AccueilDashboardProps> = ({ tickets, addTicket,
                 </div>
             ) : view === 'list' ? (
                  <div className="space-y-6">
-                     {(isMobile || isMobileLandscape) && (
+                     {effectiveMobile && (
                          <div className="flex bg-zinc-950/60 p-1.5 rounded-2xl border border-white/5 overflow-x-auto no-scrollbar gap-1">
                              <button
                                  onClick={() => setActiveCategoryMobile('encours')}
@@ -243,14 +263,14 @@ const AccueilDashboard: React.FC<AccueilDashboardProps> = ({ tickets, addTicket,
                          </div>
                      )}
 
-                     <div className={(isMobile || isMobileLandscape) ? 'block space-y-4' : 'grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 md:gap-6'}>
-                         {(!(isMobile || isMobileLandscape) || activeCategoryMobile === 'encours') && (
+                     <div className={effectiveMobile ? 'block space-y-4' : 'grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 md:gap-6'}>
+                         {(!effectiveMobile || activeCategoryMobile === 'encours') && (
                              <RepairList title="Diagnostic & Réparation" tickets={searchedTickets} onSelectTicket={handleSelectTicket} onEditTicket={handleEdit} onDeleteTicket={async (id) => setTicketToDelete(tickets.find(t=>t.id===id)||null)} statusToShow={[RepairStatus.A_DIAGNOSTIQUER, RepairStatus.DIAGNOSTIC_EN_COURS, RepairStatus.DEVIS_A_VALIDER, RepairStatus.DEVIS_APPROUVE, RepairStatus.EN_ATTENTE_DE_PIECES, RepairStatus.REPARATION_EN_COURS, RepairStatus.TESTS_EN_COURS]} loading={loading} onPrintTicket={handlePrintTicket} />
                          )}
-                         {(!(isMobile || isMobileLandscape) || activeCategoryMobile === 'traites') && (
+                         {(!effectiveMobile || activeCategoryMobile === 'traites') && (
                              <RepairList title="Reporté, Terminé & Annulé" tickets={searchedTickets} onSelectTicket={handleSelectTicket} onEditTicket={handleEdit} onDeleteTicket={async (id) => setTicketToDelete(tickets.find(t=>t.id===id)||null)} statusToShow={[RepairStatus.REPORTE, RepairStatus.TERMINE, RepairStatus.NON_REPARABLE, RepairStatus.ANNULE]} loading={loading} onPrintTicket={handlePrintTicket} />
                          )}
-                         {(!(isMobile || isMobileLandscape) || activeCategoryMobile === 'rendus') && (
+                         {(!effectiveMobile || activeCategoryMobile === 'rendus') && (
                              <RepairList title="Rendus" tickets={searchedTickets} onSelectTicket={handleSelectTicket} onEditTicket={handleEdit} onDeleteTicket={async (id) => setTicketToDelete(tickets.find(t=>t.id===id)||null)} statusToShow={[RepairStatus.RENDU]} loading={loading} onPrintTicket={handlePrintTicket} />
                          )}
                      </div>
@@ -281,6 +301,7 @@ const AccueilDashboard: React.FC<AccueilDashboardProps> = ({ tickets, addTicket,
                 confirmText="Oui, Supprimer"
                 confirmButtonClass="bg-red-600 hover:bg-red-500 shadow-lg shadow-red-900/20"
             />
+            </div>
         </DashboardLayout>
     );
 };
