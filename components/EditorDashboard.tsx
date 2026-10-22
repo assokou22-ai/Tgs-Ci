@@ -334,7 +334,7 @@ interface EditorDashboardProps {
 type EditorView = 'stats' | 'matrix' | 'stock' | 'services' | 'clients' | 'fiches' | 'settings' | 'design' | 'history' | 'logs' | 'docsearch' | 'websearch' | 'exports' | 'backup' | 'knowledge' | 'simpledocs' | 'ongoing_orders' | 'enterprise' | 'point_financier';
 
 const EditorDashboard: React.FC<EditorDashboardProps> = ({ tickets, updateTicket, deleteTicket, appointments, bulkUpdateTickets, onExitRole }) => {
-  const { addLog } = useLogs();
+  const { logs, addLog } = useLogs();
   const { showToast } = useToastContext();
   const [isUnlocked, setIsUnlocked] = useState(() => {
     return sessionStorage.getItem('editor_unlocked_2019') === 'true';

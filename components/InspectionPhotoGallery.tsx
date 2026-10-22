@@ -35,6 +35,9 @@ export const InspectionPhotoGallery: React.FC<InspectionPhotoGalleryProps> = ({
     ticketNumber,
     readOnly = false,
 }) => {
+    const safeIntakePhotos = Array.isArray(intakePhotos) ? intakePhotos : [];
+    const safeRestitutionPhotos = Array.isArray(restitutionPhotos) ? restitutionPhotos : [];
+
     const [activeTab, setActiveTab] = useState<'intake' | 'restitution'>('intake');
 
     const [isCompareModalOpen, setIsCompareModalOpen] = useState(false);
@@ -74,9 +77,9 @@ export const InspectionPhotoGallery: React.FC<InspectionPhotoGalleryProps> = ({
             );
 
             if (target === 'intake') {
-                onUpdateIntakePhotos([...intakePhotos, ...compressedList]);
+                onUpdateIntakePhotos([...safeIntakePhotos, ...compressedList]);
             } else {
-                onUpdateRestitutionPhotos([...restitutionPhotos, ...compressedList]);
+                onUpdateRestitutionPhotos([...safeRestitutionPhotos, ...compressedList]);
             }
         } catch (err) {
             console.error("Erreur d'import des photos:", err);
@@ -87,12 +90,12 @@ export const InspectionPhotoGallery: React.FC<InspectionPhotoGalleryProps> = ({
     };
 
     const handleDeleteIntakePhoto = (index: number) => {
-        const updated = intakePhotos.filter((_, idx) => idx !== index);
+        const updated = safeIntakePhotos.filter((_, idx) => idx !== index);
         onUpdateIntakePhotos(updated);
     };
 
     const handleDeleteRestitutionPhoto = (index: number) => {
-        const updated = restitutionPhotos.filter((_, idx) => idx !== index);
+        const updated = safeRestitutionPhotos.filter((_, idx) => idx !== index);
         onUpdateRestitutionPhotos(updated);
     };
 
@@ -134,7 +137,7 @@ export const InspectionPhotoGallery: React.FC<InspectionPhotoGalleryProps> = ({
                 <button
                     type="button"
                     onClick={() => setIsCompareModalOpen(true)}
-                    disabled={intakePhotos.length === 0 && restitutionPhotos.length === 0}
+                    disabled={safeIntakePhotos.length === 0 && safeRestitutionPhotos.length === 0}
                     className="px-4 py-2 bg-gradient-to-r from-sky-600 to-indigo-600 hover:from-sky-500 hover:to-indigo-500 text-white rounded-xl text-xs font-semibold shadow-md shadow-sky-600/20 flex items-center justify-center gap-2 transition-all self-start sm:self-auto disabled:opacity-40"
                 >
                     <ArrowLeftRight className="w-4 h-4" />
@@ -156,7 +159,7 @@ export const InspectionPhotoGallery: React.FC<InspectionPhotoGalleryProps> = ({
                     <span className="w-2 h-2 rounded-full bg-amber-400"></span>
                     <span>A. À la réception (Avant)</span>
                     <span className="px-1.5 py-0.2 rounded-full bg-slate-800 text-[11px] font-mono text-slate-300 border border-slate-700">
-                        {intakePhotos.length}
+                        {safeIntakePhotos.length}
                     </span>
                 </button>
 
@@ -172,7 +175,7 @@ export const InspectionPhotoGallery: React.FC<InspectionPhotoGalleryProps> = ({
                     <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
                     <span>B. Avant restitution (Après)</span>
                     <span className="px-1.5 py-0.2 rounded-full bg-slate-800 text-[11px] font-mono text-slate-300 border border-slate-700">
-                        {restitutionPhotos.length}
+                        {safeRestitutionPhotos.length}
                     </span>
                 </button>
             </div>
@@ -229,7 +232,7 @@ export const InspectionPhotoGallery: React.FC<InspectionPhotoGalleryProps> = ({
                     />
 
                     {/* Grille de photos Réception */}
-                    {intakePhotos.length === 0 ? (
+                    {safeIntakePhotos.length === 0 ? (
                         <div className="text-center py-10 border border-dashed border-slate-800 rounded-xl bg-slate-900/40">
                             <Camera className="w-10 h-10 text-slate-600 mx-auto mb-2" />
                             <p className="text-xs text-slate-400">Aucune photo prise à la réception pour le moment.</p>
@@ -237,7 +240,7 @@ export const InspectionPhotoGallery: React.FC<InspectionPhotoGalleryProps> = ({
                         </div>
                     ) : (
                         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
-                            {intakePhotos.map((photo, idx) => (
+                            {safeIntakePhotos.map((photo, idx) => (
                                 <div key={idx} className="relative group rounded-xl overflow-hidden border border-slate-700 aspect-square bg-slate-950">
                                     <img src={photo} alt={`Réception ${idx}`} className="w-full h-full object-cover" />
                                     <div className="absolute top-1.5 left-1.5 px-1.5 py-0.5 rounded bg-black/60 text-[10px] font-mono text-amber-300 backdrop-blur-xs">
@@ -516,7 +519,7 @@ export const InspectionPhotoGallery: React.FC<InspectionPhotoGalleryProps> = ({
                     <div className="space-y-3">
                         <div className="flex items-center justify-between">
                             <label className="text-xs font-bold uppercase tracking-wider text-slate-300">
-                                Clichés avant restitution ({restitutionPhotos.length})
+                                Clichés avant restitution ({safeRestitutionPhotos.length})
                             </label>
 
                             {!readOnly && (
@@ -560,7 +563,7 @@ export const InspectionPhotoGallery: React.FC<InspectionPhotoGalleryProps> = ({
                             onChange={(e) => handleAddPhotos(e, 'restitution')}
                         />
 
-                        {restitutionPhotos.length === 0 ? (
+                        {safeRestitutionPhotos.length === 0 ? (
                             <div className="text-center py-10 border border-dashed border-slate-800 rounded-xl bg-slate-900/40">
                                 <Camera className="w-10 h-10 text-slate-600 mx-auto mb-2" />
                                 <p className="text-xs text-slate-400">Aucune photo enregistrée avant restitution.</p>
@@ -568,7 +571,7 @@ export const InspectionPhotoGallery: React.FC<InspectionPhotoGalleryProps> = ({
                             </div>
                         ) : (
                             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
-                                {restitutionPhotos.map((photo, idx) => (
+                                {safeRestitutionPhotos.map((photo, idx) => (
                                     <div key={idx} className="relative group rounded-xl overflow-hidden border border-slate-700 aspect-square bg-slate-950">
                                         <img src={photo} alt={`Restitution ${idx}`} className="w-full h-full object-cover" />
                                         <div className="absolute top-1.5 left-1.5 px-1.5 py-0.5 rounded bg-black/60 text-[10px] font-mono text-emerald-300 backdrop-blur-xs">

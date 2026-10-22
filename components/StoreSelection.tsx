@@ -1,7 +1,6 @@
 import React from 'react';
 import { BuildingStorefrontIcon } from './icons.tsx';
 import BackgroundAnimation from './BackgroundAnimation.tsx';
-import { DeviceProfileStartupSelector } from './DeviceProfileStartupSelector.tsx';
 
 interface StoreSelectionProps {
   onSelectStore: (storeId: string) => void;
@@ -14,9 +13,6 @@ const StoreSelection: React.FC<StoreSelectionProps> = ({ onSelectStore }) => {
   return (
     <div className="min-h-screen flex flex-col items-center justify-between p-4 text-white relative overflow-hidden">
         <BackgroundAnimation />
-        <header className="w-full max-w-xl mx-auto pt-4 flex justify-center z-10">
-            <DeviceProfileStartupSelector variant="compact" />
-        </header>
         <main className="flex-grow flex flex-col justify-center items-center w-full py-6">
             <div className="text-center mb-8 z-10">
                 <h1 className="text-3xl md:text-5xl font-bold">RéparerMonMac</h1>

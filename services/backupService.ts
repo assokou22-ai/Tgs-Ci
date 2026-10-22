@@ -54,10 +54,10 @@ export const compileFullBackupData = async (): Promise<Record<string, unknown>> 
             encodage: "UTF-8"
         },
         registre_technique: {
-            fiches_reparation: tickets,
-            journal_interventions: tickets.flatMap(t => t.history.map(h => ({ ...h, ticket_id: t.id }))),
-            expertises_electroniques: tickets.filter(t => t.diagnosticSheetB).map(t => ({ ticket_id: t.id, ...t.diagnosticSheetB })),
-            engagements_sav: engagementsSav
+            fiches_reparation: tickets || [],
+            journal_interventions: (tickets || []).flatMap(t => ((t && t.history) || []).map(h => ({ ...h, ticket_id: t?.id || '' }))),
+            expertises_electroniques: (tickets || []).filter(t => t && t.diagnosticSheetB).map(t => ({ ticket_id: t.id, ...t.diagnosticSheetB })),
+            engagements_sav: engagementsSav || []
         },
         comptabilite_flux: {
             factures_clients: factures,
@@ -176,10 +176,11 @@ export const mergeDatabaseFromFile = async (raw: unknown, onProgress?: (msg: str
     ];
 
     for (const config of storeConfigs) {
-        const items = data[config.key] as unknown[];
+        const items = data[config.key] as Array<{ id?: string }> | undefined;
         if (items && Array.isArray(items)) {
             onProgress?.(`Fusion : ${config.label}...`);
             for (const item of items) {
+                if (!item || !item.id) continue;
                 const localItem = await dbGet(config.store, item.id);
                 // mergeUpdates compare les timestamps pour éviter de régresser
                 const merged = mergeUpdates(config.key === 'tickets' ? 'ticket' : (config.key as EntityType), localItem, item);

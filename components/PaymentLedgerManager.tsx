@@ -258,16 +258,30 @@ export const PaymentLedgerManager: React.FC<PaymentLedgerManagerProps> = ({
                     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
                         {/* Montant */}
                         <div>
-                            <label className="block text-xs font-medium text-slate-300 mb-1">
-                                Montant versé (FCFA) *
-                            </label>
+                            <div className="flex items-center justify-between mb-1">
+                                <label className="block text-xs font-medium text-slate-300">
+                                    Montant versé (FCFA) *
+                                </label>
+                                {remainingBalance > 0 && (
+                                    <span className="text-[10px] text-slate-400 font-bold">Max solde: {remainingBalance.toLocaleString('fr-FR')} F</span>
+                                )}
+                            </div>
                             <input
                                 type="number"
                                 required
-                                min="1"
+                                min="100"
+                                step="500"
                                 placeholder="ex: 25000"
                                 value={amount}
-                                onChange={(e) => setAmount(e.target.value)}
+                                onKeyDown={(e) => {
+                                    if (['e', 'E', '+', '-'].includes(e.key)) {
+                                        e.preventDefault();
+                                    }
+                                }}
+                                onChange={(e) => {
+                                    const clean = e.target.value.replace(/[^0-9]/g, '');
+                                    setAmount(clean);
+                                }}
                                 className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white font-mono focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500"
                             />
                         </div>

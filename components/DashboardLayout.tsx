@@ -11,7 +11,6 @@ import { useFirebase } from '../context/FirebaseContext.tsx';
 import { motion, AnimatePresence } from 'framer-motion';
 import { LogOutIcon, MenuIcon, ChevronLeft, ChevronRight } from 'lucide-react';
 import { useOrientation } from '../hooks/useOrientation.ts';
-import { DeviceProfileSwitchButton } from './DeviceProfileSwitchButton.tsx';
 
 
 
@@ -354,7 +353,6 @@ const DashboardLayout: React.FC<DashboardLayoutProps> = ({
                         </div>
                         
                         <div className="flex items-center gap-1.5 sm:gap-2.5 shrink-0 ml-auto">
-                            <DeviceProfileSwitchButton />
                             <GlobalSearch />
 
                             {/* Bouton direct visible sur tous les écrans pour quitter vers le portail */}

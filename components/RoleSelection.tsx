@@ -11,8 +11,6 @@ import {
 } from 'lucide-react';
 import { AppleLogo } from './icons.tsx';
 import { CoteDIvoireFlag, BeninFlag } from './Flags.tsx';
-import { DeviceProfileSwitchButton } from './DeviceProfileSwitchButton.tsx';
-import { DeviceProfileStartupSelector } from './DeviceProfileStartupSelector.tsx';
 import { useDeviceProfile } from '../context/DeviceProfileContext.tsx';
 
 
@@ -140,8 +138,6 @@ const RoleSelection: React.FC<RoleSelectionProps> = ({ onSelectRole }) => {
             </div>
             
             <div className="flex items-center gap-3">
-                <DeviceProfileSwitchButton />
-
                 {/* Localisation & Drapeaux Côte d'Ivoire & Bénin */}
                 <div className="flex flex-col items-end">
 
@@ -176,8 +172,6 @@ const RoleSelection: React.FC<RoleSelectionProps> = ({ onSelectRole }) => {
                 </p>
             </div>
 
-            {/* SÉLECTEUR DE MODE D'AFFICHAGE AU DÉMARRAGE (ORDINATEUR / TABLETTE / MOBILE) */}
-            <DeviceProfileStartupSelector variant="hero" className="mb-6 sm:mb-8" />
 
             {/* Visual Card Grid adaptatif selon le mode sélectionné */}
             <div className={`w-full grid gap-4 md:gap-5 ${

@@ -34,6 +34,7 @@ import PrintableFunctionalTestsSheet from './PrintableFunctionalTestsSheet.tsx';
 import PrintableWarrantyReport from './PrintableWarrantyReport.tsx';
 import PrintableTechnicalReport from './PrintableTechnicalReport.tsx';
 import PrintableTechnicalReportP3 from './PrintableTechnicalReportP3.tsx';
+import { PrintableBlockageNote } from './PrintableBlockageNote.tsx';
 import PreviewModal from './PreviewModal.tsx';
 import StockUsageModal from './StockUsageModal.tsx';
 import ExternalPurchaseModal from './ExternalPurchaseModal.tsx';
@@ -287,7 +288,7 @@ const RepairDetail: React.FC<RepairDetailProps> = ({ ticket, onBack, onUpdate, r
                 advance: totalPaid
             },
             history: [
-                ...ticket.history,
+                ...(ticket.history || []),
                 {
                     timestamp: new Date().toISOString(),
                     user: role,
@@ -306,7 +307,7 @@ const RepairDetail: React.FC<RepairDetailProps> = ({ ticket, onBack, onUpdate, r
             ...ticket,
             paymentsList: updatedPayments,
             history: [
-                ...ticket.history,
+                ...(ticket.history || []),
                 {
                     timestamp: new Date().toISOString(),
                     user: role,
@@ -366,7 +367,7 @@ const RepairDetail: React.FC<RepairDetailProps> = ({ ticket, onBack, onUpdate, r
             return;
         }
         const newHistoryEntry: HistoryEntry = { timestamp: new Date().toISOString(), user: role, action: `Changement de statut : ${ticket.status} ➔ ${newStatus}` };
-        let updatedTicket: RepairTicket = { ...ticket, status: newStatus, postponedDays: undefined, postponedUntil: undefined, updatedAt: new Date().toISOString(), history: [...ticket.history, newHistoryEntry] };
+        let updatedTicket: RepairTicket = { ...ticket, status: newStatus, postponedDays: undefined, postponedUntil: undefined, updatedAt: new Date().toISOString(), history: [...(ticket.history || []), newHistoryEntry] };
         
         if (newStatus === RepairStatus.RENDU) {
             const ticketFin = getTicketFinancialSummary(ticket);
@@ -458,7 +459,7 @@ const RepairDetail: React.FC<RepairDetailProps> = ({ ticket, onBack, onUpdate, r
         const updatedTicket: RepairTicket = { 
             ...ticket, 
             ...updateData, 
-            history: [...ticket.history, newHistoryEntry] 
+            history: [...(ticket.history || []), newHistoryEntry] 
         };
 
         await handleUpdateWithFeedback(updatedTicket, "mettre à jour le statut en Reporté");
@@ -484,7 +485,7 @@ const RepairDetail: React.FC<RepairDetailProps> = ({ ticket, onBack, onUpdate, r
             rendezVousDate: rdvDateStr,
             rendezVousTime: '10:00',
             updatedAt: now, 
-            history: [...ticket.history, newHistoryEntry] 
+            history: [...(ticket.history || []), newHistoryEntry] 
         };
         
         // 3. Update the ticket
@@ -522,7 +523,7 @@ const RepairDetail: React.FC<RepairDetailProps> = ({ ticket, onBack, onUpdate, r
         const label = labelMap[option];
         const newHistoryEntry: HistoryEntry = { timestamp: new Date().toISOString(), user: role, action: `${newValue ? 'Inclusion' : 'Retrait'} de ${label} dans le dossier.` };
         
-        const updateData: Partial<RepairTicket> = { [option]: newValue, history: [...ticket.history, newHistoryEntry] };
+        const updateData: Partial<RepairTicket> = { [option]: newValue, history: [...(ticket.history || []), newHistoryEntry] };
         
         if (option === 'printLegalDocument' && newValue && !ticket.selectedLegalTemplate) {
             updateData.selectedLegalTemplate = 'bon';
@@ -536,7 +537,7 @@ const RepairDetail: React.FC<RepairDetailProps> = ({ ticket, onBack, onUpdate, r
             ...ticket, 
             selectedLegalTemplate: templateId,
             history: [
-                ...ticket.history, 
+                ...(ticket.history || []), 
                 { timestamp: new Date().toISOString(), user: role as Role, action: `Changement de modèle juridique : ${templateId}` }
             ]
         };
@@ -546,7 +547,7 @@ const RepairDetail: React.FC<RepairDetailProps> = ({ ticket, onBack, onUpdate, r
     const handleNotified = async (notificationType: string) => {
         const now = new Date().toISOString();
         const newHistoryEntry: HistoryEntry = { timestamp: now, user: role as Role, action: `Notification client envoyée : ${notificationType}` };
-        await handleUpdateWithFeedback({ ...ticket, lastNotifiedAt: now, history: [...ticket.history, newHistoryEntry] }, 'enregistrer notification');
+        await handleUpdateWithFeedback({ ...ticket, lastNotifiedAt: now, history: [...(ticket.history || []), newHistoryEntry] }, 'enregistrer notification');
     };
 
     const handleSaveWarrantyReport = async () => {
@@ -561,7 +562,7 @@ const RepairDetail: React.FC<RepairDetailProps> = ({ ticket, onBack, onUpdate, r
             savNextRdvDate,
             savNextRdvNotes,
             updatedAt: new Date().toISOString(), 
-            history: [...ticket.history, newHistoryEntry] 
+            history: [...(ticket.history || []), newHistoryEntry] 
         };
         await handleUpdateWithFeedback(updatedTicket, 'sauvegarder rapport SAV');
         setIsEditingWarrantyReport(false);
@@ -592,7 +593,7 @@ const RepairDetail: React.FC<RepairDetailProps> = ({ ticket, onBack, onUpdate, r
                 }),
                 entryCondition: selectedScenario
             },
-            history: [...ticket.history, newHistoryEntry]
+            history: [...(ticket.history || []), newHistoryEntry]
         };
         await handleUpdateWithFeedback(updatedTicket, 'enregistrer le diagnostic standard');
         setIsDiagnosticModalOpen(false);
@@ -623,7 +624,7 @@ const RepairDetail: React.FC<RepairDetailProps> = ({ ticket, onBack, onUpdate, r
             ...(technicalReport ? { technicalReport } : {}),
             printTechnicalReportP3: true,
             updatedAt: new Date().toISOString(),
-            history: [...ticket.history, newHistoryEntry]
+            history: [...(ticket.history || []), newHistoryEntry]
         };
         await handleUpdateWithFeedback(updatedTicket, 'sauvegarder le rapport technique');
     };
@@ -879,7 +880,7 @@ const RepairDetail: React.FC<RepairDetailProps> = ({ ticket, onBack, onUpdate, r
                 {/* COLONNE GAUCHE (DÉTAILS TECHNIQUES) */}
                 <div className="lg:col-span-8 space-y-4 md:space-y-6">
                     {/* SECTION EXPERTISE ÉLECTRONIQUE SI PRÉSENTE */}
-                    {ticket.diagnosticSheetB && (
+                    {ticket.diagnosticSheetB && typeof ticket.diagnosticSheetB === 'object' && (
                         <div className="apple-card p-6 md:p-8 border-purple-500/20 overflow-hidden relative group">
                             <div className="absolute top-0 right-0 p-8 opacity-5 group-hover:opacity-10 transition-opacity pointer-events-none">
                                 <SparklesIcon className="w-32 h-32 text-purple-400" />
@@ -903,9 +904,9 @@ const RepairDetail: React.FC<RepairDetailProps> = ({ ticket, onBack, onUpdate, r
                                 <div className="space-y-4">
                                     <p className="text-[9px] font-black text-slate-500 uppercase tracking-widest border-b border-white/5 pb-2">Rails de Tensions</p>
                                     <div className="grid grid-cols-2 gap-2">
-                                        {ticket.diagnosticSheetB.tensionValues.filter(v => v.value).map((v, i) => (
+                                        {(Array.isArray(ticket.diagnosticSheetB.tensionValues) ? ticket.diagnosticSheetB.tensionValues : []).filter(v => v && v.value).map((v, i) => (
                                             <div key={i} className="bg-black/20 p-2 rounded-xl border border-white/5 flex justify-between items-center">
-                                                <span className="text-[9px] font-bold text-slate-400 uppercase truncate mr-2">{v.line}</span>
+                                                <span className="text-[9px] font-bold text-slate-400 uppercase truncate mr-2">{v.line || `Rail ${i + 1}`}</span>
                                                 <span className={`text-[10px] font-black ${v.status === 'Correct' ? 'text-green-400' : 'text-red-500'}`}>{v.value}</span>
                                             </div>
                                         ))}
@@ -988,11 +989,11 @@ const RepairDetail: React.FC<RepairDetailProps> = ({ ticket, onBack, onUpdate, r
                         <div className="apple-card p-6 md:p-8">
                             <h3 className="text-[9px] md:text-[10px] font-black text-apple-muted uppercase tracking-[0.2em] mb-3 md:mb-4">Informations Client</h3>
                             <div className="flex items-center gap-3 mb-2">
-                                {ticket.client.isEnterprise ? <BuildingStorefrontIcon className="w-5 h-5 text-purple-400" /> : <UserIcon className="w-5 h-5 text-apple-blue" />}
-                                <p className="text-xl md:text-2xl font-black text-white uppercase tracking-tight break-words">{ticket.client.name}</p>
+                                {ticket.client?.isEnterprise ? <BuildingStorefrontIcon className="w-5 h-5 text-purple-400" /> : <UserIcon className="w-5 h-5 text-apple-blue" />}
+                                <p className="text-xl md:text-2xl font-black text-white uppercase tracking-tight break-words">{ticket.client?.name || 'Client sans nom'}</p>
                             </div>
-                            <p className="mt-2 text-apple-blue font-mono font-bold text-base md:text-lg">{ticket.client.phone}</p>
-                            {ticket.client.isEnterprise && ticket.customFields?.deposantName && (
+                            <p className="mt-2 text-apple-blue font-mono font-bold text-base md:text-lg">{ticket.client?.phone || 'Sans numéro'}</p>
+                            {ticket.client?.isEnterprise && ticket.customFields?.deposantName && (
                                 <p className="text-[10px] text-slate-400 mt-2 uppercase font-black">Déposant : {ticket.customFields.deposantName} ({ticket.customFields.deposantFunction || 'Contact'})</p>
                             )}
                         </div>
@@ -1378,23 +1379,25 @@ const RepairDetail: React.FC<RepairDetailProps> = ({ ticket, onBack, onUpdate, r
                             </div>
 
                             {/* Tableau synthétique des composants vérifiés */}
-                            {ticket.diagnosticReport && ticket.diagnosticReport.length > 0 && (
+                            {Array.isArray(ticket.diagnosticReport) && ticket.diagnosticReport.length > 0 && (
                                 <div className="space-y-2">
                                     <p className="text-[9px] font-black uppercase tracking-widest text-purple-300">Points de contrôle vérifiés ({ticket.diagnosticReport.length})</p>
                                     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
                                         {ticket.diagnosticReport.map((check, idx) => {
-                                            const isOk = check.status.toUpperCase().includes('OK') || check.status.toUpperCase().includes('FONCTIONNEL');
-                                            const isDefect = check.status.toUpperCase().includes('PROBLÈME') || check.status.toUpperCase().includes('DÉFAUT') || check.status.toUpperCase().includes('HS');
+                                            if (!check) return null;
+                                            const statusStr = String(check.status || '');
+                                            const isOk = statusStr.toUpperCase().includes('OK') || statusStr.toUpperCase().includes('FONCTIONNEL');
+                                            const isDefect = statusStr.toUpperCase().includes('PROBLÈME') || statusStr.toUpperCase().includes('DÉFAUT') || statusStr.toUpperCase().includes('HS');
                                             return (
                                                 <div key={idx} className="bg-black/30 p-2.5 rounded-xl border border-white/5 flex flex-col justify-between gap-1 text-xs">
                                                     <div className="flex justify-between items-center gap-2">
-                                                        <span className="font-bold text-white truncate text-[11px]">{check.component}</span>
+                                                        <span className="font-bold text-white truncate text-[11px]">{check.component || `Point ${idx + 1}`}</span>
                                                         <span className={`px-2 py-0.5 rounded text-[8px] font-black uppercase tracking-wider shrink-0 ${
                                                             isOk ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30' :
                                                             isDefect ? 'bg-red-500/20 text-red-300 border border-red-500/30' :
                                                             'bg-amber-500/20 text-amber-300 border border-amber-500/30'
                                                         }`}>
-                                                            {check.status}
+                                                            {statusStr || 'Vérifié'}
                                                         </span>
                                                     </div>
                                                     {check.notes && (
@@ -1581,28 +1584,17 @@ const RepairDetail: React.FC<RepairDetailProps> = ({ ticket, onBack, onUpdate, r
                     </div>
 
                     <div className="apple-card p-6 md:p-8">
-                        <h3 className="text-[9px] md:text-[10px] font-black text-apple-muted uppercase tracking-[0.2em] mb-5 md:mb-6">DÉSIGNATION DES PRESTATIONS</h3>
-                        <div className="space-y-2 md:space-y-3">
-                            <div className="flex justify-between p-4 bg-white/5 rounded-2xl border border-white/5">
-                                <span className="text-sm font-bold text-apple-muted uppercase tracking-wider">Expertise & Diagnostic</span>
-                                <span className="text-sm font-mono font-black text-white">{fin.diagnosticCost.toLocaleString()} F</span>
-                            </div>
-                            {ticket.services && ticket.services.length > 0 ? (
-                                ticket.services.map((s, i) => (
-                                    <div key={i} className="flex justify-between p-4 bg-white/5 rounded-2xl border border-white/5 group hover:border-apple-blue/30 transition-all">
-                                        <span className="text-sm font-black text-white uppercase tracking-tight truncate mr-2">{s.name}</span>
-                                        <span className="text-sm font-mono font-black text-white shrink-0">{s.price.toLocaleString()} F</span>
-                                    </div>
-                                ))
-                            ) : fin.repairCost > 0 ? (
-                                <div className="flex justify-between p-4 bg-white/5 rounded-2xl border border-white/5 group hover:border-apple-blue/30 transition-all">
-                                    <span className="text-sm font-black text-white uppercase tracking-tight truncate mr-2">Forfait Réparation / Pièces & Main-d'œuvre</span>
-                                    <span className="text-sm font-mono font-black text-white shrink-0">{fin.repairCost.toLocaleString()} F</span>
-                                </div>
-                            ) : null}
+                        <div className="flex items-center justify-between mb-6 flex-wrap gap-2">
+                            <h3 className="text-[10px] md:text-xs font-black text-apple-muted uppercase tracking-[0.2em]">DÉSIGNATION DES PRESTATIONS</h3>
+                            {(ticket.status === RepairStatus.ANNULE || fin.isInfacturable) && (
+                                <span className="px-2.5 py-1 rounded-full bg-rose-500/20 text-rose-300 border border-rose-500/30 text-[9px] font-black uppercase tracking-wider">
+                                    🚫 INFACTURABLE (0 F AU POINT)
+                                </span>
+                            )}
                         </div>
+
                         {fin.isInfacturable && (
-                            <div className="mt-6 p-4 rounded-2xl bg-rose-500/10 border border-rose-500/30 text-rose-300 space-y-2 animate-fade-in">
+                            <div className="mb-6 p-4 rounded-2xl bg-rose-500/10 border border-rose-500/30 text-rose-300 space-y-2 animate-fade-in">
                                 <div className="flex items-center gap-2">
                                     <span className="text-base">🚫</span>
                                     <h4 className="text-xs font-black uppercase tracking-wider text-rose-300">
@@ -1619,39 +1611,33 @@ const RepairDetail: React.FC<RepairDetailProps> = ({ ticket, onBack, onUpdate, r
                                         <span className="text-rose-300 font-bold">➔ 0 F CFA intégrable au point</span>
                                     </div>
                                 )}
-                                {fin.rawTotalBilled > 0 && fin.rawAdvanceReceived === 0 && fin.wasPreviouslyPaidOrAdvanced && (
-                                    <div className="flex flex-wrap items-center gap-2 text-[10px] bg-black/40 px-3 py-1.5 rounded-xl border border-rose-500/20 font-mono">
-                                        <span className="text-rose-400 font-bold">Dossier préalablement soldé :</span>
-                                        <span className="line-through text-slate-400">{fin.rawTotalBilled.toLocaleString('fr-FR')} F CFA</span>
-                                        <span className="text-rose-300 font-bold">➔ 0 F CFA intégrable au point</span>
-                                    </div>
-                                )}
                             </div>
                         )}
 
-                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 md:gap-4 mt-8 pt-8 border-t border-white/5">
-                            <div className={`text-center p-4 rounded-2xl border ${fin.isInfacturable ? 'bg-rose-500/5 border-rose-500/20' : 'bg-white/5 border-white/10'}`}>
-                                <p className={`text-[8px] md:text-[9px] font-black uppercase mb-1 ${fin.isInfacturable ? 'text-rose-400' : 'text-slate-400'}`}>Total Facturable (Point)</p>
-                                <p className={`text-xl md:text-2xl font-black font-mono ${fin.isInfacturable ? 'text-rose-400' : 'text-white'}`}>
-                                    {totalCost.toLocaleString()} F
+                        {/* Synthèse comptable : Total facturable ( POINT ), Acompte intégré au point, Solde à régler */}
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 md:gap-4">
+                            <div className={`text-center p-5 rounded-2xl border ${fin.isInfacturable ? 'bg-rose-500/5 border-rose-500/20' : 'bg-white/5 border-white/10'}`}>
+                                <p className={`text-[9px] font-black uppercase mb-1 tracking-wider ${fin.isInfacturable ? 'text-rose-400' : 'text-slate-400'}`}>TOTAL FACTURABLE ( POINT )</p>
+                                <p className={`text-2xl font-black font-mono ${fin.isInfacturable ? 'text-rose-400' : 'text-white'}`}>
+                                    {totalCost.toLocaleString('fr-FR')} F
                                 </p>
                                 {fin.isInfacturable && (
                                     <span className="text-[9px] font-bold text-rose-400/90 uppercase tracking-widest block mt-0.5">Infacturable</span>
                                 )}
                             </div>
-                            <div className={`text-center p-4 rounded-2xl border ${fin.isInfacturable ? 'bg-rose-500/5 border-rose-500/20' : 'bg-green-500/5 border-green-500/10'}`}>
-                                <p className={`text-[8px] md:text-[9px] font-black uppercase mb-1 ${fin.isInfacturable ? 'text-rose-400' : 'text-green-500'}`}>Acompte Intégré au Point</p>
-                                <p className={`text-xl md:text-2xl font-black font-mono ${fin.isInfacturable ? 'text-rose-400' : 'text-green-400'}`}>
-                                    {fin.advanceReceived.toLocaleString()} F
+                            <div className={`text-center p-5 rounded-2xl border ${fin.isInfacturable ? 'bg-rose-500/5 border-rose-500/20' : 'bg-green-500/5 border-green-500/20'}`}>
+                                <p className={`text-[9px] font-black uppercase mb-1 tracking-wider ${fin.isInfacturable ? 'text-rose-400' : 'text-green-500'}`}>ACOMPTE INTÉGRÉ AU POINT</p>
+                                <p className={`text-2xl font-black font-mono ${fin.isInfacturable ? 'text-rose-400' : 'text-green-400'}`}>
+                                    {fin.advanceReceived.toLocaleString('fr-FR')} F
                                 </p>
                                 {fin.isInfacturable && (
                                     <span className="text-[9px] font-bold text-rose-400/90 uppercase tracking-widest block mt-0.5">0 F Encaissable</span>
                                 )}
                             </div>
-                            <div className={`text-center p-4 rounded-2xl border ${fin.isInfacturable ? 'bg-rose-500/5 border-rose-500/20' : 'bg-apple-blue/10 border-apple-blue/20'}`}>
-                                <p className={`text-[8px] md:text-[9px] font-black uppercase mb-1 ${fin.isInfacturable ? 'text-rose-400' : 'text-apple-blue'}`}>SOLDE À RÉGLER</p>
-                                <p className={`text-xl md:text-2xl font-black font-mono tracking-tight ${fin.isInfacturable ? 'text-rose-400' : 'text-white'}`}>
-                                    {balance.toLocaleString()} F
+                            <div className={`text-center p-5 rounded-2xl border ${fin.isInfacturable ? 'bg-rose-500/5 border-rose-500/20' : 'bg-apple-blue/10 border-apple-blue/20'}`}>
+                                <p className={`text-[9px] font-black uppercase mb-1 tracking-wider ${fin.isInfacturable ? 'text-rose-400' : 'text-apple-blue'}`}>SOLDE À RÉGLER</p>
+                                <p className={`text-2xl font-black font-mono tracking-tight ${fin.isInfacturable ? 'text-rose-400' : 'text-white'}`}>
+                                    {balance.toLocaleString('fr-FR')} F
                                 </p>
                                 {fin.isInfacturable && (
                                     <span className="text-[9px] font-bold text-rose-400/90 uppercase tracking-widest block mt-0.5">Dossier Annulé</span>
@@ -1732,7 +1718,7 @@ const RepairDetail: React.FC<RepairDetailProps> = ({ ticket, onBack, onUpdate, r
                             <ClockIcon className="w-4 h-4 text-slate-500" />
                         </h3>
                         <div className="space-y-4 md:space-y-6 max-h-[300px] overflow-y-auto pr-2 custom-scrollbar">
-                            {[...ticket.history].reverse().map((entry, idx) => (
+                            {[...(ticket.history || [])].reverse().map((entry, idx) => (
                                 <div key={idx} className="pl-4 border-l-2 border-white/10 pb-4 relative">
                                     <div className="absolute w-2 h-2 rounded-full bg-apple-blue -left-[5px] top-1 shadow-[0_0_8px_#0071e3]"></div>
                                     <p className="text-[11px] font-black text-white uppercase tracking-tight">{entry.action}</p>

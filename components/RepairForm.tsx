@@ -323,6 +323,22 @@ const RepairForm: React.FC<RepairFormProps> = ({ tickets, ticketToEdit, onSave, 
     showToast("✨ Nouveau Mac avec numéro distinct sélectionné (Prise en charge standard).", "info");
   };
 
+  const handleSelectPastMacForReintervention = (pastMac: { serialNumber?: string; modelNumber?: string; macModel?: string; macColor?: string; lastTicketId: string }) => {
+    handleSelectReinterventionSameId({
+      ticketId: pastMac.lastTicketId,
+      serialNumber: pastMac.serialNumber || '',
+      macModel: pastMac.macModel,
+      modelNumber: pastMac.modelNumber
+    });
+    if (pastMac.macColor) {
+      setTicket(prev => ({ ...prev, macColor: pastMac.macColor }));
+    }
+  };
+
+  const handleSetAsNewMac = () => {
+    handleSelectDistinctNewMac();
+  };
+
   const handleAddIntakeImages = async (files: FileList | null) => {
     if (!files || files.length === 0) return;
     const currentImages = ticket.intakeImages || [];
@@ -1528,7 +1544,7 @@ const RepairForm: React.FC<RepairFormProps> = ({ tickets, ticketToEdit, onSave, 
                                 {/* Grille des photos enregistrées */}
                                 {(ticket.intakeImages && ticket.intakeImages.length > 0) && (
                                     <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5 pt-1">
-                                        {ticket.intakeImages.map((img, idx) => {
+                                        {(ticket.intakeImages || []).map((img, idx) => {
                                             const isBackCover = (ticket.backCoverImage && ticket.backCoverImage === img) || (ticket.backCoverImageIndex === idx);
                                             const label = isBackCover 
                                                 ? "🛡️ Couvre Arrière (Gravures S/N • Modèle • EMC)"
@@ -2382,9 +2398,26 @@ const RepairForm: React.FC<RepairFormProps> = ({ tickets, ticketToEdit, onSave, 
                             </div>
                             <input 
                                 type="number" 
-                                value={ticket.client?.clientType === 'subcontractor' ? 0 : ticket.costs?.diagnostic} 
+                                min="0"
+                                step="500"
+                                value={ticket.client?.clientType === 'subcontractor' ? 0 : (ticket.costs?.diagnostic ?? '')} 
                                 disabled={ticket.client?.clientType === 'subcontractor'}
-                                onChange={e => setTicket(p => ({...p, costs: {...p.costs!, diagnostic: Number(e.target.value)}}))} 
+                                onKeyDown={(e) => {
+                                    if (['e', 'E', '+', '-'].includes(e.key)) {
+                                        e.preventDefault();
+                                    }
+                                }}
+                                onChange={e => {
+                                    const raw = e.target.value.replace(/[^0-9]/g, '');
+                                    const numVal = raw === '' ? 0 : Math.max(0, parseInt(raw, 10));
+                                    setTicket(p => ({
+                                        ...p, 
+                                        costs: {
+                                            ...(p.costs || { diagnostic: 0, repair: 0, advance: 0 }), 
+                                            diagnostic: numVal
+                                        }
+                                    }));
+                                }} 
                                 className={`w-full p-3 bg-black/40 border border-white/10 rounded-xl text-white font-mono font-bold outline-none focus:border-apple-blue transition-all ${ticket.client?.clientType === 'subcontractor' ? 'opacity-60 cursor-not-allowed text-amber-300' : ''}`} 
                             />
                         </div>
@@ -2393,17 +2426,53 @@ const RepairForm: React.FC<RepairFormProps> = ({ tickets, ticketToEdit, onSave, 
                             <span className="text-2xl font-black text-apple-blue font-mono">{totalCost.toLocaleString()} F</span>
                         </div>
                         <div>
-                            <label className="block text-[9px] font-black text-emerald-500 uppercase mb-2 ml-1 tracking-widest">Acompte perçu</label>
+                            <div className="flex items-center justify-between mb-2 ml-1">
+                                <label className="block text-[9px] font-black text-emerald-500 uppercase tracking-widest">Acompte perçu</label>
+                                <span className="text-[9px] text-slate-400 font-bold uppercase">Max: {totalCost.toLocaleString('fr-FR')} F</span>
+                            </div>
                             <input 
                                 type="number" 
-                                value={ticket.costs?.advance} 
-                                onChange={e => setTicket(p => ({...p, costs: {...p.costs!, advance: Number(e.target.value)}}))} 
+                                min="0"
+                                max={totalCost}
+                                step="500"
+                                value={ticket.costs?.advance ?? ''} 
+                                onKeyDown={(e) => {
+                                    if (['e', 'E', '+', '-'].includes(e.key)) {
+                                        e.preventDefault();
+                                    }
+                                }}
+                                onChange={e => {
+                                    const raw = e.target.value.replace(/[^0-9]/g, '');
+                                    if (raw === '') {
+                                        setTicket(p => ({
+                                            ...p,
+                                            costs: {
+                                                ...(p.costs || { diagnostic: 0, repair: 0, advance: 0 }),
+                                                advance: 0
+                                            }
+                                        }));
+                                        return;
+                                    }
+                                    let num = parseInt(raw, 10);
+                                    if (isNaN(num) || num < 0) num = 0;
+                                    if (num > totalCost) {
+                                        num = totalCost;
+                                        showToast(`L'acompte ne peut pas excéder le total facturable (${totalCost.toLocaleString('fr-FR')} F CFA).`, "warning");
+                                    }
+                                    setTicket(p => ({
+                                        ...p, 
+                                        costs: {
+                                            ...(p.costs || { diagnostic: 0, repair: 0, advance: 0 }), 
+                                            advance: num
+                                        }
+                                    }));
+                                }} 
                                 className="w-full p-4 bg-black/60 border border-emerald-500/30 rounded-2xl text-2xl font-black text-emerald-400 font-mono outline-none" 
                             />
                         </div>
                         <div className="bg-white p-6 rounded-[24px] shadow-2xl flex flex-col items-center">
                             <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Reste à régler</span>
-                            <span className="text-3xl font-black text-black font-mono tracking-tighter">{(totalCost - (ticket.costs?.advance || 0)).toLocaleString()} F CFA</span>
+                            <span className="text-3xl font-black text-black font-mono tracking-tighter">{Math.max(0, totalCost - (ticket.costs?.advance || 0)).toLocaleString()} F CFA</span>
                         </div>
                     </div>
                 </div>

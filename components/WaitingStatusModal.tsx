@@ -99,7 +99,7 @@ export const WaitingStatusModal: React.FC<WaitingStatusModalProps> = ({
                 waitingFollowUpDate: targetDate,
                 waitingFollowUpTime: targetTime,
                 updatedAt: now,
-                history: [...ticket.history, historyEntry]
+                history: [...(ticket.history || []), historyEntry]
             };
 
             await onConfirm(updatedTicket);

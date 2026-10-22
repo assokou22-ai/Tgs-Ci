@@ -437,7 +437,7 @@ const PrintableTechnicalReport: React.FC<PrintableTechnicalReportProps> = ({ tic
             <div>
               <div style={{ ...styles.label, fontSize: '6.5pt', marginBottom: '1mm' }}>Mesures d'alimentation des rails (Expertise Électronique B) :</div>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.5mm' }}>
-                {ticket.diagnosticSheetB.tensionValues.filter(v => v.value).slice(0, 6).map((v, i) => (
+                {(ticket.diagnosticSheetB.tensionValues || []).filter(v => v.value).slice(0, 6).map((v, i) => (
                   <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#f5f5f7', padding: '1mm 2mm', borderRadius: '1mm' }}>
                     <span style={{ fontSize: '7.5pt', fontWeight: 'bold', color: '#444' }}>{v.line}</span>
                     <span style={{ 

@@ -273,7 +273,7 @@ const EnterpriseRepairForm: React.FC<EnterpriseRepairFormProps> = ({ tickets, ti
 
   const handleSelectDistinctNewMac = () => {
     setSameMacHandlingMode('distinct_new');
-    const targetYear = manualDate ? new Date(manualDate).getFullYear() : undefined;
+    const targetYear = ticket.createdAt ? new Date(ticket.createdAt).getFullYear() : undefined;
     const nextDistinctSeq = generateNextTicketSequence(tickets, true, targetYear);
     setFullTicketId(nextDistinctSeq);
     setTicket(prev => ({
@@ -282,6 +282,22 @@ const EnterpriseRepairForm: React.FC<EnterpriseRepairFormProps> = ({ tickets, ti
     }));
     playTone(600, 80);
     showToast("✨ Nouveau Mac avec numéro distinct sélectionné (Prise en charge standard).", "info");
+  };
+
+  const handleSelectPastMacForReintervention = (pastMac: { serialNumber?: string; modelNumber?: string; macModel?: string; macColor?: string; lastTicketId: string }) => {
+    handleSelectReinterventionSameId({
+      ticketId: pastMac.lastTicketId,
+      serialNumber: pastMac.serialNumber || '',
+      macModel: pastMac.macModel,
+      modelNumber: pastMac.modelNumber
+    });
+    if (pastMac.macColor) {
+      setTicket(prev => ({ ...prev, macColor: pastMac.macColor }));
+    }
+  };
+
+  const handleSetAsNewMac = () => {
+    handleSelectDistinctNewMac();
   };
   const signaturePadRef = useRef<{ getSignature: () => string }>(null);
   const cameraInputRef = useRef<HTMLInputElement>(null);
@@ -692,9 +708,9 @@ const EnterpriseRepairForm: React.FC<EnterpriseRepairFormProps> = ({ tickets, ti
                                                         </span>
                                                     )}
                                                 </div>
-                                                {match.uniqueMacs.length > 0 && (
+                                                {(match.uniqueMacs || []).length > 0 && (
                                                     <p className="text-[10px] text-zinc-400 mt-1">
-                                                        Machines : {match.uniqueMacs.map(m => m.macModel || m.modelNumber || m.serialNumber).filter(Boolean).join(' • ')}
+                                                        Machines : {(match.uniqueMacs || []).map(m => m.macModel || m.modelNumber || m.serialNumber).filter(Boolean).join(' • ')}
                                                     </p>
                                                 )}
                                             </div>
@@ -874,7 +890,7 @@ const EnterpriseRepairForm: React.FC<EnterpriseRepairFormProps> = ({ tickets, ti
                     {/* Grille des photos enregistrées */}
                     {(ticket.intakeImages && ticket.intakeImages.length > 0) && (
                         <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 pt-4">
-                            {ticket.intakeImages.map((img, idx) => {
+                            {(ticket.intakeImages || []).map((img, idx) => {
                                 const isBackCover = (ticket.backCoverImage && ticket.backCoverImage === img) || (ticket.backCoverImageIndex === idx);
                                 const label = isBackCover
                                     ? "🛡️ Couvre Arrière (Gravures S/N • Modèle • EMC)"
@@ -1075,7 +1091,7 @@ const EnterpriseRepairForm: React.FC<EnterpriseRepairFormProps> = ({ tickets, ti
                             </div>
 
                             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                                {selectedRecurrentClient.uniqueMacs.map((pastMac, idx) => {
+                                {(selectedRecurrentClient?.uniqueMacs || []).map((pastMac, idx) => {
                                     const isSelected = (ticket.serialNumber && ticket.serialNumber === pastMac.serialNumber) ||
                                         ((ticket.modelNumber || ticket.customFields?.modelA) && (ticket.modelNumber || ticket.customFields?.modelA) === pastMac.modelNumber && ticket.isReIntervention);
                                     return (
@@ -1384,9 +1400,26 @@ const EnterpriseRepairForm: React.FC<EnterpriseRepairFormProps> = ({ tickets, ti
                             </div>
                             <input 
                                 type="number" 
-                                value={ticket.client?.clientType === 'subcontractor' ? 0 : ticket.costs?.diagnostic} 
+                                min="0"
+                                step="500"
+                                value={ticket.client?.clientType === 'subcontractor' ? 0 : (ticket.costs?.diagnostic ?? '')} 
                                 disabled={ticket.client?.clientType === 'subcontractor'}
-                                onChange={e => setTicket({...ticket, costs: {...ticket.costs!, diagnostic: Number(e.target.value)}})} 
+                                onKeyDown={(e) => {
+                                    if (['e', 'E', '+', '-'].includes(e.key)) {
+                                        e.preventDefault();
+                                    }
+                                }}
+                                onChange={e => {
+                                    const raw = e.target.value.replace(/[^0-9]/g, '');
+                                    const numVal = raw === '' ? 0 : Math.max(0, parseInt(raw, 10));
+                                    setTicket(p => ({
+                                        ...p, 
+                                        costs: {
+                                            ...(p.costs || { diagnostic: 0, repair: 0, advance: 0 }), 
+                                            diagnostic: numVal
+                                        }
+                                    }));
+                                }} 
                                 className={inputStyle + " text-blue-400 font-mono text-lg" + (ticket.client?.clientType === 'subcontractor' ? ' opacity-60 cursor-not-allowed text-amber-400' : '')} 
                             />
                         </div>
@@ -1397,7 +1430,7 @@ const EnterpriseRepairForm: React.FC<EnterpriseRepairFormProps> = ({ tickets, ti
                     </div>
                     
                     <div className="space-y-3 mb-6">
-                        {ticket.services?.length ? ticket.services.map((s, i) => (
+                        {(ticket.services && ticket.services.length > 0) ? ticket.services.map((s, i) => (
                             <div key={i} className="flex justify-between items-center p-4 bg-white/5 rounded-2xl border border-white/5 group hover:border-purple-500/20 transition-all">
                                 <div className="flex-1 mr-4">
                                     <span className="text-xs font-black text-white uppercase">{s.name}</span>
@@ -1407,11 +1440,11 @@ const EnterpriseRepairForm: React.FC<EnterpriseRepairFormProps> = ({ tickets, ti
                                     <button 
                                         type="button"
                                         onClick={() => {
-                                            const updatedServices = ticket.services?.filter((_, idx) => idx !== i) || [];
+                                            const updatedServices = (ticket.services || []).filter((_, idx) => idx !== i);
                                             setTicket(p => ({ 
                                                 ...p, 
                                                 services: updatedServices,
-                                                costs: { ...p.costs!, repair: updatedServices.reduce((sum, s) => sum + s.price, 0) }
+                                                costs: { ...(p.costs || { diagnostic: 0, repair: 0, advance: 0 }), repair: updatedServices.reduce((sum, s) => sum + s.price, 0) }
                                             }));
                                         }} 
                                         className="p-2 text-red-500 hover:bg-red-600/20 rounded-xl transition-all"
@@ -1429,7 +1462,20 @@ const EnterpriseRepairForm: React.FC<EnterpriseRepairFormProps> = ({ tickets, ti
 
                     <div className="flex gap-2 p-2 bg-black/40 rounded-2xl border border-white/5">
                         <input placeholder="Libellé prestation..." value={quickServiceName} onChange={e => setQuickServiceName(e.target.value)} className="flex-1 bg-transparent px-4 py-2 text-xs text-white outline-none font-bold" />
-                        <input type="number" placeholder="Prix" value={quickServicePrice} onChange={e => setQuickServicePrice(e.target.value)} className="w-24 bg-gray-900 border border-white/10 rounded-xl px-3 py-2 text-xs text-white font-mono text-center" />
+                        <input 
+                            type="number" 
+                            min="0"
+                            step="500"
+                            placeholder="Prix" 
+                            value={quickServicePrice} 
+                            onKeyDown={(e) => {
+                                if (['e', 'E', '+', '-'].includes(e.key)) {
+                                    e.preventDefault();
+                                }
+                            }}
+                            onChange={e => setQuickServicePrice(e.target.value.replace(/[^0-9]/g, ''))} 
+                            className="w-24 bg-gray-900 border border-white/10 rounded-xl px-3 py-2 text-xs text-white font-mono text-center" 
+                        />
                         <button onClick={handleQuickAddService} className="p-3 bg-purple-600 text-white rounded-xl hover:bg-purple-500 transition-all"><PlusIcon className="w-5 h-5"/></button>
                     </div>
                 </div>

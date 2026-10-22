@@ -20,8 +20,7 @@ import { checkAndTriggerAutoDailyBackup } from './services/backupService.ts';
 import { parseUserAgent, fetchConnectionDetails } from './utils/connectionHelper.ts';
 import { auth } from './services/firebase.ts';
 import { useGoogleDriveAutoSync } from './hooks/useGoogleDriveAutoSync.ts';
-import { useDeviceProfile } from './context/DeviceProfileContext.tsx';
-import StartupDeviceScreen from './components/StartupDeviceScreen.tsx';
+import { DeviceProfileProvider } from './context/DeviceProfileContext.tsx';
 
 interface ErrorBoundaryProps {
   children?: ReactNode;
@@ -197,13 +196,6 @@ const AppContent: React.FC = () => {
         setRole(null);
     };
 
-    const { hasConfirmedProfile, confirmProfile } = useDeviceProfile();
-
-    // TOUTE PREMIÈRE INTERFACE : Sélection et mémorisation du mode d'affichage avant tout accès
-    if (!hasConfirmedProfile) {
-        return <StartupDeviceScreen onConfirm={confirmProfile} />;
-    }
-
     if (!storeId) return <StoreSelection onSelectStore={handleSelectStore} />;
     if (!isAuthenticated) return <LoginScreen onSuccess={() => setIsAuthenticated(true)} />;
     if (!role) return <RoleSelection onSelectRole={handleSelectRole} />;
@@ -223,8 +215,6 @@ const AppContent: React.FC = () => {
 
 import { ToastProvider } from './context/ToastContext.tsx';
 import { FirebaseProvider } from './context/FirebaseContext.tsx';
-import { DeviceProfileProvider } from './context/DeviceProfileContext.tsx';
-import { DeviceProfileModal } from './components/DeviceProfileModal.tsx';
 
 const App: React.FC = () => {
     return (
@@ -232,7 +222,6 @@ const App: React.FC = () => {
             <DeviceProfileProvider>
                 <ToastProvider>
                     <FirebaseProvider>
-                        <DeviceProfileModal />
                         <AppContent />
                     </FirebaseProvider>
                 </ToastProvider>
