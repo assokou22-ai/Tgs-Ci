@@ -11,8 +11,8 @@ export const compressImageBase64 = (base64Str: string, maxWidth = 1024, maxHeigh
             return;
         }
 
-        // Check size of base64 - if it's already less than 50KB, don't compress
-        if (base64Str.length < 50000) {
+        // Check size of base64 - if it's already optimized (< 200KB ~ 250,000 chars), don't re-encode through canvas
+        if (base64Str.length < 250000) {
             resolve(base64Str);
             return;
         }
@@ -127,18 +127,21 @@ export const compressTicketImages = async (ticket: RepairTicket): Promise<Repair
  * It will compress more aggressively and drop heavy attachment payloads for cloud sync if necessary.
  */
 export const optimizeTicketForFirestore = async (ticket: RepairTicket): Promise<RepairTicket> => {
-    // Start with default compression
-    const optimized = await compressTicketImages(ticket);
-    
-    // Check total character length (roughly corresponds to byte size)
-    let serialized = JSON.stringify(optimized);
     const LIMIT = 800000; // Under 800KB to stay well clear of 1MB Firestore limit
     
+    // Quick size check: If the ticket is already well under limit, return immediately without blocking CPU
+    let serialized = JSON.stringify(ticket);
+    if (serialized.length < LIMIT) {
+        return ticket;
+    }
+
+    console.warn(`Ticket ${ticket.id} is large (${serialized.length} chars). Applying image compression for cloud sync...`);
+    // Start with default compression
+    const optimized = await compressTicketImages(ticket);
+    serialized = JSON.stringify(optimized);
     if (serialized.length < LIMIT) {
         return optimized;
     }
-    
-    console.warn(`Ticket ${ticket.id} is large (${serialized.length} chars). Applying medium image compression for cloud sync...`);
     
     // Pass 2: Medium compression (800x800, quality 0.58)
     if (optimized.clientSignature) {
@@ -229,3 +232,18 @@ export const optimizeTicketForFirestore = async (ticket: RepairTicket): Promise<
     return optimized;
 };
 
+
+/**
+ * Préparation locale d'une fiche : les photos sont conservées en pleine qualité
+ * (elles sont envoyées au Cloud séparément, hors de la fiche). Une compression douce
+ * (1024 px) n'est appliquée que si la fiche devient vraiment très lourde (> 6 Mo),
+ * pour préserver la fluidité du téléphone.
+ */
+export const prepareTicketForLocalStorage = async (ticket: RepairTicket): Promise<RepairTicket> => {
+    try {
+        if (JSON.stringify(ticket).length < 6_000_000) return ticket;
+        return await compressTicketImages(ticket);
+    } catch {
+        return ticket;
+    }
+};

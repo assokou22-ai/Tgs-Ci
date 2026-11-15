@@ -11,9 +11,15 @@
     <meta name="description" content="Système de gestion haute performance pour TGS-CI, spécialisé dans la réparation MacBook/Pro/Air/Neo. Intègre l'IA Gemini 1.5/2.0 pour les diagnostics, une base de données technique ultra-précise (Références AXXXX), et la gestion avancée des stocks et factures." />
     <meta property="og:title" content="RM- TGS CI - Repair - Gestionnaire PRO 2026 - OK" />
     <meta property="og:description" content="Système de gestion haute performance pour TGS-CI, spécialisé dans la réparation MacBook/Pro/Air/Neo. Intègre l'IA Gemini 1.5/2.0 pour les diagnostics, une base de données technique ultra-précise (Références AXXXX), et la gestion avancée des stocks et factures." />
-    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="/tailwind-cdn.js"></script>
     <script>
       window.process = { env: { API_KEY: "" } };
+      (function () {
+        var d = document.documentElement, ua = navigator.userAgent;
+        if (/iPad|iPhone|iPod/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)) d.classList.add('ios');
+        var setXs = function () { d.classList.toggle('screen-xs', Math.min(window.innerWidth, window.innerHeight) < 340); };
+        setXs(); window.addEventListener('resize', setXs);
+      })();
       
       tailwind.config = {
         darkMode: 'class',
@@ -60,7 +66,6 @@
         -webkit-font-smoothing: antialiased;
         -moz-osx-font-smoothing: grayscale;
         padding-top: env(safe-area-inset-top, 0px);
-        padding-bottom: env(safe-area-inset-bottom, 0px);
         padding-left: env(safe-area-inset-left, 0px);
         padding-right: env(safe-area-inset-right, 0px);
       }
@@ -70,63 +75,81 @@
         -webkit-overflow-scrolling: touch;
       }
 
-      /* OPTIMISATION TACTILE ATELIER (MODE TABLETTE & MOBILE) */
-      html.device-touch {
-        touch-action: manipulation;
-      }
+      /* ================= v1.2.0 : INTERFACE ADAPTATIVE (3" → 13") ================= */
+      /* Taille de base fluide : tout ce qui est en rem (textes, marges, icônes Tailwind)
+         se réduit proportionnellement sur les petits téléphones. */
+      html { font-size: 16px; }
+      html.device-mobile { font-size: clamp(13px, calc(9px + 1.4vw), 15.5px); }
+      html.device-mobile.screen-xs { font-size: 12.5px; }
+      html.device-tablet { font-size: 15.5px; }
 
-      /* Agrandissement des zones de boutons tactiles (≥ 44px sur tablette, ≥ 48px sur mobile) */
-      html.device-touch button,
-      html.device-touch [role="button"],
-      html.device-touch a[role="button"] {
-        min-height: 44px;
-        touch-action: manipulation;
-      }
+      html.device-touch { touch-action: manipulation; }
 
+      /* Zones tactiles confortables sans « gros boutons » */
+      html.device-tablet button,
+      html.device-tablet [role="button"] { min-height: 2.5rem; touch-action: manipulation; }
       html.device-mobile button,
-      html.device-mobile [role="button"] {
-        min-height: 48px;
-      }
+      html.device-mobile [role="button"] { min-height: 2.25rem; touch-action: manipulation; }
+      html.device-mobile .no-min-h, html.device-tablet .no-min-h { min-height: 0 !important; }
 
-      /* Formulaires atelier : Police ≥ 16px sur mobile/tactile pour éviter les zooms automatiques iOS/Android */
-      html.device-touch input:not([type="checkbox"]):not([type="radio"]),
+      html.device-touch input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
       html.device-touch select,
-      html.device-touch textarea {
-        font-size: 16px !important;
-        min-height: 44px;
-      }
+      html.device-touch textarea { min-height: 2.5rem; font-size: max(0.95rem, 14px); }
+      /* iPhone/iPad : 16px minimum, sinon Safari zoome à la saisie */
+      html.ios input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+      html.ios select,
+      html.ios textarea { font-size: 16px !important; }
 
-      html.device-mobile input:not([type="checkbox"]):not([type="radio"]),
-      html.device-mobile select,
-      html.device-mobile textarea {
-        min-height: 48px;
-      }
-
-      /* Zone de clic élargie pour les cases à cocher en atelier */
       html.device-touch input[type="checkbox"],
-      html.device-touch input[type="radio"] {
-        min-width: 20px;
-        min-height: 20px;
-        cursor: pointer;
-      }
+      html.device-touch input[type="radio"] { min-width: 18px; min-height: 18px; cursor: pointer; }
 
-      /* Feedback tactile instantané sur les boutons */
       html.device-touch button:active,
-      html.device-touch [role="button"]:active {
-        transform: scale(0.97);
-        transition: transform 0.08s ease;
+      html.device-touch [role="button"]:active { transform: scale(0.97); transition: transform 0.08s ease; }
+
+      html.device-mobile .apple-card { padding: 0.875rem !important; border-radius: 16px; }
+      html.device-tablet .apple-card { padding: 1.25rem !important; }
+
+      /* Petits écrans : titres et grandes marges ramenés à l'échelle */
+      html.device-mobile .text-4xl { font-size: 1.75rem; line-height: 2.1rem; }
+      html.device-mobile .text-3xl { font-size: 1.5rem; line-height: 1.9rem; }
+      html.device-mobile .text-2xl { font-size: 1.3rem; line-height: 1.7rem; }
+      html.device-mobile .p-8 { padding: 1.25rem; }
+      html.device-mobile .p-10 { padding: 1.5rem; }
+      html.device-mobile .rounded-\[32px\] { border-radius: 22px; }
+
+      /* Fluidité Android : les flous d'arrière-plan coûtent cher au GPU des téléphones */
+      html.android-app .backdrop-blur-xl, html.android-app .backdrop-blur-2xl, html.android-app .backdrop-blur-3xl,
+      html.android-app .backdrop-blur-lg, html.android-app .backdrop-blur-md, html.android-app .glass {
+        -webkit-backdrop-filter: none !important; backdrop-filter: none !important;
+      }
+      html.android-app .glass { background: rgba(20, 22, 28, 0.97); }
+      @media (prefers-reduced-motion: reduce) {
+        *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
       }
 
-      /* Espacement et confort visuel en mode tactile */
-      html.device-touch .apple-card {
-        padding: 1.25rem !important;
+      /* Fond d'écran moderne (léger, sans image) */
+      .app-bg, body {
+        background-color: #07080b;
+        background-image:
+          radial-gradient(1200px 600px at 110% -10%, rgba(0, 113, 227, 0.16), transparent 60%),
+          radial-gradient(900px 500px at -20% 110%, rgba(124, 58, 237, 0.12), transparent 60%),
+          linear-gradient(180deg, #0a0c11 0%, #07080b 100%);
+        background-attachment: fixed;
       }
+      html.android-app .app-bg, html.android-app body { background-attachment: scroll; }
 
-      @media (min-width: 640px) {
-        html.device-touch .apple-card {
-          padding: 1.75rem !important;
-        }
+      /* Barre d'onglets mobile */
+      .tabbar {
+        position: fixed; left: 0; right: 0; bottom: 0; z-index: 70;
+        padding: 0.35rem 0.5rem calc(env(safe-area-inset-bottom, 0px) + 0.35rem);
+        background: rgba(12, 14, 19, 0.94);
+        border-top: 1px solid rgba(255,255,255,0.07);
+        -webkit-backdrop-filter: blur(16px); backdrop-filter: blur(16px);
       }
+      html.android-app .tabbar { background: rgba(12, 14, 19, 0.985); }
+      .tabbar-btn { min-height: 0 !important; }
+      .sheet-enter { animation: sheetUp 0.22s cubic-bezier(0.2, 0.8, 0.2, 1); }
+      @keyframes sheetUp { from { transform: translateY(24px); opacity: 0; } to { transform: none; opacity: 1; } }
 
       /* STRUCTURE A4 UNIFIÉE (ÉCRAN & PRINT) */
       .printable-page {

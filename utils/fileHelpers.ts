@@ -32,11 +32,35 @@ export const compressImage = async (
     }
 
     return new Promise((resolve, reject) => {
-        const img = new Image();
-        const objectUrl = URL.createObjectURL(file);
+        let isDone = false;
+        let objectUrl = '';
+        try {
+            objectUrl = URL.createObjectURL(file);
+        } catch {
+            readFileAsBase64(file).then(resolve).catch(reject);
+            return;
+        }
 
+        const cleanup = () => {
+            if (objectUrl) {
+                try { URL.revokeObjectURL(objectUrl); } catch { /* ignore */ }
+            }
+        };
+
+        const timeoutTimer = setTimeout(() => {
+            if (!isDone) {
+                isDone = true;
+                cleanup();
+                readFileAsBase64(file).then(resolve).catch(reject);
+            }
+        }, 4000);
+
+        const img = new Image();
         img.onload = () => {
-            URL.revokeObjectURL(objectUrl);
+            if (isDone) return;
+            isDone = true;
+            clearTimeout(timeoutTimer);
+            cleanup();
             let { width, height } = img;
 
             if (width > maxWidth || height > maxHeight) {
@@ -50,12 +74,10 @@ export const compressImage = async (
             canvas.height = height;
             const ctx = canvas.getContext('2d');
             if (!ctx) {
-                // Fallback direct
                 readFileAsBase64(file).then(resolve).catch(reject);
                 return;
             }
 
-            // Amélioration de l'interpolation
             ctx.imageSmoothingEnabled = true;
             ctx.imageSmoothingQuality = 'high';
             ctx.drawImage(img, 0, 0, width, height);
@@ -66,7 +88,10 @@ export const compressImage = async (
         };
 
         img.onerror = () => {
-            URL.revokeObjectURL(objectUrl);
+            if (isDone) return;
+            isDone = true;
+            clearTimeout(timeoutTimer);
+            cleanup();
             readFileAsBase64(file).then(resolve).catch(reject);
         };
 

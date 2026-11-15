@@ -173,7 +173,7 @@ const GlobalSearch: React.FC = () => {
     };
 
     return (
-        <div ref={containerRef} className={`relative transition-all duration-300 z-[120] ${isFocused ? 'w-44 sm:w-64 md:w-80 lg:w-[380px]' : 'w-24 sm:w-56 md:w-80 lg:w-[380px]'}`}>
+        <div ref={containerRef} className={`relative transition-all duration-300 z-[120] ${isFocused ? 'w-[52vw] sm:w-64 md:w-80 lg:w-[380px]' : 'w-[34vw] max-w-[9rem] sm:max-w-none sm:w-56 md:w-80 lg:w-[380px]'}`}>
             {/* Input persistent container */}
             <div className={`flex items-center gap-1.5 sm:gap-2 px-2.5 sm:px-3 py-1.5 sm:py-2 bg-white/5 border rounded-2xl transition-all duration-300 ${
                 isFocused 
@@ -194,7 +194,7 @@ const GlobalSearch: React.FC = () => {
                 {query ? (
                     <button 
                         onClick={handleClear}
-                        className="p-1 hover:bg-white/10 rounded-full text-zinc-500 hover:text-white transition-colors shrink-0"
+                        className="no-min-h p-1 hover:bg-white/10 rounded-full text-zinc-500 hover:text-white transition-colors shrink-0"
                         title="Effacer la recherche"
                     >
                         <X className="w-3 h-3" />
@@ -210,7 +210,7 @@ const GlobalSearch: React.FC = () => {
                         e.stopPropagation();
                         setIsQrOpen(true);
                     }}
-                    className="p-1.5 hover:bg-white/10 rounded-xl text-zinc-400 hover:text-apple-blue transition-colors shrink-0"
+                    className="no-min-h p-1.5 hover:bg-white/10 rounded-xl text-zinc-400 hover:text-apple-blue transition-colors shrink-0"
                     title="Scanner un QR Code via la caméra (Fiche éditée)"
                 >
                     <Camera className="w-3.5 h-3.5" />

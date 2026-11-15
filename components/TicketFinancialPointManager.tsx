@@ -1,7 +1,18 @@
 import React, { useState, useMemo } from 'react';
-import { RepairTicket, RepairStatus } from '../types.ts';
+import { RepairTicket, RepairStatus, ActivityCategory, FixedChargeFrequency, FixedChargeItem } from '../types.ts';
 import { getTicketFinancialSummary } from '../utils/ticketHelpers.ts';
 import { useToastContext } from '../context/ToastContext.tsx';
+import { useAppSettings } from '../hooks/useAppSettings.ts';
+import { useProfitabilityData } from '../hooks/useProfitabilityData.ts';
+import {
+    ACTIVITY_LABELS,
+    ACTIVITY_SHORT_LABELS,
+    ACTIVITY_ORDER,
+    PART_SOURCE_SHORT_LABELS,
+    calculatePortfolioProfitability,
+    calculateTicketProfitability,
+    calculateWorkshopTreasury,
+} from '../utils/profitability.ts';
 import PreviewModal from './PreviewModal.tsx';
 import PrintableTicketFinancialPoint from './PrintableTicketFinancialPoint.tsx';
 import { exportTicketFinancialPointToExcel, FinancialPointMetrics } from '../services/exportService.ts';
@@ -16,10 +27,20 @@ import {
     X, 
     ArrowLeft, 
     ChevronLeft, 
-    ChevronRight, 
+    ChevronRight,
+    ChevronDown,
     DollarSign, 
     Share2,
-    Eye
+    Eye,
+    TrendingUp,
+    Building2,
+    Plus,
+    Trash2,
+    Wallet,
+    ShieldCheck,
+    Receipt,
+    Package,
+    Sliders
 } from 'lucide-react';
 import { playTone } from '../utils/audio.ts';
 import { dbBulkPutTickets } from '../services/dbService.ts';
@@ -47,6 +68,44 @@ export const TicketFinancialPointManager: React.FC<TicketFinancialPointManagerPr
     initialPeriodMode = 'mois'
 }) => {
     const { showToast } = useToastContext();
+    const { settings, updateSettings } = useAppSettings();
+    const { stockItems, stockMap, stockUsages, externalPurchases, commandes, factures } = useProfitabilityData();
+
+    const taxProvisionRate = settings.profitability?.taxProvisionRate ?? 0;
+    const showProfitability = settings.profitability?.enableProfitabilityIndicators !== false;
+    const showTreasury = Boolean(settings.profitability?.enableTreasuryTracking);
+    const fixedCharges = useMemo(
+        () => settings.profitability?.fixedCharges ?? [],
+        [settings.profitability?.fixedCharges]
+    );
+    const [showTreasuryConfig, setShowTreasuryConfig] = useState(false);
+
+    const handleToggleProfitability = () => {
+        const nextVal = !showProfitability;
+        updateSettings('profitability', { enableProfitabilityIndicators: nextVal });
+        showToast(
+            nextVal
+                ? "Indicateurs de rentabilité par activité activés."
+                : "Indicateurs de rentabilité masqués (aucune donnée supprimée).",
+            "info"
+        );
+    };
+
+    const handleToggleTreasury = () => {
+        const nextVal = !showTreasury;
+        updateSettings('profitability', {
+            enableTreasuryTracking: nextVal,
+            ...(nextVal && !settings.profitability?.treasuryStartDate
+                ? { treasuryStartDate: new Date().toISOString().slice(0, 10) }
+                : {}),
+        });
+        showToast(
+            nextVal
+                ? "Suivi Capital (~2M) & Trésorerie activé à partir de la date configurée."
+                : "Suivi Capital (~2M) & Trésorerie désactivé (application en mode classique).",
+            "info"
+        );
+    };
 
     // Mode temporel
     const [periodMode, setPeriodMode] = useState<PeriodMode>(initialPeriodMode);
@@ -68,6 +127,7 @@ export const TicketFinancialPointManager: React.FC<TicketFinancialPointManagerPr
     const [paymentFilter, setPaymentFilter] = useState<PaymentFilter>('all');
     const [techStatusFilter, setTechStatusFilter] = useState<TechStatusFilter>('all');
     const [clientTypeFilter, setClientTypeFilter] = useState<'all' | 'individual' | 'enterprise'>('all');
+    const [activityFilter, setActivityFilter] = useState<'all' | ActivityCategory>('all');
     const [searchQuery, setSearchQuery] = useState<string>('');
 
     // Date type: filter by creation date or update date
@@ -75,6 +135,15 @@ export const TicketFinancialPointManager: React.FC<TicketFinancialPointManagerPr
 
     // Modale d'aperçu d'impression
     const [isPrintModalOpen, setIsPrintModalOpen] = useState(false);
+
+    // Détail par ligne dépliable et gestion des charges fixes
+    const [expandedTicketIds, setExpandedTicketIds] = useState<Set<string>>(() => new Set());
+    const [showFixedChargesManager, setShowFixedChargesManager] = useState(false);
+    const [newChargeLabel, setNewChargeLabel] = useState('');
+    const [newChargeAmount, setNewChargeAmount] = useState('');
+    const [newChargeFreq, setNewChargeFreq] = useState<FixedChargeFrequency>('mensuel');
+    const [newChargeCategory, setNewChargeCategory] = useState('Loyer & Atelier');
+    const [newChargeDate, setNewChargeDate] = useState(() => new Date().toISOString().slice(0, 10));
 
     // Gestion des candidats sous-traitants (≥ 5 machines enregistrées)
     const [dismissedCandidateKeys, setDismissedCandidateKeys] = useState<Set<string>>(() => new Set());
@@ -273,9 +342,22 @@ export const TicketFinancialPointManager: React.FC<TicketFinancialPointManagerPr
                 if (!matchId && !matchClient && !matchPhone && !matchModel && !matchStatus) return false;
             }
 
+            // 6. Filtre par Activité (calcul dynamique non destructif)
+            if (showProfitability && activityFilter !== 'all') {
+                const prof = calculateTicketProfitability(t, {
+                    stockMap,
+                    stockUsages,
+                    externalPurchases,
+                    taxProvisionRate,
+                });
+                if (prof.isInfacturable || !prof.activitiesPresent.includes(activityFilter)) {
+                    return false;
+                }
+            }
+
             return true;
         });
-    }, [tickets, startDate, endDate, dateBasis, paymentFilter, techStatusFilter, clientTypeFilter, searchQuery]);
+    }, [tickets, startDate, endDate, dateBasis, paymentFilter, techStatusFilter, clientTypeFilter, searchQuery, showProfitability, activityFilter, stockMap, stockUsages, externalPurchases, taxProvisionRate]);
 
     // Métriques comptables sur l'échantillon filtré
     const metrics: FinancialPointMetrics = useMemo(() => {
@@ -315,6 +397,82 @@ export const TicketFinancialPointManager: React.FC<TicketFinancialPointManagerPr
             totalCount: filteredTickets.length
         };
     }, [filteredTickets]);
+
+    // Rapport complet de rentabilité (prévisionnel & réel, par ligne, dossier, activité + charges fixes séparées)
+    const profitabilityReport = useMemo(() => {
+        return calculatePortfolioProfitability(filteredTickets, {
+            stockMap,
+            stockUsages,
+            externalPurchases,
+            taxProvisionRate,
+            fixedCharges,
+            periodMode,
+            startDate,
+            endDate,
+        });
+    }, [filteredTickets, stockMap, stockUsages, externalPurchases, taxProvisionRate, fixedCharges, periodMode, startDate, endDate]);
+
+    // Trésorerie globale atelier (~2M capital), réserves & dépenses à payer (uniquement si activée par l'utilisateur)
+    const treasurySnapshot = useMemo(() => {
+        if (!showTreasury) return null;
+        return calculateWorkshopTreasury({
+            allTickets: tickets,
+            stockItems,
+            stockUsages,
+            externalPurchases,
+            commandes,
+            factures,
+            settings: settings.profitability,
+        });
+    }, [showTreasury, tickets, stockItems, stockUsages, externalPurchases, commandes, factures, settings.profitability]);
+
+    const toggleExpandTicket = (ticketId: string) => {
+        setExpandedTicketIds(prev => {
+            const next = new Set(prev);
+            if (next.has(ticketId)) next.delete(ticketId);
+            else next.add(ticketId);
+            return next;
+        });
+    };
+
+    const handleAddFixedCharge = (e: React.FormEvent) => {
+        e.preventDefault();
+        const amountNum = Math.max(0, Math.round(Number(newChargeAmount) || 0));
+        if (!newChargeLabel.trim() || amountNum <= 0) {
+            showToast("Renseignez un libellé et un montant positif.", "warning");
+            return;
+        }
+        const newItem: FixedChargeItem = {
+            id: `chg-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+            label: newChargeLabel.trim(),
+            amount: amountNum,
+            frequency: newChargeFreq,
+            category: newChargeCategory.trim() || 'Atelier',
+            active: true,
+            ...(newChargeFreq === 'ponctuel' ? { date: newChargeDate } : {})
+        };
+        updateSettings('profitability', {
+            taxProvisionRate,
+            fixedCharges: [...fixedCharges, newItem]
+        });
+        setNewChargeLabel('');
+        setNewChargeAmount('');
+        showToast("Charge fixe ajoutée (séparée des marges d'activité).", "success");
+    };
+
+    const handleToggleFixedCharge = (id: string) => {
+        updateSettings('profitability', {
+            taxProvisionRate,
+            fixedCharges: fixedCharges.map(c => c.id === id ? { ...c, active: !c.active } : c)
+        });
+    };
+
+    const handleDeleteFixedCharge = (id: string) => {
+        updateSettings('profitability', {
+            taxProvisionRate,
+            fixedCharges: fixedCharges.filter(c => c.id !== id)
+        });
+    };
 
     // Navigation temporelle (recule / avance dans le temps)
     const handleShiftPeriod = (delta: number) => {
@@ -372,8 +530,20 @@ export const TicketFinancialPointManager: React.FC<TicketFinancialPointManagerPr
         try {
             const safeLabel = periodLabel.replace(/[/\\?%*:|"<>]/g, '_').slice(0, 40);
             const fileName = `POINT_FINANCIER_FICHES_${safeLabel}_${new Date().toISOString().slice(0, 10)}.xlsx`;
-            exportTicketFinancialPointToExcel(filteredTickets, periodLabel, metrics, fileName);
-            showToast("Point financier exporté en Excel (.xlsx) avec succès !", "success");
+            exportTicketFinancialPointToExcel(
+                filteredTickets,
+                periodLabel,
+                metrics,
+                fileName,
+                showProfitability ? profitabilityReport : undefined,
+                showTreasury && treasurySnapshot ? treasurySnapshot : undefined
+            );
+            showToast(
+                showProfitability || showTreasury
+                    ? "Point financier exporté en Excel (.xlsx) avec les indicateurs activés !"
+                    : "Point financier exporté en Excel (.xlsx) !",
+                "success"
+            );
         } catch (err) {
             console.error("Export Excel error:", err);
             showToast("Erreur lors de l'export Excel.", "error");
@@ -383,9 +553,15 @@ export const TicketFinancialPointManager: React.FC<TicketFinancialPointManagerPr
     // Export CSV
     const handleExportCsv = () => {
         try {
-            const headers = ["N° FICHE", "DATE", "CLIENT", "CONTACT", "MODELE", "STATUT", "REGIME_POINT", "DIAGNOSTIC_F", "REPARATION_F", "TOTAL_FACTURE_F", "ACOMPTE_F", "SOLDE_DU_F", "ETAT_PAIEMENT"];
+            const headers = showProfitability
+                ? ["N° FICHE", "DATE", "CLIENT", "CONTACT", "MODELE", "STATUT", "REGIME_POINT", "ACTIVITES", "ORIGINE_PIECES", "DIAGNOSTIC_F", "REPARATION_F", "TOTAL_FACTURE_F", "COUT_PIECES_1X_F", "PROV_FISCALE_F", "MARGE_PREVISIONNELLE_F", "MARGE_REELLE_F", "ACOMPTE_F", "SOLDE_DU_F", "ETAT_PAIEMENT"]
+                : ["N° FICHE", "DATE", "CLIENT", "CONTACT", "MODELE", "STATUT", "REGIME_POINT", "DIAGNOSTIC_F", "REPARATION_F", "TOTAL_FACTURE_F", "ACOMPTE_F", "SOLDE_DU_F", "ETAT_PAIEMENT"];
             const rows = filteredTickets.map(t => {
                 const fin = getTicketFinancialSummary(t);
+                const prof = showProfitability ? profitabilityReport.ticketResults.get(t.id) : undefined;
+                const acts = fin.isInfacturable ? 'INFACTURABLE' : (prof?.activitiesPresent.map(a => ACTIVITY_LABELS[a]).join(' / ') || 'Réparation');
+                const sourcesSet = Array.from(new Set((prof?.lines || []).map(l => l.sourcePiece ? PART_SOURCE_SHORT_LABELS[l.sourcePiece] : null).filter(Boolean)));
+                const sourcesLabel = fin.isInfacturable ? '' : (sourcesSet.join(' / ') || 'Prestation');
                 return [
                     `#${t.id}`,
                     t.createdAt ? new Date(t.createdAt).toLocaleDateString('fr-FR') : '',
@@ -394,9 +570,16 @@ export const TicketFinancialPointManager: React.FC<TicketFinancialPointManagerPr
                     `"${(t.macModel || '').replace(/"/g, '""')}"`,
                     `"${t.status}"`,
                     fin.isInfacturable ? 'INFACTURABLE' : 'FACTURABLE',
+                    ...(showProfitability ? [`"${acts}"`, `"${sourcesLabel}"`] : []),
                     fin.isInfacturable ? 0 : fin.diagnosticCost,
                     fin.isInfacturable ? 0 : fin.repairCost,
                     fin.isInfacturable ? 0 : fin.totalBilled,
+                    ...(showProfitability ? [
+                        fin.isInfacturable ? 0 : (prof?.totalPartCost || 0),
+                        fin.isInfacturable ? 0 : (prof?.totalTaxProvision || 0),
+                        fin.isInfacturable ? 0 : (prof?.netMargin || 0),
+                        fin.isInfacturable ? 0 : (prof?.realNetMargin || 0),
+                    ] : []),
                     fin.isInfacturable ? 0 : fin.advanceReceived,
                     fin.isInfacturable ? 0 : fin.balanceDue,
                     fin.isInfacturable ? 'ANNULE_INFACTURABLE' : (fin.isFullyPaid ? 'SOLDE' : (fin.advanceReceived > 0 ? 'ACOMPTE_VERSE' : 'NON_PAYE'))
@@ -421,24 +604,40 @@ export const TicketFinancialPointManager: React.FC<TicketFinancialPointManagerPr
 
     // Copier le résumé pour WhatsApp / Email / Direction
     const handleCopySummary = async () => {
-        const text = `📊 *POINT FINANCIER D'ATELIER - TGS CÔTE D'IVOIRE*
+        const rep = profitabilityReport.byActivity.reparation;
+        const pcs = profitabilityReport.byActivity.vente_pieces;
+        const mac = profitabilityReport.byActivity.vente_macbook;
+        const profitabilitySection = showProfitability
+            ? `\n📈 *RENTABILITÉ PAR ACTIVITÉ (Prév. vs Réelle — Pièces 1x & Fisc. ${profitabilityReport.taxRate}%) :*
+• *Réparation :* CA ${rep.ca.toLocaleString('fr-FR')} F | Prév. *${rep.netMargin.toLocaleString('fr-FR')} F* | Réelle *${rep.realNetMargin.toLocaleString('fr-FR')} F*
+• *Vente de pièces :* CA ${pcs.ca.toLocaleString('fr-FR')} F | Prév. *${pcs.netMargin.toLocaleString('fr-FR')} F* | Réelle *${pcs.realNetMargin.toLocaleString('fr-FR')} F*
+• *Vente de MacBook :* CA ${mac.ca.toLocaleString('fr-FR')} F | Prév. *${mac.netMargin.toLocaleString('fr-FR')} F* | Réelle *${mac.realNetMargin.toLocaleString('fr-FR')} F*
+✅ *Marge Activités Prév. / Réelle :* ${profitabilityReport.totalNetMarginBeforeFixed.toLocaleString('fr-FR')} F / *${profitabilityReport.totalRealNetMarginBeforeFixed.toLocaleString('fr-FR')} F*
+🏢 *Charges Fixes (${profitabilityReport.fixedChargesPeriodFactorLabel}) :* -${profitabilityReport.fixedChargesTotal.toLocaleString('fr-FR')} F CFA
+💼 *Résultat Exploitation Prév. / Réel :* ${profitabilityReport.operatingResultAfterFixed.toLocaleString('fr-FR')} F / *${profitabilityReport.realOperatingResultAfterFixed.toLocaleString('fr-FR')} F*\n`
+            : '';
+        const treasurySection = showTreasury && treasurySnapshot
+            ? `\n🏦 *TRÉSORERIE & CAPITAL ATELIER (Sans double comptage${treasurySnapshot.treasuryStartDate ? ` — depuis ${new Date(`${treasurySnapshot.treasuryStartDate}T12:00:00`).toLocaleDateString('fr-FR')}` : ''}) :*
+• *Trésorerie Disponible Nette :* ${treasurySnapshot.availableTreasury.toLocaleString('fr-FR')} F CFA
+• *Réserves (Fisc + Réinvest.) :* ${treasurySnapshot.totalReserves.toLocaleString('fr-FR')} F CFA
+• *Dépenses à Payer (Passif) :* ${treasurySnapshot.totalPayables.toLocaleString('fr-FR')} F CFA
+• *Capital Actuel (Stock + Cash Net) :* ${treasurySnapshot.totalCurrentCapital.toLocaleString('fr-FR')} F CFA\n`
+            : '';
+
+        const text = `📊 *POINT FINANCIER - TGS CÔTE D'IVOIRE*
 🗓️ *Période :* ${periodLabel}
 ⏱️ *Édité le :* ${new Date().toLocaleString('fr-FR')}
 
 📁 *Volume de fiches :* ${metrics.totalCount} dossier(s) (${metrics.facturablesCount} facturable(s), ${metrics.infacturablesCount} annulée(s))
-💰 *Total Montants Facturés :* ${metrics.totalBilled.toLocaleString('fr-FR')} F CFA
+💰 *Total Montants Facturés (CA) :* ${metrics.totalBilled.toLocaleString('fr-FR')} F CFA
 🟢 *Acomptes Perçus (Caisse) :* ${metrics.totalAdvance.toLocaleString('fr-FR')} F CFA
 🟠 *Restant Dû (Créances) :* ${metrics.totalBalanceDue.toLocaleString('fr-FR')} F CFA
-📈 *Taux de Recouvrement :* ${metrics.collectionRate}%
-✅ *Dossiers Soldés :* ${metrics.paidCount}
-⏳ *Dossiers avec Solde Dû :* ${metrics.withBalanceCount}
-${metrics.infacturablesCount > 0 ? `🚫 *Fiches Infacturables :* ${metrics.infacturablesCount} (0 F CFA comptabilisé)` : ''}
-
+${profitabilitySection}${treasurySection}${metrics.infacturablesCount > 0 ? `🚫 *Fiches Infacturables :* ${metrics.infacturablesCount} (0 F CFA comptabilisé)\n` : ''}
 _Document officiel d'atelier TGS-CI_`;
 
         try {
             await navigator.clipboard.writeText(text);
-            showToast("Résumé financier copié dans le presse-papier !", "success");
+            showToast("Résumé financier copié dans le presse-papiers !", "success");
         } catch {
             showToast("Impossible de copier automatiquement.", "warning");
         }
@@ -512,6 +711,40 @@ _Document officiel d'atelier TGS-CI_`;
                         >
                             <Share2 className="w-4 h-4" />
                             <span className="hidden sm:inline">Partager</span>
+                        </button>
+                    </div>
+                </div>
+
+                {/* BARRE DES 2 INTERRUPTEURS INDÉPENDANTS (SANS SUPPRESSION DE DONNÉES) */}
+                <div className="mt-4 pt-3 border-t border-white/10 flex flex-wrap items-center justify-between gap-2">
+                    <span className="text-[10px] font-black uppercase tracking-widest text-zinc-400">
+                        Modules de pilotage (activables à tout moment sans perte de données) :
+                    </span>
+                    <div className="flex flex-wrap items-center gap-2">
+                        <button
+                            type="button"
+                            onClick={handleToggleProfitability}
+                            className={`flex items-center gap-2 px-3 py-1.5 rounded-xl text-[11px] font-black uppercase tracking-wider border transition-all cursor-pointer ${
+                                showProfitability
+                                    ? 'bg-emerald-500/20 border-emerald-400/50 text-emerald-200 hover:bg-emerald-500/30'
+                                    : 'bg-white/5 border-white/15 text-zinc-400 hover:text-white hover:bg-white/10'
+                            }`}
+                        >
+                            <TrendingUp className="w-3.5 h-3.5" />
+                            <span>Rentabilité Activités : {showProfitability ? 'ON' : 'OFF'}</span>
+                        </button>
+
+                        <button
+                            type="button"
+                            onClick={handleToggleTreasury}
+                            className={`flex items-center gap-2 px-3 py-1.5 rounded-xl text-[11px] font-black uppercase tracking-wider border transition-all cursor-pointer ${
+                                showTreasury
+                                    ? 'bg-cyan-500/20 border-cyan-400/50 text-cyan-200 hover:bg-cyan-500/30'
+                                    : 'bg-white/5 border-white/15 text-zinc-400 hover:text-white hover:bg-white/10'
+                            }`}
+                        >
+                            <Wallet className="w-3.5 h-3.5" />
+                            <span>Suivi Capital 2M &amp; Trésorerie : {showTreasury ? 'ON' : 'OFF'}</span>
                         </button>
                     </div>
                 </div>
@@ -863,6 +1096,718 @@ _Document officiel d'atelier TGS-CI_`;
                 </div>
             )}
 
+            {/* SECTION RENTABILITÉ PAR ACTIVITÉ & CHARGES FIXES SÉPARÉES */}
+            {showProfitability && (
+            <div className="bg-[#0e111a] border border-white/10 rounded-3xl p-5 md:p-6 shadow-2xl space-y-5">
+                <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 border-b border-white/10 pb-4">
+                    <div className="flex items-center gap-3">
+                        <div className="p-2.5 rounded-2xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-400">
+                            <TrendingUp className="w-5 h-5" />
+                        </div>
+                        <div>
+                            <h2 className="text-sm md:text-base font-black uppercase tracking-tight text-white m-0">
+                                Rentabilité par Activité (1 fiche par dossier)
+                            </h2>
+                            <p className="text-[11px] text-zinc-400 mt-0.5">
+                                Marge Prévisionnelle (facturée) vs Réelle (encaissée) &bull; Coût pièces 1x (En stock / À commander / 0 F client) &bull; Charges fixes séparées
+                            </p>
+                        </div>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-3">
+                        <div className="flex items-center gap-2 bg-black/50 border border-amber-500/30 rounded-2xl px-3 py-1.5">
+                            <label className="text-[10px] font-black uppercase text-amber-400 whitespace-nowrap">
+                                Provision fiscale sur CA :
+                            </label>
+                            <input
+                                type="number"
+                                min="0"
+                                max="100"
+                                step="0.5"
+                                value={taxProvisionRate}
+                                onChange={(e) => {
+                                    const val = Math.max(0, Math.min(100, Number(e.target.value) || 0));
+                                    updateSettings('profitability', { taxProvisionRate: val });
+                                }}
+                                className="w-16 bg-zinc-900 border border-white/15 rounded-lg px-2 py-1 text-xs font-mono font-black text-amber-300 text-right focus:outline-none focus:border-amber-400"
+                            />
+                            <span className="text-xs font-bold text-amber-400">%</span>
+                        </div>
+
+                        <button
+                            type="button"
+                            onClick={() => setShowFixedChargesManager(v => !v)}
+                            className={`flex items-center gap-2 px-3.5 py-2 rounded-2xl text-xs font-black uppercase tracking-wider border transition-all cursor-pointer ${
+                                showFixedChargesManager
+                                    ? 'bg-purple-600/25 border-purple-400 text-purple-200'
+                                    : 'bg-white/5 border-white/10 text-zinc-200 hover:bg-white/10'
+                            }`}
+                        >
+                            <Building2 className="w-4 h-4 text-purple-400" />
+                            <span>Charges Fixes ({fixedCharges.filter(c => c.active).length})</span>
+                        </button>
+                    </div>
+                </div>
+
+                {/* 3 CARTES PAR ACTIVITÉ (PRÉVISIONNEL VS RÉEL) */}
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    {ACTIVITY_ORDER.map((act) => {
+                        const summary = profitabilityReport.byActivity[act];
+                        const isSelected = activityFilter === act;
+                        const accentClass =
+                            act === 'vente_macbook'
+                                ? 'from-purple-950/40 border-purple-500/30 text-purple-300'
+                                : act === 'vente_pieces'
+                                    ? 'from-amber-950/40 border-amber-500/30 text-amber-300'
+                                    : 'from-blue-950/40 border-blue-500/30 text-blue-300';
+
+                        return (
+                            <div
+                                key={act}
+                                className={`bg-gradient-to-br ${accentClass} to-zinc-900/90 border rounded-2xl p-4 space-y-3 transition-all ${
+                                    isSelected ? 'ring-2 ring-white/50' : ''
+                                }`}
+                            >
+                                <div className="flex items-center justify-between gap-2">
+                                    <div>
+                                        <span className="text-[11px] font-black uppercase tracking-wider text-white block">
+                                            {summary.label}
+                                        </span>
+                                        <span className="text-[10px] text-zinc-400 font-mono">
+                                            {summary.ticketCount} dossier(s) &bull; {summary.lineCount} ligne(s)
+                                        </span>
+                                    </div>
+                                    <button
+                                        type="button"
+                                        onClick={() => setActivityFilter(prev => prev === act ? 'all' : act)}
+                                        className={`px-2.5 py-1 rounded-lg text-[9px] font-black uppercase border transition-all cursor-pointer ${
+                                            isSelected
+                                                ? 'bg-white text-black border-white'
+                                                : 'bg-black/40 text-zinc-300 border-white/15 hover:bg-white/10'
+                                        }`}
+                                    >
+                                        {isSelected ? 'Tout afficher' : 'Filtrer'}
+                                    </button>
+                                </div>
+
+                                <div className="space-y-1.5 text-xs border-t border-white/10 pt-2.5">
+                                    <div className="flex justify-between">
+                                        <span className="text-zinc-400">CA Facturé / Encaissé</span>
+                                        <span className="font-mono font-bold text-white">
+                                            {summary.ca.toLocaleString('fr-FR')} F
+                                            <span className="text-zinc-500 font-normal"> / {summary.realCA.toLocaleString('fr-FR')} F</span>
+                                        </span>
+                                    </div>
+                                    <div className="flex justify-between">
+                                        <span className="text-zinc-400">Coût pièces (1x)</span>
+                                        <span className="font-mono text-amber-300">-{summary.partCost.toLocaleString('fr-FR')} F</span>
+                                    </div>
+                                    <div className="flex justify-between">
+                                        <span className="text-zinc-400">Provision fiscale ({profitabilityReport.taxRate}%)</span>
+                                        <span className="font-mono text-orange-300">-{summary.taxProvision.toLocaleString('fr-FR')} F</span>
+                                    </div>
+                                </div>
+
+                                <div className="grid grid-cols-2 gap-2 border-t border-white/10 pt-2.5">
+                                    <div className="bg-black/35 rounded-xl p-2 border border-white/5">
+                                        <span className="text-[9px] font-black uppercase text-zinc-400 block">Marge Prév.</span>
+                                        <span className={`font-mono font-black text-sm ${summary.netMargin >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                            {summary.netMargin.toLocaleString('fr-FR')} F
+                                        </span>
+                                        <span className="block text-[9px] font-mono text-zinc-400">({summary.marginRate.toFixed(1)}%)</span>
+                                    </div>
+                                    <div className="bg-black/35 rounded-xl p-2 border border-emerald-500/20">
+                                        <span className="text-[9px] font-black uppercase text-emerald-300 block">Marge Réelle</span>
+                                        <span className={`font-mono font-black text-sm ${summary.realNetMargin >= 0 ? 'text-emerald-300' : 'text-rose-400'}`}>
+                                            {summary.realNetMargin.toLocaleString('fr-FR')} F
+                                        </span>
+                                        <span className="block text-[9px] font-mono text-emerald-400/80">({summary.realMarginRate.toFixed(1)}%)</span>
+                                    </div>
+                                </div>
+                            </div>
+                        );
+                    })}
+                </div>
+
+                {/* RÉPARTITION APPROVISIONNEMENT PIÈCES SUR LA PÉRIODE */}
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
+                    <div className="bg-black/40 border border-white/10 rounded-2xl px-4 py-2.5 flex items-center justify-between">
+                        <span className="text-zinc-400 text-[10px] font-black uppercase">Pièces En Stock utilisées</span>
+                        <span className="font-mono font-bold text-emerald-300">{profitabilityReport.enStockPartCostTotal.toLocaleString('fr-FR')} F</span>
+                    </div>
+                    <div className="bg-black/40 border border-white/10 rounded-2xl px-4 py-2.5 flex items-center justify-between">
+                        <span className="text-zinc-400 text-[10px] font-black uppercase">
+                            Pièces À Commander ({profitabilityReport.aCommanderPlannedCostTotal > 0 ? `dont ${profitabilityReport.aCommanderPlannedCostTotal.toLocaleString('fr-FR')} F prévues` : 'engagées'})
+                        </span>
+                        <span className="font-mono font-bold text-amber-300">{profitabilityReport.aCommanderPartCostTotal.toLocaleString('fr-FR')} F</span>
+                    </div>
+                    <div className="bg-black/40 border border-white/10 rounded-2xl px-4 py-2.5 flex items-center justify-between">
+                        <span className="text-zinc-400 text-[10px] font-black uppercase">Lignes Fourni Client (0 F pièce)</span>
+                        <span className="font-mono font-bold text-cyan-300">{profitabilityReport.fourniClientLineCount} ligne(s)</span>
+                    </div>
+                </div>
+
+                {/* SÉPARATION CLAIRE : MARGE DES ACTIVITÉS (PRÉV. vs RÉELLE) vs CHARGES FIXES */}
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 pt-1">
+                    <div className="p-4 rounded-2xl bg-emerald-950/25 border border-emerald-500/25 space-y-2">
+                        <div className="flex items-center justify-between gap-2">
+                            <span className="text-[10px] font-black uppercase tracking-widest text-emerald-400">
+                                1. Marge Activités (Avant Charges Fixes)
+                            </span>
+                            <span className="text-[10px] font-mono text-emerald-300 font-bold">
+                                Prév. {profitabilityReport.marginRateBeforeFixed.toFixed(1)}% &bull; Réel {profitabilityReport.realMarginRateBeforeFixed.toFixed(1)}%
+                            </span>
+                        </div>
+                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs pt-1">
+                            <div className="bg-black/40 p-2.5 rounded-xl border border-white/5">
+                                <span className="text-[9px] text-zinc-400 uppercase block">CA Facturé / Réel</span>
+                                <span className="font-mono font-black text-white block">{profitabilityReport.totalCA.toLocaleString('fr-FR')} F</span>
+                                <span className="font-mono text-[10px] text-emerald-400">Réel: {profitabilityReport.totalRealCA.toLocaleString('fr-FR')} F</span>
+                            </div>
+                            <div className="bg-black/40 p-2.5 rounded-xl border border-white/5">
+                                <span className="text-[9px] text-amber-400 uppercase block">Pièces (1x) Prév/Réel</span>
+                                <span className="font-mono font-bold text-amber-300 block">-{profitabilityReport.totalPartCost.toLocaleString('fr-FR')} F</span>
+                                <span className="font-mono text-[10px] text-amber-200/80">Engagé: -{profitabilityReport.totalRealPartCost.toLocaleString('fr-FR')} F</span>
+                            </div>
+                            <div className="bg-emerald-500/15 p-2.5 rounded-xl border border-emerald-500/30">
+                                <span className="text-[9px] text-emerald-300 uppercase block">Marge Prév.</span>
+                                <span className={`font-mono font-black ${profitabilityReport.totalNetMarginBeforeFixed >= 0 ? 'text-emerald-300' : 'text-rose-300'}`}>
+                                    {profitabilityReport.totalNetMarginBeforeFixed.toLocaleString('fr-FR')} F
+                                </span>
+                            </div>
+                            <div className="bg-teal-500/15 p-2.5 rounded-xl border border-teal-500/35">
+                                <span className="text-[9px] text-teal-300 uppercase block">Marge Réelle</span>
+                                <span className={`font-mono font-black ${profitabilityReport.totalRealNetMarginBeforeFixed >= 0 ? 'text-teal-200' : 'text-rose-300'}`}>
+                                    {profitabilityReport.totalRealNetMarginBeforeFixed.toLocaleString('fr-FR')} F
+                                </span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div className="p-4 rounded-2xl bg-purple-950/25 border border-purple-500/25 space-y-2">
+                        <div className="flex items-center justify-between gap-2">
+                            <span className="text-[10px] font-black uppercase tracking-widest text-purple-300">
+                                2. Charges Fixes Séparées &amp; Résultat Net
+                            </span>
+                            <span className="text-[10px] font-mono text-purple-300">
+                                {profitabilityReport.fixedChargesPeriodFactorLabel}
+                            </span>
+                        </div>
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs pt-1">
+                            <div className="bg-black/40 p-2.5 rounded-xl border border-purple-500/20 flex flex-col justify-between">
+                                <span className="text-[9px] text-purple-300 uppercase block">Charges Fixes ({fixedCharges.filter(c => c.active).length})</span>
+                                <span className="font-mono font-black text-purple-300 text-sm">
+                                    -{profitabilityReport.fixedChargesTotal.toLocaleString('fr-FR')} F
+                                </span>
+                            </div>
+                            <div className={`p-2.5 rounded-xl border flex flex-col justify-between ${
+                                profitabilityReport.operatingResultAfterFixed >= 0
+                                    ? 'bg-emerald-500/15 border-emerald-500/35'
+                                    : 'bg-rose-500/15 border-rose-500/35'
+                            }`}>
+                                <span className="text-[9px] uppercase font-black text-white block">Résultat Prév.</span>
+                                <span className={`font-mono font-black text-sm ${
+                                    profitabilityReport.operatingResultAfterFixed >= 0 ? 'text-emerald-300' : 'text-rose-300'
+                                }`}>
+                                    {profitabilityReport.operatingResultAfterFixed.toLocaleString('fr-FR')} F
+                                </span>
+                            </div>
+                            <div className={`p-2.5 rounded-xl border flex flex-col justify-between ${
+                                profitabilityReport.realOperatingResultAfterFixed >= 0
+                                    ? 'bg-teal-500/15 border-teal-500/35'
+                                    : 'bg-rose-500/15 border-rose-500/35'
+                            }`}>
+                                <span className="text-[9px] uppercase font-black text-teal-200 block">Résultat Réel</span>
+                                <span className={`font-mono font-black text-sm ${
+                                    profitabilityReport.realOperatingResultAfterFixed >= 0 ? 'text-teal-200' : 'text-rose-300'
+                                }`}>
+                                    {profitabilityReport.realOperatingResultAfterFixed.toLocaleString('fr-FR')} F
+                                </span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                {/* GESTIONNAIRE DÉDIÉ DES CHARGES FIXES (SÉPARÉ DES FICHES) */}
+                {showFixedChargesManager && (
+                    <div className="p-4 rounded-2xl bg-black/50 border border-purple-500/30 space-y-4 animate-fade-in">
+                        <div className="flex items-center justify-between border-b border-white/10 pb-2">
+                            <div>
+                                <h3 className="text-xs font-black uppercase text-purple-300 m-0">
+                                    Configuration des Charges Fixes (Indépendantes des Dossiers)
+                                </h3>
+                                <p className="text-[10px] text-zinc-400 mt-0.5">
+                                    Loyer, salaires fixes, électricité, fibre, abonnements... Ces charges sont proratisées selon la période choisie et déduites uniquement du résultat global.
+                                </p>
+                            </div>
+                            <button
+                                type="button"
+                                onClick={() => setShowFixedChargesManager(false)}
+                                className="text-zinc-400 hover:text-white p-1"
+                            >
+                                <X className="w-4 h-4" />
+                            </button>
+                        </div>
+
+                        <form onSubmit={handleAddFixedCharge} className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-2.5 items-end">
+                            <div className="lg:col-span-2">
+                                <label className="block text-[9px] font-black uppercase text-zinc-400 mb-1">Libellé de la charge *</label>
+                                <input
+                                    type="text"
+                                    value={newChargeLabel}
+                                    onChange={(e) => setNewChargeLabel(e.target.value)}
+                                    placeholder="Ex: Loyer Atelier, Salaires, CIE..."
+                                    className="w-full bg-zinc-900 border border-white/15 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-purple-400"
+                                    required
+                                />
+                            </div>
+                            <div>
+                                <label className="block text-[9px] font-black uppercase text-zinc-400 mb-1">Montant (F CFA) *</label>
+                                <input
+                                    type="number"
+                                    min="1"
+                                    value={newChargeAmount}
+                                    onChange={(e) => setNewChargeAmount(e.target.value)}
+                                    placeholder="250000"
+                                    className="w-full bg-zinc-900 border border-white/15 rounded-xl px-3 py-2 text-xs font-mono text-white focus:outline-none focus:border-purple-400"
+                                    required
+                                />
+                            </div>
+                            <div>
+                                <label className="block text-[9px] font-black uppercase text-zinc-400 mb-1">Périodicité</label>
+                                <select
+                                    value={newChargeFreq}
+                                    onChange={(e) => setNewChargeFreq(e.target.value as FixedChargeFrequency)}
+                                    className="w-full bg-zinc-900 border border-white/15 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-purple-400"
+                                >
+                                    <option value="mensuel">Mensuelle</option>
+                                    <option value="trimestriel">Trimestrielle</option>
+                                    <option value="annuel">Annuelle</option>
+                                    <option value="ponctuel">Ponctuelle (date)</option>
+                                </select>
+                            </div>
+                            <div>
+                                {newChargeFreq === 'ponctuel' ? (
+                                    <>
+                                        <label className="block text-[9px] font-black uppercase text-zinc-400 mb-1">Date</label>
+                                        <input
+                                            type="date"
+                                            value={newChargeDate}
+                                            onChange={(e) => setNewChargeDate(e.target.value)}
+                                            className="w-full bg-zinc-900 border border-white/15 rounded-xl px-3 py-2 text-xs font-mono text-white focus:outline-none focus:border-purple-400"
+                                        />
+                                    </>
+                                ) : (
+                                    <>
+                                        <label className="block text-[9px] font-black uppercase text-zinc-400 mb-1">Catégorie</label>
+                                        <input
+                                            type="text"
+                                            value={newChargeCategory}
+                                            onChange={(e) => setNewChargeCategory(e.target.value)}
+                                            placeholder="Loyer, Salaires..."
+                                            className="w-full bg-zinc-900 border border-white/15 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-purple-400"
+                                        />
+                                    </>
+                                )}
+                            </div>
+                            <button
+                                type="submit"
+                                className="flex items-center justify-center gap-1.5 px-4 py-2 bg-purple-600 hover:bg-purple-500 text-white rounded-xl text-xs font-black uppercase tracking-wider cursor-pointer"
+                            >
+                                <Plus className="w-4 h-4" />
+                                Ajouter
+                            </button>
+                        </form>
+
+                        {profitabilityReport.fixedChargesLines.length > 0 ? (
+                            <div className="overflow-x-auto rounded-xl border border-white/10">
+                                <table className="w-full text-left border-collapse text-xs">
+                                    <thead>
+                                        <tr className="bg-white/5 text-[9px] uppercase font-black text-zinc-400 border-b border-white/10">
+                                            <th className="py-2 px-3">Actif</th>
+                                            <th className="py-2 px-3">Libellé</th>
+                                            <th className="py-2 px-3">Catégorie</th>
+                                            <th className="py-2 px-3">Fréquence</th>
+                                            <th className="py-2 px-3 text-right">Montant Base</th>
+                                            <th className="py-2 px-3 text-right">Prorata Période</th>
+                                            <th className="py-2 px-3 text-center">Suppr.</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-white/5">
+                                        {profitabilityReport.fixedChargesLines.map(chg => (
+                                            <tr key={chg.id} className={!chg.active ? 'opacity-40' : ''}>
+                                                <td className="py-2 px-3">
+                                                    <input
+                                                        type="checkbox"
+                                                        checked={chg.active}
+                                                        onChange={() => handleToggleFixedCharge(chg.id)}
+                                                        className="accent-purple-500 cursor-pointer"
+                                                    />
+                                                </td>
+                                                <td className="py-2 px-3 font-bold text-white">{chg.label}</td>
+                                                <td className="py-2 px-3 text-zinc-400">{chg.category || 'Atelier'}</td>
+                                                <td className="py-2 px-3 uppercase text-[10px] font-mono text-purple-300">
+                                                    {chg.frequency}{chg.date ? ` (${chg.date})` : ''}
+                                                </td>
+                                                <td className="py-2 px-3 text-right font-mono text-zinc-300">
+                                                    {chg.baseAmount.toLocaleString('fr-FR')} F
+                                                </td>
+                                                <td className="py-2 px-3 text-right font-mono font-black text-purple-300">
+                                                    {chg.proratedAmount.toLocaleString('fr-FR')} F
+                                                </td>
+                                                <td className="py-2 px-3 text-center">
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => handleDeleteFixedCharge(chg.id)}
+                                                        className="p-1 text-rose-400 hover:bg-rose-500/15 rounded-lg cursor-pointer"
+                                                        title="Supprimer cette charge"
+                                                    >
+                                                        <Trash2 className="w-3.5 h-3.5" />
+                                                    </button>
+                                                </td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            </div>
+                        ) : (
+                            <div className="text-center py-4 text-xs text-zinc-500 italic">
+                                Aucune charge fixe configurée pour le moment. Ajoutez vos charges récurrentes (loyer, salaires, internet...) pour isoler le résultat d'exploitation réel.
+                            </div>
+                        )}
+                    </div>
+                )}
+            </div>
+            )}
+
+            {/* PILOTAGE CAPITAL (~2M), TRÉSORERIE DISPONIBLE, RÉSERVES & DÉPENSES À PAYER */}
+            {showTreasury && treasurySnapshot && (
+            <div className="bg-[#0e111a] border border-white/10 rounded-3xl p-5 md:p-6 shadow-2xl space-y-5">
+                <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 border-b border-white/10 pb-4">
+                    <div className="flex items-center gap-3">
+                        <div className="p-2.5 rounded-2xl bg-cyan-500/15 border border-cyan-500/30 text-cyan-300">
+                            <Wallet className="w-5 h-5" />
+                        </div>
+                        <div>
+                            <div className="flex flex-wrap items-center gap-2">
+                                <h2 className="text-sm md:text-base font-black uppercase tracking-tight text-white m-0">
+                                    Trésorerie Disponible, Réserves &amp; Capital Atelier
+                                </h2>
+                                <span className="px-2 py-0.5 rounded-full bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-[9px] font-black uppercase">
+                                    Sans double comptage &bull; 0 blocage stock
+                                </span>
+                                <span className="px-2 py-0.5 rounded-full bg-cyan-500/15 border border-cyan-500/30 text-cyan-300 text-[9px] font-black uppercase">
+                                    {treasurySnapshot.treasuryStartDate
+                                        ? `Depuis le ${new Date(`${treasurySnapshot.treasuryStartDate}T12:00:00`).toLocaleDateString('fr-FR')}`
+                                        : 'Historique complet'}
+                                </span>
+                            </div>
+                            <p className="text-[11px] text-zinc-400 mt-0.5">
+                                Capital initial (~{(treasurySnapshot.initialCapital / 1000000).toFixed(1)}M) réinvesti progressivement &bull; Sépare caisse brute, réserves dédiées et dépenses à payer
+                            </p>
+                        </div>
+                    </div>
+
+                    <button
+                        type="button"
+                        onClick={() => setShowTreasuryConfig(v => !v)}
+                        className={`flex items-center gap-2 px-3.5 py-2 rounded-2xl text-xs font-black uppercase tracking-wider border transition-all cursor-pointer ${
+                            showTreasuryConfig
+                                ? 'bg-cyan-600/25 border-cyan-400 text-cyan-200'
+                                : 'bg-white/5 border-white/10 text-zinc-200 hover:bg-white/10'
+                        }`}
+                    >
+                        <Sliders className="w-4 h-4 text-cyan-400" />
+                        <span>Paramètres Trésorerie &amp; Seuils (Optionnels)</span>
+                    </button>
+                </div>
+
+                {/* ALERTES STRICTEMENT OPTIONNELLES (0 BLOCAGE) */}
+                {treasurySnapshot.enableOptionalAlerts && (treasurySnapshot.isLowTreasuryAlert || treasurySnapshot.lowStockItemsCount > 0) && (
+                    <div className="bg-amber-950/30 border border-amber-500/35 rounded-2xl p-3.5 flex flex-wrap items-center justify-between gap-3 text-xs text-amber-200">
+                        <div className="flex items-center gap-2.5">
+                            <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+                            <span>
+                                <strong>Alerte informative (non bloquante) :</strong>
+                                {treasurySnapshot.isLowTreasuryAlert && ` Trésorerie disponible (${treasurySnapshot.availableTreasury.toLocaleString('fr-FR')} F) sous le seuil de ${treasurySnapshot.lowTreasuryThreshold.toLocaleString('fr-FR')} F.`}
+                                {treasurySnapshot.lowStockItemsCount > 0 && ` ${treasurySnapshot.lowStockItemsCount} article(s) stock au niveau du seuil configuré.`}
+                            </span>
+                        </div>
+                        <span className="text-[10px] font-bold uppercase text-zinc-400">
+                            Aucun blocage atelier
+                        </span>
+                    </div>
+                )}
+
+                {/* CONFIGURATION INLINE TRÉSORERIE & CAPITAL */}
+                {showTreasuryConfig && (
+                    <div className="p-4 rounded-2xl bg-black/50 border border-cyan-500/30 space-y-4 animate-fade-in">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
+                            <div>
+                                <div className="flex items-center justify-between mb-1">
+                                    <label className="text-[9px] font-black uppercase text-cyan-300">Date démarrage suivi</label>
+                                    <div className="flex gap-2">
+                                        <button
+                                            type="button"
+                                            onClick={() => updateSettings('profitability', { treasuryStartDate: new Date().toISOString().slice(0, 10) })}
+                                            className="text-[9px] text-cyan-400 hover:underline font-bold cursor-pointer"
+                                        >
+                                            Aujourd&apos;hui
+                                        </button>
+                                        {settings.profitability?.treasuryStartDate && (
+                                            <button
+                                                type="button"
+                                                onClick={() => updateSettings('profitability', { treasuryStartDate: '' })}
+                                                className="text-[9px] text-zinc-400 hover:underline font-bold cursor-pointer"
+                                            >
+                                                Tout l&apos;historique
+                                            </button>
+                                        )}
+                                    </div>
+                                </div>
+                                <input
+                                    type="date"
+                                    value={settings.profitability?.treasuryStartDate || ''}
+                                    onChange={(e) => updateSettings('profitability', { treasuryStartDate: e.target.value })}
+                                    className="w-full bg-zinc-900 border border-cyan-500/30 rounded-xl px-3 py-2 text-xs font-mono text-cyan-200"
+                                />
+                            </div>
+                            <div>
+                                <label className="block text-[9px] font-black uppercase text-zinc-400 mb-1">Capital Initial Atelier (F)</label>
+                                <input
+                                    type="number"
+                                    min="0"
+                                    step="50000"
+                                    value={settings.profitability?.initialCapital ?? 2000000}
+                                    onChange={(e) => updateSettings('profitability', { initialCapital: Math.max(0, Number(e.target.value) || 0) })}
+                                    className="w-full bg-zinc-900 border border-white/15 rounded-xl px-3 py-2 text-xs font-mono text-white"
+                                />
+                            </div>
+
+                            <div>
+                                <div className="flex items-center justify-between mb-1">
+                                    <label className="text-[9px] font-black uppercase text-zinc-400">Trésorerie de Départ (F)</label>
+                                    {!treasurySnapshot.isOpeningCashAuto && (
+                                        <button
+                                            type="button"
+                                            onClick={() => updateSettings('profitability', { openingCash: undefined })}
+                                            className="text-[9px] text-cyan-400 hover:underline font-bold cursor-pointer"
+                                        >
+                                            Remettre Auto
+                                        </button>
+                                    )}
+                                </div>
+                                <input
+                                    type="number"
+                                    placeholder={`Auto (${Math.max(0, (settings.profitability?.initialCapital ?? 2000000) - treasurySnapshot.stockCostValue).toLocaleString('fr-FR')})`}
+                                    value={settings.profitability?.openingCash ?? ''}
+                                    onChange={(e) => {
+                                        const raw = e.target.value.trim();
+                                        updateSettings('profitability', { openingCash: raw === '' ? undefined : Number(raw) || 0 });
+                                    }}
+                                    className="w-full bg-zinc-900 border border-white/15 rounded-xl px-3 py-2 text-xs font-mono text-white"
+                                />
+                            </div>
+
+                            <div>
+                                <label className="block text-[9px] font-black uppercase text-zinc-400 mb-1">Réinvestissement Stock (%)</label>
+                                <input
+                                    type="number"
+                                    min="0"
+                                    max="100"
+                                    step="5"
+                                    value={settings.profitability?.reinvestmentRate ?? 0}
+                                    onChange={(e) => updateSettings('profitability', { reinvestmentRate: Math.max(0, Math.min(100, Number(e.target.value) || 0)) })}
+                                    className="w-full bg-zinc-900 border border-white/15 rounded-xl px-3 py-2 text-xs font-mono text-white"
+                                />
+                            </div>
+
+                            <div>
+                                <label className="block text-[9px] font-black uppercase text-zinc-400 mb-1">Seuil Alerte Trésorerie (0 = off)</label>
+                                <input
+                                    type="number"
+                                    min="0"
+                                    step="50000"
+                                    value={settings.profitability?.lowTreasuryThreshold ?? 0}
+                                    onChange={(e) => updateSettings('profitability', { lowTreasuryThreshold: Math.max(0, Number(e.target.value) || 0) })}
+                                    className="w-full bg-zinc-900 border border-white/15 rounded-xl px-3 py-2 text-xs font-mono text-white"
+                                />
+                            </div>
+
+                            <div>
+                                <label className="block text-[9px] font-black uppercase text-zinc-400 mb-1">Impôts Déjà Versés (F)</label>
+                                <input
+                                    type="number"
+                                    min="0"
+                                    step="10000"
+                                    value={settings.profitability?.manualTaxReservePaid ?? 0}
+                                    onChange={(e) => updateSettings('profitability', { manualTaxReservePaid: Math.max(0, Number(e.target.value) || 0) })}
+                                    className="w-full bg-zinc-900 border border-white/15 rounded-xl px-3 py-2 text-xs font-mono text-white"
+                                />
+                            </div>
+
+                            <div>
+                                <label className="block text-[9px] font-black uppercase text-zinc-400 mb-1">Réinvestissement Déjà Utilisé (F)</label>
+                                <input
+                                    type="number"
+                                    min="0"
+                                    step="10000"
+                                    value={settings.profitability?.manualReinvestedUsed ?? 0}
+                                    onChange={(e) => updateSettings('profitability', { manualReinvestedUsed: Math.max(0, Number(e.target.value) || 0) })}
+                                    className="w-full bg-zinc-900 border border-white/15 rounded-xl px-3 py-2 text-xs font-mono text-white"
+                                />
+                            </div>
+
+                            <label className="flex items-center gap-2.5 bg-zinc-900/70 border border-white/10 rounded-xl px-3 py-2 cursor-pointer">
+                                <input
+                                    type="checkbox"
+                                    checked={settings.profitability?.includeFacturesInTreasury !== false}
+                                    onChange={(e) => updateSettings('profitability', { includeFacturesInTreasury: e.target.checked })}
+                                    className="accent-cyan-500"
+                                />
+                                <span className="text-[11px] font-bold text-zinc-200">Inclure Factures &amp; Commandes clients</span>
+                            </label>
+
+                            <label className="flex items-center gap-2.5 bg-zinc-900/70 border border-white/10 rounded-xl px-3 py-2 cursor-pointer">
+                                <input
+                                    type="checkbox"
+                                    checked={Boolean(settings.profitability?.enableOptionalAlerts)}
+                                    onChange={(e) => updateSettings('profitability', { enableOptionalAlerts: e.target.checked })}
+                                    className="accent-amber-500"
+                                />
+                                <span className="text-[11px] font-bold text-zinc-200">Activer alertes seuils (optionnel)</span>
+                            </label>
+                        </div>
+                    </div>
+                )}
+
+                {/* 4 CARTES TRÉSORERIE / RÉSERVES / PASSIF / CAPITAL */}
+                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
+                    {/* 1. Trésorerie Disponible Nette */}
+                    <div className="bg-gradient-to-br from-cyan-950/35 to-zinc-900/90 border border-cyan-500/30 rounded-2xl p-4 space-y-2.5">
+                        <div className="flex items-center justify-between">
+                            <span className="text-[10px] font-black uppercase tracking-wider text-cyan-300">
+                                Trésorerie Disponible Nette
+                            </span>
+                            <Wallet className="w-4 h-4 text-cyan-400" />
+                        </div>
+                        <div className={`text-2xl font-black font-mono ${treasurySnapshot.availableTreasury >= 0 ? 'text-cyan-200' : 'text-rose-400'}`}>
+                            {treasurySnapshot.availableTreasury.toLocaleString('fr-FR')} <span className="text-xs font-normal">F</span>
+                        </div>
+                        <div className="space-y-1 text-[11px] border-t border-white/10 pt-2">
+                            <div className="flex justify-between">
+                                <span className="text-zinc-400">Départ ({treasurySnapshot.isOpeningCashAuto ? 'Auto' : 'Manuel'})</span>
+                                <span className="font-mono text-zinc-200">{treasurySnapshot.effectiveOpeningCash.toLocaleString('fr-FR')} F</span>
+                            </div>
+                            <div className="flex justify-between">
+                                <span className="text-zinc-400">Encaissements totaux</span>
+                                <span className="font-mono text-emerald-300">+{treasurySnapshot.totalCashIn.toLocaleString('fr-FR')} F</span>
+                            </div>
+                            <div className="flex justify-between">
+                                <span className="text-zinc-400">Sorties payées</span>
+                                <span className="font-mono text-amber-300">-{treasurySnapshot.totalCashOut.toLocaleString('fr-FR')} F</span>
+                            </div>
+                            <div className="flex justify-between font-bold border-t border-white/5 pt-1">
+                                <span className="text-zinc-300">Caisse brute</span>
+                                <span className="font-mono text-white">{treasurySnapshot.grossCashBalance.toLocaleString('fr-FR')} F</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* 2. Réserves Dédiées */}
+                    <div className="bg-gradient-to-br from-emerald-950/35 to-zinc-900/90 border border-emerald-500/30 rounded-2xl p-4 space-y-2.5">
+                        <div className="flex items-center justify-between">
+                            <span className="text-[10px] font-black uppercase tracking-wider text-emerald-300">
+                                Réserves Dédiées
+                            </span>
+                            <ShieldCheck className="w-4 h-4 text-emerald-400" />
+                        </div>
+                        <div className="text-2xl font-black font-mono text-emerald-200">
+                            {treasurySnapshot.totalReserves.toLocaleString('fr-FR')} <span className="text-xs font-normal">F</span>
+                        </div>
+                        <div className="space-y-1 text-[11px] border-t border-white/10 pt-2">
+                            <div className="flex justify-between">
+                                <span className="text-zinc-400">Réserve fiscale nette</span>
+                                <span className="font-mono text-orange-300">{treasurySnapshot.fiscalReserveRemaining.toLocaleString('fr-FR')} F</span>
+                            </div>
+                            <div className="flex justify-between">
+                                <span className="text-zinc-400">Réinvest. stock ({treasurySnapshot.reinvestmentRate}%)</span>
+                                <span className="font-mono text-emerald-300">{treasurySnapshot.reinvestmentReserveRemaining.toLocaleString('fr-FR')} F</span>
+                            </div>
+                            <div className="flex justify-between">
+                                <span className="text-zinc-400">Créances clients en attente</span>
+                                <span className="font-mono text-amber-200">{treasurySnapshot.clientReceivables.toLocaleString('fr-FR')} F</span>
+                            </div>
+                            <div className="flex justify-between font-bold border-t border-white/5 pt-1">
+                                <span className="text-zinc-300">Caisse après réserves</span>
+                                <span className="font-mono text-white">{treasurySnapshot.treasuryAfterReserves.toLocaleString('fr-FR')} F</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* 3. Dépenses à Payer (Passif) */}
+                    <div className="bg-gradient-to-br from-amber-950/35 to-zinc-900/90 border border-amber-500/30 rounded-2xl p-4 space-y-2.5">
+                        <div className="flex items-center justify-between">
+                            <span className="text-[10px] font-black uppercase tracking-wider text-amber-300">
+                                Dépenses à Payer (Passif)
+                            </span>
+                            <Receipt className="w-4 h-4 text-amber-400" />
+                        </div>
+                        <div className="text-2xl font-black font-mono text-amber-200">
+                            {treasurySnapshot.totalPayables.toLocaleString('fr-FR')} <span className="text-xs font-normal">F</span>
+                        </div>
+                        <div className="space-y-1 text-[11px] border-t border-white/10 pt-2">
+                            <div className="flex justify-between">
+                                <span className="text-zinc-400">Commandes fourn. ({treasurySnapshot.supplierOrdersPayableCount})</span>
+                                <span className="font-mono text-amber-300">{treasurySnapshot.supplierOrdersPayable.toLocaleString('fr-FR')} F</span>
+                            </div>
+                            <div className="flex justify-between">
+                                <span className="text-zinc-400">Pièces à commander ({treasurySnapshot.plannedPartsToOrderCount})</span>
+                                <span className="font-mono text-orange-300">{treasurySnapshot.plannedPartsToOrderCost.toLocaleString('fr-FR')} F</span>
+                            </div>
+                            <div className="flex justify-between">
+                                <span className="text-zinc-400">Charges fixes (mois en cours)</span>
+                                <span className="font-mono text-purple-300">{treasurySnapshot.monthlyFixedCharges.toLocaleString('fr-FR')} F</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* 4. Capital Atelier & Stock */}
+                    <div className="bg-gradient-to-br from-purple-950/35 to-zinc-900/90 border border-purple-500/30 rounded-2xl p-4 space-y-2.5">
+                        <div className="flex items-center justify-between">
+                            <span className="text-[10px] font-black uppercase tracking-wider text-purple-300">
+                                Capital Atelier &amp; Stock
+                            </span>
+                            <Package className="w-4 h-4 text-purple-400" />
+                        </div>
+                        <div className="text-2xl font-black font-mono text-white">
+                            {treasurySnapshot.totalCurrentCapital.toLocaleString('fr-FR')} <span className="text-xs font-normal text-purple-300">F</span>
+                        </div>
+                        <div className="space-y-1 text-[11px] border-t border-white/10 pt-2">
+                            <div className="flex justify-between">
+                                <span className="text-zinc-400">Capital initial</span>
+                                <span className="font-mono text-zinc-300">{treasurySnapshot.initialCapital.toLocaleString('fr-FR')} F</span>
+                            </div>
+                            <div className="flex justify-between">
+                                <span className="text-zinc-400">Stock ({treasurySnapshot.stockQuantityTotal} u.) achat</span>
+                                <span className="font-mono text-purple-200">{treasurySnapshot.stockCostValue.toLocaleString('fr-FR')} F</span>
+                            </div>
+                            <div className="flex justify-between">
+                                <span className="text-zinc-400">Valeur vente stock</span>
+                                <span className="font-mono text-zinc-400">{treasurySnapshot.stockSellingValue.toLocaleString('fr-FR')} F</span>
+                            </div>
+                            <div className="flex justify-between font-bold border-t border-white/5 pt-1">
+                                <span className="text-zinc-300">Évolution capital</span>
+                                <span className={`font-mono ${treasurySnapshot.capitalGrowth >= 0 ? 'text-emerald-300' : 'text-rose-400'}`}>
+                                    {treasurySnapshot.capitalGrowth >= 0 ? '+' : ''}{treasurySnapshot.capitalGrowth.toLocaleString('fr-FR')} F
+                                </span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            )}
+
             {/* FILTRES SECONDAIRES & RECHERCHE INSTANTANÉE */}
             <div className="bg-[#0c0e14] border border-white/10 rounded-3xl p-4 shadow-xl flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-3">
                 <div className="relative flex-1">
@@ -921,6 +1866,20 @@ _Document officiel d'atelier TGS-CI_`;
                         <option value="individual">Particuliers uniquement</option>
                         <option value="enterprise">Entreprises uniquement</option>
                     </select>
+
+                    {/* Filtre Activité */}
+                    {showProfitability && (
+                        <select
+                            value={activityFilter}
+                            onChange={(e) => setActivityFilter(e.target.value as 'all' | ActivityCategory)}
+                            className="bg-black/60 border border-white/10 rounded-2xl px-3 py-2 text-xs text-zinc-300 focus:outline-none focus:border-apple-blue cursor-pointer"
+                        >
+                            <option value="all">Toutes les activités</option>
+                            <option value="reparation">🔧 Réparation</option>
+                            <option value="vente_pieces">🧩 Vente de pièces</option>
+                            <option value="vente_macbook">💻 Vente de MacBook</option>
+                        </select>
+                    )}
                 </div>
             </div>
 
@@ -930,11 +1889,11 @@ _Document officiel d'atelier TGS-CI_`;
                     <div className="flex items-center gap-2.5">
                         <FileText className="w-4 h-4 text-apple-blue" />
                         <h2 className="text-sm font-black uppercase tracking-wider text-white m-0">
-                            Point Ligne par Ligne sur Chaque Fiche ({filteredTickets.length})
+                            Point Dossier par Dossier &amp; Détail Ligne par Ligne ({filteredTickets.length})
                         </h2>
                     </div>
                     <span className="text-[11px] text-zinc-400 font-mono">
-                        Période : <strong className="text-white">{periodLabel}</strong>
+                        Cliquez sur ▸ pour voir le détail par ligne &bull; Période : <strong className="text-white">{periodLabel}</strong>
                     </span>
                 </div>
 
@@ -942,17 +1901,18 @@ _Document officiel d'atelier TGS-CI_`;
                     <table className="w-full text-left border-collapse text-xs">
                         <thead>
                             <tr className="border-b border-white/10 bg-white/[0.03] text-zinc-400 text-[10px] uppercase font-black tracking-wider">
+                                {showProfitability && <th className="py-3 px-2 text-center w-8"></th>}
                                 <th className="py-3 px-3 text-center">N° Fiche</th>
-                                <th className="py-3 px-3">Date Prise en Charge</th>
+                                <th className="py-3 px-3">Date</th>
                                 <th className="py-3 px-3">Client &amp; Contact</th>
-                                <th className="py-3 px-3">Modèle Mac</th>
-                                <th className="py-3 px-3">Statut Atelier</th>
-                                <th className="py-3 px-3 text-right">Frais Diag</th>
-                                <th className="py-3 px-3 text-right">Frais Rép.</th>
-                                <th className="py-3 px-3 text-right bg-blue-500/10 text-blue-300">Total Facturé</th>
-                                <th className="py-3 px-3 text-right bg-emerald-500/10 text-emerald-300">Acompte Perçu</th>
-                                <th className="py-3 px-3 text-right bg-amber-500/10 text-amber-300">Solde Restant Dû</th>
-                                <th className="py-3 px-3 text-center">Régime Point</th>
+                                <th className="py-3 px-3">{showProfitability ? 'Modèle / Activités' : 'Modèle Mac'}</th>
+                                <th className="py-3 px-3">Statut</th>
+                                <th className="py-3 px-3 text-right bg-blue-500/10 text-blue-300">CA Facturé</th>
+                                {showProfitability && <th className="py-3 px-3 text-right text-amber-300">Pièces (1x)</th>}
+                                {showProfitability && <th className="py-3 px-3 text-right text-orange-300">Prov. Fisc.</th>}
+                                {showProfitability && <th className="py-3 px-3 text-right bg-emerald-500/10 text-emerald-300">Marge Prév. / Réelle</th>}
+                                <th className="py-3 px-3 text-right">Acompte</th>
+                                <th className="py-3 px-3 text-right">Solde Dû</th>
                                 <th className="py-3 px-3 text-center">Action</th>
                             </tr>
                         </thead>
@@ -960,13 +1920,15 @@ _Document officiel d'atelier TGS-CI_`;
                         <tbody className="divide-y divide-white/5">
                             {filteredTickets.length === 0 ? (
                                 <tr>
-                                    <td colSpan={12} className="py-12 text-center text-zinc-500 italic">
+                                    <td colSpan={showProfitability ? 13 : 9} className="py-12 text-center text-zinc-500 italic">
                                         Aucune fiche de réparation ne correspond aux critères pour cette période ({periodLabel}).
                                     </td>
                                 </tr>
                             ) : (
                                 filteredTickets.map((ticket) => {
                                     const fin = getTicketFinancialSummary(ticket);
+                                    const prof = showProfitability ? profitabilityReport.ticketResults.get(ticket.id) : undefined;
+                                    const isExpanded = showProfitability && expandedTicketIds.has(ticket.id);
                                     const dateStr = ticket.createdAt 
                                         ? new Date(ticket.createdAt).toLocaleDateString('fr-FR', {
                                             day: '2-digit',
@@ -978,150 +1940,263 @@ _Document officiel d'atelier TGS-CI_`;
                                     const isRowInfacturable = fin.isInfacturable;
 
                                     return (
-                                        <tr 
-                                            key={ticket.id}
-                                            className={`transition-colors hover:bg-white/[0.04] ${
-                                                isRowInfacturable ? 'bg-rose-950/15 text-zinc-400' : ''
-                                            }`}
-                                        >
-                                            {/* N° Fiche */}
-                                            <td className="py-3 px-3 text-center font-mono font-black text-white">
-                                                #{ticket.id}
-                                            </td>
+                                        <React.Fragment key={ticket.id}>
+                                            <tr 
+                                                className={`transition-colors hover:bg-white/[0.04] ${
+                                                    isRowInfacturable ? 'bg-rose-950/15 text-zinc-400' : ''
+                                                }`}
+                                            >
+                                                {/* Bouton déplier lignes */}
+                                                {showProfitability && (
+                                                    <td className="py-3 px-2 text-center">
+                                                        {!isRowInfacturable && prof && prof.lines.length > 0 && (
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => toggleExpandTicket(ticket.id)}
+                                                                className="p-1 rounded-lg bg-white/5 hover:bg-white/15 text-zinc-400 hover:text-white transition-all cursor-pointer"
+                                                                title="Afficher le détail par ligne"
+                                                            >
+                                                                {isExpanded ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
+                                                            </button>
+                                                        )}
+                                                    </td>
+                                                )}
 
-                                            {/* Date */}
-                                            <td className="py-3 px-3 font-mono text-[11px] text-zinc-400">
-                                                {dateStr}
-                                            </td>
+                                                {/* N° Fiche */}
+                                                <td className="py-3 px-3 text-center font-mono font-black text-white">
+                                                    #{ticket.id}
+                                                </td>
 
-                                            {/* Client & Contact */}
-                                            <td className="py-3 px-3">
-                                                <div className="font-bold text-white uppercase truncate max-w-[150px]">
-                                                    {ticket.client?.name || 'Client Inconnu'}
-                                                </div>
-                                                {ticket.client?.phone && (
-                                                    <div className="text-[10px] font-mono text-zinc-400">
-                                                        {ticket.client.phone}
+                                                {/* Date */}
+                                                <td className="py-3 px-3 font-mono text-[11px] text-zinc-400">
+                                                    {dateStr}
+                                                </td>
+
+                                                {/* Client & Contact */}
+                                                <td className="py-3 px-3">
+                                                    <div className="font-bold text-white uppercase truncate max-w-[140px]">
+                                                        {ticket.client?.name || 'Client Inconnu'}
                                                     </div>
-                                                )}
-                                                {ticket.client?.isEnterprise && (
-                                                    <span className="inline-block mt-0.5 px-1.5 py-0.2 rounded bg-purple-500/20 text-purple-300 border border-purple-500/30 text-[8px] font-black uppercase">
-                                                        Entreprise
+                                                    {ticket.client?.phone && (
+                                                        <div className="text-[10px] font-mono text-zinc-400">
+                                                            {ticket.client.phone}
+                                                        </div>
+                                                    )}
+                                                    {ticket.client?.isEnterprise && (
+                                                        <span className="inline-block mt-0.5 px-1.5 py-0.2 rounded bg-purple-500/20 text-purple-300 border border-purple-500/30 text-[8px] font-black uppercase">
+                                                            Entreprise
+                                                        </span>
+                                                    )}
+                                                    {ticket.client?.clientType === 'subcontractor' && (
+                                                        <span className="inline-block ml-1 mt-0.5 px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 text-[8px] font-black uppercase">
+                                                            ⚡ Sous-traitant
+                                                        </span>
+                                                    )}
+                                                </td>
+
+                                                {/* Modèle Mac & Activités */}
+                                                <td className="py-3 px-3">
+                                                    <span className="truncate max-w-[130px] block font-medium text-zinc-300">
+                                                        {ticket.macModel || 'MacBook'}
                                                     </span>
-                                                )}
-                                                {ticket.client?.clientType === 'subcontractor' && (
-                                                    <span className="inline-block ml-1 mt-0.5 px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 text-[8px] font-black uppercase">
-                                                        ⚡ Sous-traitant
+                                                    {!isRowInfacturable && prof && prof.activitiesPresent.length > 0 && (
+                                                        <div className="flex flex-wrap gap-1 mt-1">
+                                                            {prof.activitiesPresent.map(act => (
+                                                                <span
+                                                                    key={act}
+                                                                    className={`px-1.5 py-0.2 rounded text-[8px] font-black uppercase border ${
+                                                                        act === 'vente_macbook'
+                                                                            ? 'bg-purple-500/15 text-purple-300 border-purple-500/30'
+                                                                            : act === 'vente_pieces'
+                                                                                ? 'bg-amber-500/15 text-amber-300 border-amber-500/30'
+                                                                                : 'bg-blue-500/15 text-blue-300 border-blue-500/30'
+                                                                    }`}
+                                                                >
+                                                                    {ACTIVITY_SHORT_LABELS[act]}
+                                                                </span>
+                                                            ))}
+                                                        </div>
+                                                    )}
+                                                </td>
+
+                                                {/* Statut Atelier */}
+                                                <td className="py-3 px-3">
+                                                    <span className={`px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-wider border inline-block ${
+                                                        isRowInfacturable 
+                                                            ? 'bg-rose-500/20 text-rose-300 border-rose-500/30' 
+                                                            : ticket.status === RepairStatus.TERMINE 
+                                                            ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30' 
+                                                            : ticket.status === RepairStatus.RENDU
+                                                            ? 'bg-blue-500/20 text-blue-300 border-blue-500/30'
+                                                            : 'bg-zinc-800 text-zinc-300 border-zinc-700'
+                                                    }`}>
+                                                        {isRowInfacturable ? 'ANNULÉ' : ticket.status}
                                                     </span>
-                                                )}
-                                            </td>
+                                                </td>
 
-                                            {/* Modèle Mac */}
-                                            <td className="py-3 px-3">
-                                                <span className="truncate max-w-[130px] block font-medium text-zinc-300">
-                                                    {ticket.macModel || 'MacBook'}
-                                                </span>
-                                                {ticket.modelNumber && (
-                                                    <span className="text-[9px] text-zinc-500 font-mono">
-                                                        ({ticket.modelNumber})
-                                                    </span>
-                                                )}
-                                            </td>
+                                                {/* CA FACTURÉ */}
+                                                <td className="py-3 px-3 text-right font-mono font-black bg-blue-500/5 text-blue-200">
+                                                    {isRowInfacturable ? (
+                                                        <span className="text-rose-400 font-bold text-[10px]">0 F (INFACT.)</span>
+                                                    ) : (
+                                                        `${fin.totalBilled.toLocaleString('fr-FR')} F`
+                                                    )}
+                                                </td>
 
-                                            {/* Statut Atelier */}
-                                            <td className="py-3 px-3">
-                                                <span className={`px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-wider border inline-block ${
-                                                    isRowInfacturable 
-                                                        ? 'bg-rose-500/20 text-rose-300 border-rose-500/30' 
-                                                        : ticket.status === RepairStatus.TERMINE 
-                                                        ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
-                                                        : ticket.status === RepairStatus.RENDU
-                                                        ? 'bg-blue-500/20 text-blue-300 border-blue-500/30'
-                                                        : 'bg-zinc-800 text-zinc-300 border-zinc-700'
-                                                }`}>
-                                                    {isRowInfacturable ? 'ANNULÉ' : ticket.status}
-                                                </span>
-                                            </td>
-
-                                            {/* Frais Diag */}
-                                            <td className="py-3 px-3 text-right font-mono text-zinc-300">
-                                                {isRowInfacturable ? (
-                                                    <span className="text-zinc-600">0</span>
-                                                ) : ticket.client?.clientType === 'subcontractor' ? (
-                                                    <span className="text-amber-400 font-bold" title="Diagnostic offert aux sous-traitants (0 F CFA)">
-                                                        0 <span className="text-[8px] uppercase text-amber-500/80 font-sans">Offert</span>
-                                                    </span>
-                                                ) : (
-                                                    fin.diagnosticCost.toLocaleString('fr-FR')
+                                                {/* COÛT PIÈCES 1X */}
+                                                {showProfitability && (
+                                                    <td className="py-3 px-3 text-right font-mono text-amber-300">
+                                                        {isRowInfacturable ? (
+                                                            <span className="text-zinc-600">0 F</span>
+                                                        ) : (
+                                                            `${(prof?.totalPartCost || 0) > 0 ? '-' : ''}${(prof?.totalPartCost || 0).toLocaleString('fr-FR')} F`
+                                                        )}
+                                                    </td>
                                                 )}
-                                            </td>
 
-                                            {/* Frais Réparation */}
-                                            <td className="py-3 px-3 text-right font-mono text-zinc-300">
-                                                {isRowInfacturable ? (
-                                                    <span className="text-zinc-600">0</span>
-                                                ) : (
-                                                    fin.repairCost.toLocaleString('fr-FR')
+                                                {/* PROVISION FISCALE */}
+                                                {showProfitability && (
+                                                    <td className="py-3 px-3 text-right font-mono text-orange-300">
+                                                        {isRowInfacturable ? (
+                                                            <span className="text-zinc-600">0 F</span>
+                                                        ) : (
+                                                            `${(prof?.totalTaxProvision || 0) > 0 ? '-' : ''}${(prof?.totalTaxProvision || 0).toLocaleString('fr-FR')} F`
+                                                        )}
+                                                    </td>
                                                 )}
-                                            </td>
 
-                                            {/* TOTAL FACTURÉ */}
-                                            <td className="py-3 px-3 text-right font-mono font-black bg-blue-500/5 text-blue-200">
-                                                {isRowInfacturable ? (
-                                                    <span className="text-rose-400 font-bold text-[10px]">0 F (INFACT.)</span>
-                                                ) : (
-                                                    `${fin.totalBilled.toLocaleString('fr-FR')} F`
+                                                {/* MARGE NETTE DOSSIER (PRÉVISIONNELLE & RÉELLE) */}
+                                                {showProfitability && (
+                                                    <td className="py-3 px-3 text-right font-mono font-black bg-emerald-500/5">
+                                                        {isRowInfacturable ? (
+                                                            <span className="text-zinc-600">0 F</span>
+                                                        ) : (
+                                                            <div>
+                                                                <span className={(prof?.netMargin || 0) >= 0 ? 'text-emerald-300' : 'text-rose-400'}>
+                                                                    {(prof?.netMargin || 0).toLocaleString('fr-FR')} F
+                                                                </span>
+                                                                <span className={`block text-[10px] font-bold ${(prof?.realNetMargin || 0) >= 0 ? 'text-teal-300' : 'text-rose-400'}`}>
+                                                                    Réel: {(prof?.realNetMargin || 0).toLocaleString('fr-FR')} F
+                                                                </span>
+                                                            </div>
+                                                        )}
+                                                    </td>
                                                 )}
-                                            </td>
 
-                                            {/* ACOMPTE PERÇU */}
-                                            <td className="py-3 px-3 text-right font-mono font-bold bg-emerald-500/5 text-emerald-300">
-                                                {isRowInfacturable ? (
-                                                    <span className="text-zinc-600">0 F</span>
-                                                ) : (
-                                                    `${fin.advanceReceived.toLocaleString('fr-FR')} F`
-                                                )}
-                                            </td>
+                                                {/* ACOMPTE PERÇU */}
+                                                <td className="py-3 px-3 text-right font-mono font-bold text-emerald-300">
+                                                    {isRowInfacturable ? (
+                                                        <span className="text-zinc-600">0 F</span>
+                                                    ) : (
+                                                        `${fin.advanceReceived.toLocaleString('fr-FR')} F`
+                                                    )}
+                                                </td>
 
-                                            {/* SOLDE RESTANT DÛ */}
-                                            <td className="py-3 px-3 text-right font-mono font-black bg-amber-500/5">
-                                                {isRowInfacturable ? (
-                                                    <span className="text-zinc-600">0 F</span>
-                                                ) : fin.balanceDue > 0 ? (
-                                                    <span className="text-amber-400">
-                                                        {fin.balanceDue.toLocaleString('fr-FR')} F
-                                                    </span>
-                                                ) : (
-                                                    <span className="text-emerald-400 font-bold text-[10px]">Soldé</span>
-                                                )}
-                                            </td>
+                                                {/* SOLDE RESTANT DÛ */}
+                                                <td className="py-3 px-3 text-right font-mono font-black">
+                                                    {isRowInfacturable ? (
+                                                        <span className="text-zinc-600">0 F</span>
+                                                    ) : fin.balanceDue > 0 ? (
+                                                        <span className="text-amber-400">
+                                                            {fin.balanceDue.toLocaleString('fr-FR')} F
+                                                        </span>
+                                                    ) : (
+                                                        <span className="text-emerald-400 font-bold text-[10px]">Soldé</span>
+                                                    )}
+                                                </td>
 
-                                            {/* Régime Point */}
-                                            <td className="py-3 px-3 text-center">
-                                                {isRowInfacturable ? (
-                                                    <span className="px-2 py-0.5 rounded-full bg-rose-500/20 text-rose-300 border border-rose-500/30 text-[9px] font-black uppercase">
-                                                        INFACTURABLE
-                                                    </span>
-                                                ) : (
-                                                    <span className="px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-300 border border-emerald-500/20 text-[9px] font-bold uppercase">
-                                                        Facturable
-                                                    </span>
-                                                )}
-                                            </td>
+                                                {/* Action Détail */}
+                                                <td className="py-3 px-3 text-center">
+                                                    {onSelectTicket && (
+                                                        <button
+                                                            onClick={() => onSelectTicket(ticket)}
+                                                            className="p-1.5 rounded-xl bg-white/5 hover:bg-white/10 text-zinc-400 hover:text-white transition-all cursor-pointer"
+                                                            title="Consulter le dossier"
+                                                        >
+                                                            <Eye className="w-3.5 h-3.5" />
+                                                        </button>
+                                                    )}
+                                                </td>
+                                            </tr>
 
-                                            {/* Action Détail */}
-                                            <td className="py-3 px-3 text-center">
-                                                {onSelectTicket && (
-                                                    <button
-                                                        onClick={() => onSelectTicket(ticket)}
-                                                        className="p-1.5 rounded-xl bg-white/5 hover:bg-white/10 text-zinc-400 hover:text-white transition-all cursor-pointer"
-                                                        title="Consulter le dossier"
-                                                    >
-                                                        <Eye className="w-3.5 h-3.5" />
-                                                    </button>
-                                                )}
-                                            </td>
-                                        </tr>
+                                            {/* SOUS-TABLEAU DÉTAIL PAR LIGNE */}
+                                            {isExpanded && !isRowInfacturable && prof && prof.lines.length > 0 && (
+                                                <tr className="bg-black/60">
+                                                    <td colSpan={13} className="px-6 py-3 border-b border-white/10">
+                                                        <div className="rounded-2xl border border-white/10 bg-[#080a10] p-3 space-y-2">
+                                                            <div className="flex flex-wrap items-center justify-between gap-2 text-[10px] font-black uppercase text-zinc-400">
+                                                                <span>Détail par ligne — Dossier #{ticket.id}</span>
+                                                                <span className="font-mono text-emerald-400">
+                                                                    Prév. : {prof.netMargin.toLocaleString('fr-FR')} F ({prof.marginRate.toFixed(1)}%) &bull; Réelle : <span className="text-teal-300">{prof.realNetMargin.toLocaleString('fr-FR')} F ({prof.realMarginRate.toFixed(1)}%)</span>
+                                                                </span>
+                                                            </div>
+                                                            <table className="w-full text-left border-collapse text-[11px]">
+                                                                <thead>
+                                                                    <tr className="border-b border-white/10 text-[9px] uppercase text-zinc-500">
+                                                                        <th className="py-1.5 px-2">Ligne / Prestation</th>
+                                                                        <th className="py-1.5 px-2">Activité</th>
+                                                                        <th className="py-1.5 px-2">Origine Pièce</th>
+                                                                        <th className="py-1.5 px-2 text-center">Qté</th>
+                                                                        <th className="py-1.5 px-2 text-right">CA Facturé</th>
+                                                                        <th className="py-1.5 px-2 text-right">Coût 1x</th>
+                                                                        <th className="py-1.5 px-2 text-right">Prov. Fisc.</th>
+                                                                        <th className="py-1.5 px-2 text-right">Marge Prév.</th>
+                                                                        <th className="py-1.5 px-2 text-right">Marge Réelle</th>
+                                                                    </tr>
+                                                                </thead>
+                                                                <tbody className="divide-y divide-white/5">
+                                                                    {prof.lines.map(line => (
+                                                                        <tr key={line.id}>
+                                                                            <td className="py-1.5 px-2 font-bold text-white uppercase">{line.designation}</td>
+                                                                            <td className="py-1.5 px-2">
+                                                                                <span className={`px-1.5 py-0.5 rounded text-[8.5px] font-black uppercase border ${
+                                                                                    line.activite === 'vente_macbook'
+                                                                                        ? 'bg-purple-500/15 text-purple-300 border-purple-500/30'
+                                                                                        : line.activite === 'vente_pieces'
+                                                                                            ? 'bg-amber-500/15 text-amber-300 border-amber-500/30'
+                                                                                            : 'bg-blue-500/15 text-blue-300 border-blue-500/30'
+                                                                                }`}>
+                                                                                    {ACTIVITY_LABELS[line.activite]}
+                                                                                </span>
+                                                                            </td>
+                                                                            <td className="py-1.5 px-2">
+                                                                                {line.sourcePiece ? (
+                                                                                    <span className={`px-1.5 py-0.5 rounded text-[8.5px] font-black uppercase border ${
+                                                                                        line.sourcePiece === 'en_stock'
+                                                                                            ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
+                                                                                            : line.sourcePiece === 'a_commander'
+                                                                                                ? 'bg-amber-500/15 text-amber-300 border-amber-500/30'
+                                                                                                : 'bg-cyan-500/15 text-cyan-300 border-cyan-500/30'
+                                                                                    }`}>
+                                                                                        {PART_SOURCE_SHORT_LABELS[line.sourcePiece]}{line.isPlannedOrderPending ? ' (Prévu)' : ''}
+                                                                                    </span>
+                                                                                ) : (
+                                                                                    <span className="text-[9px] text-zinc-500 uppercase">Main d&apos;œuvre</span>
+                                                                                )}
+                                                                            </td>
+                                                                            <td className="py-1.5 px-2 text-center font-mono text-zinc-300">{line.quantite}</td>
+                                                                            <td className="py-1.5 px-2 text-right font-mono text-white">{line.ca.toLocaleString('fr-FR')} F</td>
+                                                                            <td className="py-1.5 px-2 text-right font-mono text-amber-300">
+                                                                                {line.partCost > 0 ? `-${line.partCost.toLocaleString('fr-FR')} F` : '0 F'}
+                                                                            </td>
+                                                                            <td className="py-1.5 px-2 text-right font-mono text-orange-300">
+                                                                                {line.taxProvision > 0 ? `-${line.taxProvision.toLocaleString('fr-FR')} F` : '0 F'}
+                                                                            </td>
+                                                                            <td className={`py-1.5 px-2 text-right font-mono font-bold ${line.netMargin >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                                                                {line.netMargin.toLocaleString('fr-FR')} F
+                                                                            </td>
+                                                                            <td className={`py-1.5 px-2 text-right font-mono font-black ${line.realNetMargin >= 0 ? 'text-teal-300' : 'text-rose-400'}`}>
+                                                                                {line.realNetMargin.toLocaleString('fr-FR')} F
+                                                                            </td>
+                                                                        </tr>
+                                                                    ))}
+                                                                </tbody>
+                                                            </table>
+                                                        </div>
+                                                    </td>
+                                                </tr>
+                                            )}
+                                        </React.Fragment>
                                     );
                                 })
                             )}
@@ -1131,26 +2206,36 @@ _Document officiel d'atelier TGS-CI_`;
                         {filteredTickets.length > 0 && (
                             <tfoot>
                                 <tr className="border-t-2 border-white/20 bg-black/60 font-black text-xs">
-                                    <td colSpan={5} className="py-4 px-3 uppercase text-zinc-300 tracking-wider">
+                                    <td colSpan={showProfitability ? 6 : 5} className="py-4 px-3 uppercase text-zinc-300 tracking-wider">
                                         TOTAUX DU POINT ({metrics.facturablesCount} facturables / {metrics.totalCount} fiches)
                                     </td>
-                                    <td className="py-4 px-3 text-right font-mono text-zinc-300">
-                                        {filteredTickets.reduce((sum, t) => sum + (getTicketFinancialSummary(t).isInfacturable ? 0 : getTicketFinancialSummary(t).diagnosticCost), 0).toLocaleString('fr-FR')} F
-                                    </td>
-                                    <td className="py-4 px-3 text-right font-mono text-zinc-300">
-                                        {filteredTickets.reduce((sum, t) => sum + (getTicketFinancialSummary(t).isInfacturable ? 0 : getTicketFinancialSummary(t).repairCost), 0).toLocaleString('fr-FR')} F
-                                    </td>
-                                    <td className="py-4 px-3 text-right font-mono text-base text-blue-300 bg-blue-500/15 border-l border-r border-blue-500/20">
+                                    <td className="py-4 px-3 text-right font-mono text-sm text-blue-300 bg-blue-500/15 border-l border-r border-blue-500/20">
                                         {metrics.totalBilled.toLocaleString('fr-FR')} F
                                     </td>
-                                    <td className="py-4 px-3 text-right font-mono text-base text-emerald-300 bg-emerald-500/15 border-r border-emerald-500/20">
+                                    {showProfitability && (
+                                        <td className="py-4 px-3 text-right font-mono text-amber-300">
+                                            -{profitabilityReport.totalPartCost.toLocaleString('fr-FR')} F
+                                        </td>
+                                    )}
+                                    {showProfitability && (
+                                        <td className="py-4 px-3 text-right font-mono text-orange-300">
+                                            -{profitabilityReport.totalTaxProvision.toLocaleString('fr-FR')} F
+                                        </td>
+                                    )}
+                                    {showProfitability && (
+                                        <td className="py-4 px-3 text-right font-mono text-sm text-emerald-300 bg-emerald-500/15 border-l border-r border-emerald-500/20">
+                                            <div>{profitabilityReport.totalNetMarginBeforeFixed.toLocaleString('fr-FR')} F</div>
+                                            <div className="text-[10px] text-teal-300">Réel: {profitabilityReport.totalRealNetMarginBeforeFixed.toLocaleString('fr-FR')} F</div>
+                                        </td>
+                                    )}
+                                    <td className="py-4 px-3 text-right font-mono text-emerald-300">
                                         {metrics.totalAdvance.toLocaleString('fr-FR')} F
                                     </td>
-                                    <td className="py-4 px-3 text-right font-mono text-base text-amber-300 bg-amber-500/15 border-r border-amber-500/20">
+                                    <td className="py-4 px-3 text-right font-mono text-amber-300">
                                         {metrics.totalBalanceDue.toLocaleString('fr-FR')} F
                                     </td>
-                                    <td colSpan={2} className="py-4 px-3 text-center text-[10px] text-zinc-400">
-                                        Taux encaissement : {metrics.collectionRate}%
+                                    <td className="py-4 px-3 text-center text-[10px] text-zinc-400">
+                                        {metrics.collectionRate}%
                                     </td>
                                 </tr>
                             </tfoot>
@@ -1172,6 +2257,8 @@ _Document officiel d'atelier TGS-CI_`;
                         startDateStr={startDate ? startDate.toLocaleDateString('fr-FR') : undefined}
                         endDateStr={endDate ? endDate.toLocaleDateString('fr-FR') : undefined}
                         subFilterLabel={paymentFilter !== 'all' ? paymentFilter : undefined}
+                        profitability={showProfitability ? profitabilityReport : undefined}
+                        treasury={showTreasury && treasurySnapshot ? treasurySnapshot : undefined}
                     />
                 </PreviewModal>
             )}

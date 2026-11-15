@@ -1,9 +1,11 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
-import { User, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged } from 'firebase/auth';
+import { registerWebServerOrigin, resolveApiBase } from '../services/apiBase.ts';
+import { User, GoogleAuthProvider, signInWithPopup, signInWithCredential, signOut, onAuthStateChanged, UserCredential } from 'firebase/auth';
+import { nativeGoogleSignIn, nativeGoogleSignOut, isAndroidApp } from '../services/nativeGoogleAuth.ts';
 import { auth } from '../services/firebase.ts';
 import { useToastContext } from './ToastContext.tsx';
 import { initializeSyncService } from '../services/syncService.ts';
-import { startFirebaseRealtimeSync } from '../services/realtimeService.ts';
+import { startFirebaseRealtimeSync, stopFirebaseRealtimeSync } from '../services/realtimeService.ts';
 import { checkAndTriggerAutoDailyBackup } from '../services/backupService.ts';
 import { 
     getDriveMetadata, 
@@ -157,12 +159,17 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
             setAuthReady(true);
 
             if (currentUser) {
-                // Initialize background Firestore sync and services
+                // Initialize background Firestore sync and real-time listeners once
                 initializeSyncService();
-                startFirebaseRealtimeSync();
+                startFirebaseRealtimeSync(false);
                 setTimeout(() => {
                     checkAndTriggerAutoDailyBackup();
                 }, 3000);
+                // Serveur IA : le web publié annonce son adresse, l'APK la découvre
+                setTimeout(() => {
+                    registerWebServerOrigin().catch(() => {});
+                    resolveApiBase().catch(() => {});
+                }, 4000);
 
                 // Verify Google Drive connection status in background
                 const activeToken = await getSecureToken();
@@ -179,6 +186,7 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
                     }
                 }
             } else {
+                stopFirebaseRealtimeSync();
                 setGoogleAccessToken(null);
                 clearSecureToken();
             }
@@ -200,8 +208,21 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         }
 
         try {
-            const result = await signInWithPopup(auth, provider);
-            const credential = GoogleAuthProvider.credentialFromResult(result);
+            let result: UserCredential;
+            let nativeAccessToken: string | null = null;
+            if (isAndroidApp()) {
+                // APK Android : connexion Google native (les popups OAuth sont bloquées dans les WebView)
+                const native = await nativeGoogleSignIn([
+                    'https://www.googleapis.com/auth/drive.file',
+                    'https://www.googleapis.com/auth/drive',
+                    'https://www.googleapis.com/auth/contacts',
+                ], selectAccount);
+                nativeAccessToken = native.accessToken;
+                result = await signInWithCredential(auth, GoogleAuthProvider.credential(native.idToken, native.accessToken));
+            } else {
+                result = await signInWithPopup(auth, provider);
+            }
+            const credential = nativeAccessToken ? { accessToken: nativeAccessToken } : GoogleAuthProvider.credentialFromResult(result);
             if (credential?.accessToken) {
                 const token = credential.accessToken;
                 await setSecureToken(token, 3600);
@@ -226,8 +247,11 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         } catch (error: unknown) {
             console.error("Google Auth Error:", error);
             const errCode = error && typeof error === 'object' && 'code' in error ? String((error as { code: unknown }).code) : '';
-            if (errCode === 'auth/popup-closed-by-user') {
+            const errMsg = error instanceof Error ? error.message : String(error);
+            if (errCode === 'auth/popup-closed-by-user' || /cancel/i.test(errMsg)) {
                 showToast("Connexion Google annulée", "info");
+            } else if (isAndroidApp()) {
+                showToast("Connexion Google impossible sur Android : " + errMsg.slice(0, 160), "error");
             } else {
                 showToast("Échec de la connexion Google Workspace", "error");
             }
@@ -252,6 +276,7 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
                 lastError: null,
             });
             await signOut(auth);
+            if (isAndroidApp()) { await nativeGoogleSignOut(); }
             showToast("Déconnexion réussie", "info");
         } catch (error) {
             console.error("Sign out error:", error);

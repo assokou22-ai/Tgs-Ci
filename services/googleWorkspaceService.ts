@@ -25,16 +25,19 @@ export const uploadBackupToDrive = async (
         description: `Sauvegarde [${appTag}] - TGS-CI Repair Management Database Archive V4`,
     };
 
-    const content = JSON.stringify(backupData, null, 2);
-
-    const body =
+    // OPTIMISATION MÉMOIRE : JSON compact (sans espaces superflus) et corps en Blob multipart
+    // pour éviter d'allouer des centaines de mégaoctets de texte d'un seul bloc dans le Heap V8 de Chrome
+    const metadataPart =
         delimiter +
         'Content-Type: application/json; charset=UTF-8\r\n\r\n' +
         JSON.stringify(metadata) +
         delimiter +
-        'Content-Type: application/json\r\n\r\n' +
-        content +
-        closeDelimiter;
+        'Content-Type: application/json\r\n\r\n';
+    
+    const jsonString = JSON.stringify(backupData);
+    const bodyBlob = new Blob([metadataPart, jsonString, closeDelimiter], {
+        type: `multipart/related; boundary=${boundary}`,
+    });
 
     const response = await fetch(
         'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart',
@@ -42,9 +45,8 @@ export const uploadBackupToDrive = async (
             method: 'POST',
             headers: {
                 Authorization: `Bearer ${accessToken}`,
-                'Content-Type': `multipart/related; boundary=${boundary}`,
             },
-            body: body,
+            body: bodyBlob,
         }
     );
 

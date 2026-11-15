@@ -13,7 +13,7 @@ import {
 } from '../services/driveSyncDb.ts';
 
 const DEBOUNCE_DELAY_MS = 4000; // 4 seconds debounce after data modifications
-const PERIODIC_INTERVAL_MS = 45 * 1000; // 45 seconds periodic check for fast real-time sync across devices
+const PERIODIC_INTERVAL_MS = 3 * 60 * 1000; // 3 minutes periodic check for safe real-time sync without memory thrashing
 
 export const useGoogleDriveAutoSync = () => {
     const { 
@@ -23,6 +23,7 @@ export const useGoogleDriveAutoSync = () => {
         driveSyncStatus 
     } = useFirebase();
     const { showToast } = useToastContext();
+    const DRIVE_IS_BACKUP_ONLY = true;
 
     const isSyncingRef = useRef<boolean>(false);
     const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -31,6 +32,11 @@ export const useGoogleDriveAutoSync = () => {
 
     // Fonction de récupération et fusion des données créées ou modifiées par d'autres appareils connectés au même Drive
     const pullLatestFromDrive = useCallback(async (token: string, silent: boolean = true) => {
+        // Google Drive sert désormais uniquement de SAUVEGARDE (envoi). La synchronisation entre
+        // appareils passe exclusivement par Firestore (temps réel, fusion champ par champ).
+        // L'import automatique d'une sauvegarde Drive pouvait réintroduire des fiches supprimées
+        // ou d'anciennes valeurs : il est désactivé. La restauration reste possible manuellement.
+        if (DRIVE_IS_BACKUP_ONLY) return false;
         try {
             const backups = await listBackupsFromDrive(token);
             if (!backups || backups.length === 0) return false;
@@ -62,9 +68,9 @@ export const useGoogleDriveAutoSync = () => {
                     localStorage.setItem('tgs_last_gdrive_sync_time', latest.createdTime);
 
                     // Notifier l'ensemble de l'interface et les hooks de tickets en temps réel
+                    // (NOTE : On ne déclenche PAS 'datachanged' ici pour éviter une boucle infinie de ré-envoi vers Drive)
                     window.dispatchEvent(new CustomEvent('datareceived'));
                     window.dispatchEvent(new CustomEvent('tickets-updated'));
-                    window.dispatchEvent(new CustomEvent('datachanged'));
                     window.dispatchEvent(new CustomEvent('syncsuccess'));
 
                     // Diffusion inter-onglets/fenêtres locales
@@ -103,6 +109,13 @@ export const useGoogleDriveAutoSync = () => {
     ) => {
         if (isSyncingRef.current) {
             console.log(`[GoogleDriveAutoSync] Sync already in progress. Enqueueing ${type}.`);
+            await enqueueDriveOperation(type);
+            return;
+        }
+
+        // Si l'utilisateur est activement en train de saisir ou d'éditer une fiche, différer la synchronisation lourde
+        if (!isManual && (window as unknown as { __TGS_FORM_EDITING_ACTIVE__?: boolean }).__TGS_FORM_EDITING_ACTIVE__) {
+            console.log(`[GoogleDriveAutoSync] Formulaire en cours de saisie active. Sauvegarde ${type} mise en attente.`);
             await enqueueDriveOperation(type);
             return;
         }
@@ -331,6 +344,24 @@ export const useGoogleDriveAutoSync = () => {
 
         window.addEventListener('manual-gdrive-sync', handleManualRequested);
         return () => window.removeEventListener('manual-gdrive-sync', handleManualRequested);
+    }, [runDriveSync]);
+
+    // 7. Reprise des synchronisations différées dès la fermeture ou enregistrement d'un formulaire
+    useEffect(() => {
+        const handleFormClosed = () => {
+            if (debounceTimerRef.current) {
+                clearTimeout(debounceTimerRef.current);
+            }
+            debounceTimerRef.current = setTimeout(async () => {
+                const queue = await getDriveQueue();
+                if (queue.length > 0) {
+                    runDriveSync('data_change', false);
+                }
+            }, 2000);
+        };
+
+        window.addEventListener('tgs-form-editing-closed', handleFormClosed);
+        return () => window.removeEventListener('tgs-form-editing-closed', handleFormClosed);
     }, [runDriveSync]);
 
     return {

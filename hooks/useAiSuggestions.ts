@@ -1,6 +1,7 @@
 
 import { useState } from 'react';
-import { GoogleGenAI, GenerateContentResponse } from "@google/genai";
+import { GenerateContentResponse } from "@google/genai";
+import { createAI } from '../services/aiClient.ts';
 
 interface AiSuggestionHook {
     suggestion: string;
@@ -32,7 +33,7 @@ export const useAiSuggestions = (): AiSuggestionHook => {
 
         try {
             // Fix: Follow initialization guidelines strictly.
-            const ai = new GoogleGenAI({apiKey: process.env.API_KEY});
+            const ai = createAI();
             const response: GenerateContentResponse = await ai.models.generateContent({
                 model: 'gemini-1.5-flash',
                 contents: [{ role: 'user', parts: [{ text: prompt }] }],

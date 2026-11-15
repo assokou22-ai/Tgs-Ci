@@ -1,10 +1,11 @@
 
-import { GoogleGenAI, Type } from "@google/genai";
+import { Type } from "@google/genai";
+import { createAI } from './aiClient.ts';
 import { ColorPalette } from '../types.ts';
 
 export const generateAiTheme = async (): Promise<ColorPalette> => {
     // Fix: Follow initialization guidelines strictly.
-    const ai = new GoogleGenAI({apiKey: process.env.API_KEY});
+    const ai = createAI();
     const prompt = `Génère une palette de couleurs professionnelle et moderne pour une application web de gestion. 
     L'ambiance doit être technologique et épurée.
     Retourne un objet JSON avec les clés suivantes :

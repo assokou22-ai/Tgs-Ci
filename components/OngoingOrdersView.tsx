@@ -17,7 +17,7 @@ const OngoingOrdersView: React.FC = () => {
     }, [commandes]);
 
     const totalOutstanding = useMemo(() => {
-        return ongoingCommandes.reduce((sum, c) => sum + (c.total - (c.advance || 0)), 0);
+        return ongoingCommandes.reduce((sum, c) => sum + Math.max(0, (Number(c.total) || 0) - (Number(c.advance) || 0)), 0);
     }, [ongoingCommandes]);
 
     if (loading) {
@@ -99,7 +99,7 @@ const OngoingOrdersView: React.FC = () => {
                                         </span>
                                     </td>
                                     <td className="px-6 py-4 text-right font-mono font-black text-white">
-                                        {(c.total - (c.advance || 0)).toLocaleString()} F
+                                        {Math.max(0, (Number(c.total) || 0) - (Number(c.advance) || 0)).toLocaleString('fr-FR')} F
                                     </td>
                                 </tr>
                             )) : (

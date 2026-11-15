@@ -2,6 +2,9 @@
 import { openDB, IDBPDatabase } from 'idb';
 import { RepairTicket, StockItem, StockUsage, ExternalPurchase, RepairServiceItem, LogEntry, SuggestionRecord, SyncQueueItem, Facture, Proforma, Commande, Appointment, DeviceSession, EntityType, BackupData, SimpleDocument, StoredDocument, EngagementSav, MouvementStock } from '../types.ts';
 
+import { stampLocalWrite } from '../utils/fieldMerge.ts';
+import { auth } from './firebase.ts';
+
 const DB_NAME = 'MacRepairDB';
 const DB_VERSION = 14; // Version incremented for mouvementsStock
 const TICKET_STORE = 'tickets';
@@ -83,6 +86,22 @@ export const getDB = (): Promise<IDBPDatabase> => {
     return dbPromise;
 };
 
+// Horodatage champ par champ des écritures locales (fusion fiable entre appareils)
+const stampWrite = async <T>(db: IDBPDatabase, store: string, item: T): Promise<T> => {
+    try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const id = (item as any)?.id;
+        const prev = id !== undefined && id !== null ? await db.get(store, id) : null;
+        return stampLocalWrite(prev, item, auth.currentUser?.email || null);
+    } catch (e) {
+        console.warn('[stampWrite] horodatage impossible, écriture brute:', e);
+        return item;
+    }
+};
+
+/** Ajoute explicitement une entité à la file d'envoi (utilisé par la synchro temps réel). */
+export const dbQueuePut = async (entity: EntityType, entityId: string, payload: unknown) => addToSyncQueue(entity, entityId, 'put', payload);
+
 const addToSyncQueue = async (entity: EntityType, entityId: string, operation: 'put' | 'delete', payload?: unknown) => {
     try {
         const db = await getDB();
@@ -108,12 +127,14 @@ export const dbGetEngagementsSav = async (): Promise<EngagementSav[]> => {
 
 export const dbAddEngagementSav = async (item: EngagementSav) => {
     const db = await getDB();
+    item = await stampWrite(db, ENGAGEMENTS_SAV_STORE, item);
     await db.put(ENGAGEMENTS_SAV_STORE, item);
     await addToSyncQueue('engagementSav', item.id, 'put', item);
 };
 
 export const dbUpdateEngagementSav = async (item: EngagementSav) => {
     const db = await getDB();
+    item = await stampWrite(db, ENGAGEMENTS_SAV_STORE, item);
     await db.put(ENGAGEMENTS_SAV_STORE, item);
     await addToSyncQueue('engagementSav', item.id, 'put', item);
 };
@@ -126,6 +147,8 @@ export const dbDeleteEngagementSav = async (id: string) => {
 
 export const dbBulkPutEngagementsSav = async (items: EngagementSav[]) => {
     const db = await getDB();
+    items = [...items];
+    for (let i = 0; i < items.length; i++) items[i] = await stampWrite(db, ENGAGEMENTS_SAV_STORE, items[i]);
     const tx = db.transaction(ENGAGEMENTS_SAV_STORE, 'readwrite');
     for (const item of items) await tx.store.put(item);
     await tx.done;
@@ -143,12 +166,14 @@ export const dbGetTickets = async (): Promise<RepairTicket[]> => {
 
 export const dbAddTicket = async (ticket: RepairTicket) => {
     const db = await getDB();
+    ticket = await stampWrite(db, TICKET_STORE, ticket);
     await db.put(TICKET_STORE, ticket);
     await addToSyncQueue('ticket', ticket.id, 'put', ticket);
 };
 
 export const dbUpdateTicket = async (ticket: RepairTicket) => {
     const db = await getDB();
+    ticket = await stampWrite(db, TICKET_STORE, ticket);
     await db.put(TICKET_STORE, ticket);
     await addToSyncQueue('ticket', ticket.id, 'put', ticket);
 };
@@ -166,6 +191,8 @@ export const dbDeleteTicket = async (id: string) => {
 
 export const dbBulkPutTickets = async (tickets: RepairTicket[]) => {
     const db = await getDB();
+    tickets = [...tickets];
+    for (let i = 0; i < tickets.length; i++) tickets[i] = await stampWrite(db, TICKET_STORE, tickets[i]);
     const tx = db.transaction(TICKET_STORE, 'readwrite');
     for (const ticket of tickets) await tx.store.put(ticket);
     await tx.done;
@@ -195,12 +222,14 @@ export const dbGetPaginatedStock = async ({ query, page, pageSize }: { query: st
 
 export const dbAddStockItem = async (item: StockItem) => {
     const db = await getDB();
+    item = await stampWrite(db, STOCK_STORE, item);
     await db.put(STOCK_STORE, item);
     await addToSyncQueue('stock', item.id, 'put', item);
 };
 
 export const dbUpdateStockItem = async (item: StockItem) => {
     const db = await getDB();
+    item = await stampWrite(db, STOCK_STORE, item);
     await db.put(STOCK_STORE, item);
     await addToSyncQueue('stock', item.id, 'put', item);
 };
@@ -223,6 +252,7 @@ export const dbGetStockUsage = async (): Promise<StockUsage[]> => {
 
 export const dbAddStockUsage = async (usage: StockUsage) => {
     const db = await getDB();
+    usage = await stampWrite(db, STOCK_USAGE_STORE, usage);
     await db.put(STOCK_USAGE_STORE, usage);
     await addToSyncQueue('stockUsage', usage.id, 'put', usage);
 };
@@ -241,6 +271,7 @@ export const dbGetMouvementsStock = async (): Promise<MouvementStock[]> => {
 
 export const dbAddMouvementStock = async (mouvement: MouvementStock) => {
     const db = await getDB();
+    mouvement = await stampWrite(db, MOUVEMENT_STOCK_STORE, mouvement);
     await db.put(MOUVEMENT_STOCK_STORE, mouvement);
     await addToSyncQueue('mouvementStock', mouvement.id, 'put', mouvement);
 };
@@ -259,6 +290,7 @@ export const dbGetExternalPurchases = async (): Promise<ExternalPurchase[]> => {
 
 export const dbAddExternalPurchase = async (purchase: ExternalPurchase) => {
     const db = await getDB();
+    purchase = await stampWrite(db, EXTERNAL_PURCHASE_STORE, purchase);
     await db.put(EXTERNAL_PURCHASE_STORE, purchase);
     await addToSyncQueue('externalPurchase', purchase.id, 'put', purchase);
 };
@@ -276,12 +308,14 @@ export const dbGetServices = async (): Promise<RepairServiceItem[]> => {
 
 export const dbAddService = async (service: RepairServiceItem) => {
     const db = await getDB();
+    service = await stampWrite(db, SERVICES_STORE, service);
     await db.put(SERVICES_STORE, service);
     await addToSyncQueue('service', service.id, 'put', service);
 };
 
 export const dbUpdateService = async (service: RepairServiceItem) => {
     const db = await getDB();
+    service = await stampWrite(db, SERVICES_STORE, service);
     await db.put(SERVICES_STORE, service);
     await addToSyncQueue('service', service.id, 'put', service);
 };
@@ -342,12 +376,14 @@ export const dbGetFactures = async (): Promise<Facture[]> => {
 
 export const dbAddFacture = async (facture: Facture) => {
     const db = await getDB();
+    facture = await stampWrite(db, FACTURES_STORE, facture);
     await db.put(FACTURES_STORE, facture);
     await addToSyncQueue('facture', facture.id, 'put', facture);
 };
 
 export const dbUpdateFacture = async (facture: Facture) => {
     const db = await getDB();
+    facture = await stampWrite(db, FACTURES_STORE, facture);
     await db.put(FACTURES_STORE, facture);
     await addToSyncQueue('facture', facture.id, 'put', facture);
 };
@@ -365,12 +401,14 @@ export const dbGetProformas = async (): Promise<Proforma[]> => {
 
 export const dbAddProforma = async (proforma: Proforma) => {
     const db = await getDB();
+    proforma = await stampWrite(db, PROFORMAS_STORE, proforma);
     await db.put(PROFORMAS_STORE, proforma);
     await addToSyncQueue('proforma', proforma.id, 'put', proforma);
 };
 
 export const dbUpdateProforma = async (proforma: Proforma) => {
     const db = await getDB();
+    proforma = await stampWrite(db, PROFORMAS_STORE, proforma);
     await db.put(PROFORMAS_STORE, proforma);
     await addToSyncQueue('proforma', proforma.id, 'put', proforma);
 };
@@ -388,12 +426,14 @@ export const dbGetCommandes = async (): Promise<Commande[]> => {
 
 export const dbAddCommande = async (commande: Commande) => {
     const db = await getDB();
+    commande = await stampWrite(db, COMMANDES_STORE, commande);
     await db.put(COMMANDES_STORE, commande);
     await addToSyncQueue('commande', commande.id, 'put', commande);
 };
 
 export const dbUpdateCommande = async (commande: Commande) => {
     const db = await getDB();
+    commande = await stampWrite(db, COMMANDES_STORE, commande);
     await db.put(COMMANDES_STORE, commande);
     await addToSyncQueue('commande', commande.id, 'put', commande);
 };
@@ -411,12 +451,14 @@ export const dbGetAppointments = async (): Promise<Appointment[]> => {
 
 export const dbAddAppointment = async (appointment: Appointment) => {
     const db = await getDB();
+    appointment = await stampWrite(db, APPOINTMENTS_STORE, appointment);
     await db.put(APPOINTMENTS_STORE, appointment);
     await addToSyncQueue('appointment', appointment.id, 'put', appointment);
 };
 
 export const dbUpdateAppointment = async (appointment: Appointment) => {
     const db = await getDB();
+    appointment = await stampWrite(db, APPOINTMENTS_STORE, appointment);
     await db.put(APPOINTMENTS_STORE, appointment);
     await addToSyncQueue('appointment', appointment.id, 'put', appointment);
 };
@@ -444,12 +486,14 @@ export const dbGetSimpleDocuments = async (): Promise<SimpleDocument[]> => {
 
 export const dbAddSimpleDocument = async (doc: SimpleDocument) => {
     const db = await getDB();
+    doc = await stampWrite(db, SIMPLE_DOCUMENTS_STORE, doc);
     await db.put(SIMPLE_DOCUMENTS_STORE, doc);
     await addToSyncQueue('simpleDocument', doc.id, 'put', doc);
 };
 
 export const dbUpdateSimpleDocument = async (doc: SimpleDocument) => {
     const db = await getDB();
+    doc = await stampWrite(db, SIMPLE_DOCUMENTS_STORE, doc);
     await db.put(SIMPLE_DOCUMENTS_STORE, doc);
     await addToSyncQueue('simpleDocument', doc.id, 'put', doc);
 };
@@ -467,6 +511,7 @@ export const dbGetStoredDocuments = async (): Promise<StoredDocument[]> => {
 
 export const dbAddStoredDocument = async (doc: StoredDocument) => {
     const db = await getDB();
+    doc = await stampWrite(db, KNOWLEDGE_FILES_STORE, doc);
     await db.put(KNOWLEDGE_FILES_STORE, doc);
     await addToSyncQueue('storedDocument', doc.id, 'put', doc);
 };

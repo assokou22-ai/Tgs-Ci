@@ -120,12 +120,45 @@ export interface Costs {
     advance: number;
 }
 
+export type ActivityCategory = 'reparation' | 'vente_pieces' | 'vente_macbook';
+
+export type PartSupplySource = 'en_stock' | 'a_commander' | 'fourni_client';
+
+export type FixedChargeFrequency = 'mensuel' | 'trimestriel' | 'annuel' | 'ponctuel';
+
+export interface FixedChargeItem {
+    id: string;
+    label: string;
+    amount: number;
+    frequency: FixedChargeFrequency;
+    category?: string;
+    active: boolean;
+    date?: string; // YYYY-MM-DD (pour charges ponctuelles)
+}
+
+export interface ProfitabilitySettings {
+    enableProfitabilityIndicators?: boolean; // Interrupteur 1 : rentabilité par ligne / dossier / activité & charges fixes
+    enableTreasuryTracking?: boolean; // Interrupteur 2 : suivi capital (~2M), trésorerie disponible, réserves & passif (désactivé par défaut)
+    treasuryStartDate?: string; // YYYY-MM-DD optionnel : date de démarrage du suivi trésorerie/capital (idéal lancement ou autre magasin)
+    taxProvisionRate: number; // % prélevé sur le chiffre d'affaires (ex: 2, 5, 10)
+    fixedCharges: FixedChargeItem[];
+    initialCapital?: number; // Capital atelier de départ (défaut 2 000 000 F CFA)
+    reinvestmentRate?: number; // % de la marge réelle affecté en réserve de réinvestissement stock
+    openingCash?: number; // Trésorerie de départ hors stock (si non défini : capital initial - valeur stock)
+    manualTaxReservePaid?: number; // Impôts déjà versés déduits de la réserve fiscale
+    manualReinvestedUsed?: number; // Montants déjà réinvestis en stock déduits de la réserve
+    includeFacturesInTreasury?: boolean; // Inclure factures & commandes clients non liées aux fiches
+    lowTreasuryThreshold?: number; // Seuil d'alerte optionnel de trésorerie disponible (0 = désactivé)
+    enableOptionalAlerts?: boolean; // Activer les indicateurs d'alerte optionnels (0 = aucun blocage)
+}
+
 export interface RepairServiceItem {
     id: string;
     updatedAt: string;
     name: string;
     price: number;
     category: string;
+    activite?: ActivityCategory;
 }
 
 export interface HistoryEntry {
@@ -409,6 +442,8 @@ export interface LigneVenteFiche {
     motif_reduction?: string;
     statut_ligne: 'prevu' | 'reserve' | 'utilise' | 'annule';
     prix_achat?: number;
+    activite?: ActivityCategory;
+    source_piece?: PartSupplySource;
 }
 
 export interface MouvementStock {
@@ -660,6 +695,7 @@ export interface SerializedAppSettings {
     stock: CustomFieldDef[];
     client: CustomFieldDef[];
   };
+  profitability?: ProfitabilitySettings;
 }
 
 export type EngagementSavStatus = 

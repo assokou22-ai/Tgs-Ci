@@ -8,7 +8,7 @@ interface PrintableOngoingOrdersListProps {
 }
 
 const PrintableOngoingOrdersList: React.FC<PrintableOngoingOrdersListProps> = ({ commandes }) => {
-  const totalPending = commandes.reduce((sum, c) => sum + (c.total - (c.advance || 0)), 0);
+  const totalPending = commandes.reduce((sum, c) => sum + Math.max(0, (Number(c.total) || 0) - (Number(c.advance) || 0)), 0);
 
   return (
     <div className="printable-page" style={{ color: '#000', padding: '15mm', backgroundColor: '#fff' }}>
@@ -78,7 +78,7 @@ const PrintableOngoingOrdersList: React.FC<PrintableOngoingOrdersListProps> = ({
                           <td style={{ padding: '12px 8px', fontWeight: '500' }}>{c.macModel || 'Pièces détachées diverses'}</td>
                           <td style={{ padding: '12px 8px', textAlign: 'center', color: '#444' }}>{new Date(c.date).toLocaleDateString('fr-FR')}</td>
                           <td style={{ padding: '12px 8px', textAlign: 'right', fontWeight: '900', fontSize: '10pt' }}>
-                            {(c.total - (c.advance || 0)).toLocaleString()} F
+                            {Math.max(0, (Number(c.total) || 0) - (Number(c.advance) || 0)).toLocaleString('fr-FR')} F
                           </td>
                       </tr>
                   ))

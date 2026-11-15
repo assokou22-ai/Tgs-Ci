@@ -1,16 +1,15 @@
 
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { RepairTicket, RepairStatus, RepairServiceItem } from '../types.ts';
 import { mergeUpdates } from '../utils/merge.ts';
-import { MacbookIcon, BuildingStorefrontIcon, BanknotesIcon, PlusIcon, SparklesIcon, TrashIcon, DocumentArrowDownIcon, CameraIcon, PhotoIcon } from './icons.tsx';
+import { MacbookIcon, BuildingStorefrontIcon, BanknotesIcon, PlusIcon, SparklesIcon, TrashIcon, DocumentArrowDownIcon, CameraIcon, PhotoIcon, ArrowPathIcon } from './icons.tsx';
 import PreviewModal from './PreviewModal.tsx';
 import PrintableTicket from './PrintableTicket.tsx';
 import PrintableEnterpriseBon from './PrintableEnterpriseBon.tsx';
 import SignaturePad from './SignaturePad.tsx';
 import { playTone } from '../utils/audio.ts';
 import { useToastContext } from '../context/ToastContext.tsx';
-import { generateNextTicketSequence, isFallbackTicketId } from '../utils/idGenerator.ts';
-import { compressImageBase64 } from '../utils/imageCompression.ts';
+import { generateNextTicketSequence, isFallbackTicketId, fetchLatestCloudSequence } from '../utils/idGenerator.ts';
 import { findMacByModel } from '../utils/macModelsData.ts';
 import { 
   findMatchingRecurrentClients, 
@@ -19,6 +18,7 @@ import {
 } from '../utils/clientRecurrenceHelper.ts';
 import { ReceptionModeField } from './ReceptionModeField.tsx';
 import { useDeviceProfile } from '../context/DeviceProfileContext.tsx';
+import { compressImage } from '../utils/fileHelpers.ts';
 
 
 interface EnterpriseRepairFormProps {
@@ -112,10 +112,42 @@ const EnterpriseRepairForm: React.FC<EnterpriseRepairFormProps> = ({ tickets, ti
     if (ticketToEdit?.id) return ticketToEdit.id;
     return generateNextTicketSequence(tickets, true);
   });
+  const [isCheckingCloudSequence, setIsCheckingCloudSequence] = useState(false);
+  const [cloudSequenceVerified, setCloudSequenceVerified] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
   const [isAnalyzingPhoto, setIsAnalyzingPhoto] = useState(false);
   const [previewImageModal, setPreviewImageModal] = useState<string | null>(null);
+
+  const ticketsRef = useRef(tickets);
+  ticketsRef.current = tickets;
+
+  const syncSequenceWithCloud = useCallback(async (userInitiated = false) => {
+    if (isEditMode) return;
+    setIsCheckingCloudSequence(true);
+    try {
+      const targetYear = ticket.createdAt ? new Date(ticket.createdAt).getFullYear() : undefined;
+      const res = await fetchLatestCloudSequence(ticketsRef.current, true, targetYear, 4000);
+      const latestId = res.nextId;
+      setFullTicketId(latestId);
+      if (res.isFromCloud) {
+        setCloudSequenceVerified(true);
+      }
+      if (userInitiated) {
+        showToast(`Numéro Entreprise Cloud vérifié : ${latestId}`, "success");
+      }
+    } catch (e) {
+      console.warn("Échec sync sequence entreprise cloud:", e);
+    } finally {
+      setIsCheckingCloudSequence(false);
+    }
+  }, [isEditMode, ticket.createdAt, showToast]);
+
+  useEffect(() => {
+    if (!isEditMode) {
+      syncSequenceWithCloud(false);
+    }
+  }, [isEditMode, syncSequenceWithCloud]);
 
   // Clients récurrents & identification machine (Règle utilisateur: ≥ 2 fiches pour suggestion, comparaison même Mac / nouveau Mac)
   const [selectedRecurrentClient, setSelectedRecurrentClient] = useState<ClientRecurrenceProfile | null>(null);
@@ -317,21 +349,19 @@ const EnterpriseRepairForm: React.FC<EnterpriseRepairFormProps> = ({ tickets, ti
 
     for (const file of filesToProcess) {
       try {
-        const rawBase64 = await new Promise<string>((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = (e) => resolve(e.target?.result as string);
-          reader.onerror = reject;
-          reader.readAsDataURL(file);
-        });
-
-        const compressed = await compressImageBase64(rawBase64, 1024, 1024, 0.68);
-        newCompressed.push(compressed);
+        const compressed = await compressImage(file, 1200, 1200, 0.72);
+        if (compressed) {
+          newCompressed.push(compressed);
+        }
       } catch (err) {
         console.error("Erreur lecture photo entreprise:", err);
       }
     }
 
-    if (newCompressed.length === 0) return;
+    if (newCompressed.length === 0) {
+      showToast("Impossible de charger la photo sélectionnée. Veuillez réessayer.", "warning");
+      return;
+    }
 
     const updated = [...currentImages, ...newCompressed].slice(0, 6);
     setTicket(prev => ({
@@ -485,11 +515,11 @@ const EnterpriseRepairForm: React.FC<EnterpriseRepairFormProps> = ({ tickets, ti
   };
 
   useEffect(() => {
-    if (!isEditMode) {
+    if (!isEditMode && !cloudSequenceVerified) {
       const nextSeq = generateNextTicketSequence(tickets, true);
       setFullTicketId(nextSeq);
     }
-  }, [tickets, isEditMode]);
+  }, [tickets, isEditMode, cloudSequenceVerified]);
 
   const handleQuickAddService = () => {
     const price = parseInt(quickServicePrice);
@@ -587,15 +617,26 @@ const EnterpriseRepairForm: React.FC<EnterpriseRepairFormProps> = ({ tickets, ti
                             <button
                                 type="button"
                                 onClick={() => {
-                                    const next = generateNextTicketSequence(tickets, true);
-                                    setFullTicketId(next);
-                                    showToast(`Numéro Entreprise régénéré : ${next}`, "info");
+                                    playTone(880, 50);
+                                    syncSequenceWithCloud(true);
                                 }}
-                                className="text-[10px] font-bold text-slate-400 hover:text-purple-400"
-                                title="Régénérer automatique"
+                                disabled={isCheckingCloudSequence}
+                                className="text-[10px] font-bold text-slate-400 hover:text-purple-400 flex items-center gap-1 transition-colors disabled:opacity-50"
+                                title="Vérifier et synchroniser le numéro avec la base Cloud"
                             >
-                                🔄
+                                <ArrowPathIcon className={`w-3.5 h-3.5 ${isCheckingCloudSequence ? 'animate-spin text-purple-400' : ''}`} />
                             </button>
+                        )}
+                        {cloudSequenceVerified && !isEditMode && (
+                            <span className="text-[8px] font-black text-emerald-400 uppercase bg-emerald-500/10 px-1.5 py-0.5 rounded border border-emerald-500/30 whitespace-nowrap flex items-center gap-1" title="Vérifié avec le Cloud">
+                                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                                Cloud OK
+                            </span>
+                        )}
+                        {isCheckingCloudSequence && !cloudSequenceVerified && (
+                            <span className="text-[8px] font-black text-purple-400 uppercase bg-purple-500/10 px-1.5 py-0.5 rounded border border-purple-500/30 whitespace-nowrap animate-pulse">
+                                Sync...
+                            </span>
                         )}
                     </div>
                 </div>
@@ -823,9 +864,9 @@ const EnterpriseRepairForm: React.FC<EnterpriseRepairFormProps> = ({ tickets, ti
                     <input 
                         type="file" 
                         accept="image/*" 
-                        capture="environment" 
+                        capture={isTouch ? "environment" : undefined} 
                         ref={cameraInputRef} 
-                        onChange={e => { handleAddIntakeImages(e.target.files); e.target.value = ''; }} 
+                        onChange={e => handleAddIntakeImages(e.target.files)} 
                         className="hidden" 
                     />
                     <input 
@@ -833,7 +874,7 @@ const EnterpriseRepairForm: React.FC<EnterpriseRepairFormProps> = ({ tickets, ti
                         accept="image/*" 
                         multiple 
                         ref={galleryInputRef} 
-                        onChange={e => { handleAddIntakeImages(e.target.files); e.target.value = ''; }} 
+                        onChange={e => handleAddIntakeImages(e.target.files)} 
                         className="hidden" 
                     />
 
@@ -841,7 +882,10 @@ const EnterpriseRepairForm: React.FC<EnterpriseRepairFormProps> = ({ tickets, ti
                     <div className="flex flex-wrap items-center gap-3">
                         <button
                             type="button"
-                            onClick={() => cameraInputRef.current?.click()}
+                            onClick={() => {
+                                if (cameraInputRef.current) cameraInputRef.current.value = '';
+                                cameraInputRef.current?.click();
+                            }}
                             disabled={(ticket.intakeImages?.length || 0) >= 6}
                             className="flex-1 min-w-[140px] px-4 py-3 bg-purple-600 hover:bg-purple-500 disabled:opacity-40 text-white rounded-xl text-[10px] font-black uppercase tracking-wider flex items-center justify-center gap-2 transition-all shadow-lg shadow-purple-900/30"
                             title="Ouvre directement la caméra sur tablette (iPad, Android) ou smartphone"
@@ -852,7 +896,10 @@ const EnterpriseRepairForm: React.FC<EnterpriseRepairFormProps> = ({ tickets, ti
 
                         <button
                             type="button"
-                            onClick={() => galleryInputRef.current?.click()}
+                            onClick={() => {
+                                if (galleryInputRef.current) galleryInputRef.current.value = '';
+                                galleryInputRef.current?.click();
+                            }}
                             disabled={(ticket.intakeImages?.length || 0) >= 6}
                             className="flex-1 min-w-[140px] px-4 py-3 bg-white/5 hover:bg-white/10 disabled:opacity-40 text-slate-200 border border-white/10 rounded-xl text-[10px] font-black uppercase tracking-wider flex items-center justify-center gap-2 transition-all"
                             title="Importer depuis la galerie photos ou les fichiers"

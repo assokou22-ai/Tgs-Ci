@@ -3,6 +3,7 @@ import { RepairTicket } from '../types.ts';
 import { AppleLogo } from './icons.tsx';
 import { useAppSettings } from '../hooks/useAppSettings.ts';
 import { getTicketFinancialSummary } from '../utils/ticketHelpers.ts';
+import { ACTIVITY_ORDER, PortfolioProfitabilityReport, WorkshopTreasurySnapshot } from '../utils/profitability.ts';
 
 interface PrintableTicketFinancialPointProps {
     tickets: RepairTicket[];
@@ -10,6 +11,8 @@ interface PrintableTicketFinancialPointProps {
     startDateStr?: string;
     endDateStr?: string;
     subFilterLabel?: string;
+    profitability?: PortfolioProfitabilityReport;
+    treasury?: WorkshopTreasurySnapshot;
 }
 
 export const PrintableTicketFinancialPoint: React.FC<PrintableTicketFinancialPointProps> = ({
@@ -17,7 +20,9 @@ export const PrintableTicketFinancialPoint: React.FC<PrintableTicketFinancialPoi
     periodLabel,
     startDateStr,
     endDateStr,
-    subFilterLabel
+    subFilterLabel,
+    profitability,
+    treasury
 }) => {
     const { settings } = useAppSettings();
     const shop = settings?.workshop || {
@@ -341,6 +346,102 @@ export const PrintableTicketFinancialPoint: React.FC<PrintableTicketFinancialPoi
                     )}
                 </table>
             </section>
+
+            {/* SYNTHÈSE RENTABILITÉ PAR ACTIVITÉ & CHARGES FIXES SÉPARÉES */}
+            {profitability && (
+                <section className="mb-4 space-y-2">
+                    <h3 className="text-[8pt] font-black uppercase tracking-wider m-0">
+                        RENTABILITÉ PAR ACTIVITÉ (PRÉVISIONNELLE vs RÉELLE) &amp; CHARGES FIXES SÉPARÉES
+                    </h3>
+                    <table className="w-full border-collapse text-[6.8pt]">
+                        <thead>
+                            <tr className="bg-gray-800 text-white">
+                                <th className="p-1.5 text-left border border-black font-black">ACTIVITÉ</th>
+                                <th className="p-1.5 text-center border border-black font-black">LIGNES</th>
+                                <th className="p-1.5 text-right border border-black font-black">CA FACTURÉ</th>
+                                <th className="p-1.5 text-right border border-black font-black">CA ENCAISSÉ</th>
+                                <th className="p-1.5 text-right border border-black font-black">COÛT PIÈCES 1X</th>
+                                <th className="p-1.5 text-right border border-black font-black">PROV. FISC. ({profitability.taxRate}%)</th>
+                                <th className="p-1.5 text-right border border-black font-black">MARGE PRÉV.</th>
+                                <th className="p-1.5 text-right border border-black font-black">MARGE RÉELLE</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {ACTIVITY_ORDER.map((act) => {
+                                const b = profitability.byActivity[act];
+                                return (
+                                    <tr key={act} className="border-b border-gray-300">
+                                        <td className="p-1 border border-gray-300 font-bold uppercase">{b.label}</td>
+                                        <td className="p-1 border border-gray-300 text-center font-mono">{b.lineCount}</td>
+                                        <td className="p-1 border border-gray-300 text-right font-mono">{b.ca.toLocaleString('fr-FR')} F</td>
+                                        <td className="p-1 border border-gray-300 text-right font-mono">{b.realCA.toLocaleString('fr-FR')} F</td>
+                                        <td className="p-1 border border-gray-300 text-right font-mono">-{b.partCost.toLocaleString('fr-FR')} F</td>
+                                        <td className="p-1 border border-gray-300 text-right font-mono">-{b.taxProvision.toLocaleString('fr-FR')} F</td>
+                                        <td className="p-1 border border-gray-300 text-right font-mono font-bold">{b.netMargin.toLocaleString('fr-FR')} F ({b.marginRate.toFixed(0)}%)</td>
+                                        <td className="p-1 border border-gray-300 text-right font-mono font-bold text-emerald-800">{b.realNetMargin.toLocaleString('fr-FR')} F ({b.realMarginRate.toFixed(0)}%)</td>
+                                    </tr>
+                                );
+                            })}
+                        </tbody>
+                        <tfoot>
+                            <tr className="bg-gray-100 font-black border-t border-black">
+                                <td colSpan={2} className="p-1.5 border border-black uppercase">MARGE ACTIVITÉS (HORS CHARGES FIXES)</td>
+                                <td className="p-1.5 border border-black text-right font-mono">{profitability.totalCA.toLocaleString('fr-FR')} F</td>
+                                <td className="p-1.5 border border-black text-right font-mono">{profitability.totalRealCA.toLocaleString('fr-FR')} F</td>
+                                <td className="p-1.5 border border-black text-right font-mono">-{profitability.totalPartCost.toLocaleString('fr-FR')} F</td>
+                                <td className="p-1.5 border border-black text-right font-mono">-{profitability.totalTaxProvision.toLocaleString('fr-FR')} F</td>
+                                <td className="p-1.5 border border-black text-right font-mono">{profitability.totalNetMarginBeforeFixed.toLocaleString('fr-FR')} F</td>
+                                <td className="p-1.5 border border-black text-right font-mono text-emerald-900">{profitability.totalRealNetMarginBeforeFixed.toLocaleString('fr-FR')} F</td>
+                            </tr>
+                        </tfoot>
+                    </table>
+                    <div className="border border-gray-400 rounded p-2 bg-gray-50 flex flex-wrap justify-between items-center gap-2 text-[7.5pt]">
+                        <div>
+                            <strong className="uppercase">Charges Fixes ({profitability.fixedChargesPeriodFactorLabel}) :</strong>{' '}
+                            <span className="font-mono font-bold">-{profitability.fixedChargesTotal.toLocaleString('fr-FR')} F CFA</span>
+                        </div>
+                        <div>
+                            <strong className="uppercase">Résultat Exploitation Prév. :</strong>{' '}
+                            <span className="font-mono font-black text-black">{profitability.operatingResultAfterFixed.toLocaleString('fr-FR')} F CFA</span>
+                        </div>
+                        <div>
+                            <strong className="uppercase">Résultat Exploitation Réel :</strong>{' '}
+                            <span className="font-mono font-black text-emerald-900">{profitability.realOperatingResultAfterFixed.toLocaleString('fr-FR')} F CFA</span>
+                        </div>
+                    </div>
+                </section>
+            )}
+
+            {/* SYNTHÈSE TRÉSORERIE DISPONIBLE, RÉSERVES, DÉPENSES À PAYER & CAPITAL */}
+            {treasury && (
+                <section className="mb-4 space-y-2">
+                    <h3 className="text-[8pt] font-black uppercase tracking-wider m-0">
+                        TRÉSORERIE DISPONIBLE, RÉSERVES, PASSIF À PAYER &amp; CAPITAL ATELIER (SANS DOUBLE COMPTAGE)
+                    </h3>
+                    <div className="grid grid-cols-4 gap-2 text-[7pt]">
+                        <div className="border border-gray-400 rounded p-2 bg-gray-50">
+                            <span className="text-[6pt] font-black uppercase text-gray-600 block">TRÉSORERIE DISPONIBLE NETTE</span>
+                            <span className="text-xs font-black font-mono block my-0.5">{treasury.availableTreasury.toLocaleString('fr-FR')} F</span>
+                            <span className="text-[6pt] text-gray-600 block">Caisse brute : {treasury.grossCashBalance.toLocaleString('fr-FR')} F</span>
+                        </div>
+                        <div className="border border-gray-400 rounded p-2 bg-gray-50">
+                            <span className="text-[6pt] font-black uppercase text-gray-600 block">RÉSERVES DÉDIÉES</span>
+                            <span className="text-xs font-black font-mono block my-0.5">{treasury.totalReserves.toLocaleString('fr-FR')} F</span>
+                            <span className="text-[6pt] text-gray-600 block">Fisc : {treasury.fiscalReserveRemaining.toLocaleString('fr-FR')} F | Réinv. : {treasury.reinvestmentReserveRemaining.toLocaleString('fr-FR')} F</span>
+                        </div>
+                        <div className="border border-gray-400 rounded p-2 bg-gray-50">
+                            <span className="text-[6pt] font-black uppercase text-gray-600 block">DÉPENSES À PAYER (PASSIF)</span>
+                            <span className="text-xs font-black font-mono block my-0.5">{treasury.totalPayables.toLocaleString('fr-FR')} F</span>
+                            <span className="text-[6pt] text-gray-600 block">Fourn. : {treasury.supplierOrdersPayable.toLocaleString('fr-FR')} F | À cmd : {treasury.plannedPartsToOrderCost.toLocaleString('fr-FR')} F | Fixes : {treasury.monthlyFixedCharges.toLocaleString('fr-FR')} F</span>
+                        </div>
+                        <div className="border border-gray-400 rounded p-2 bg-gray-50">
+                            <span className="text-[6pt] font-black uppercase text-gray-600 block">CAPITAL ATELIER &amp; STOCK</span>
+                            <span className="text-xs font-black font-mono block my-0.5">{treasury.totalCurrentCapital.toLocaleString('fr-FR')} F</span>
+                            <span className="text-[6pt] text-gray-600 block">Initial : {treasury.initialCapital.toLocaleString('fr-FR')} F | Stock : {treasury.stockCostValue.toLocaleString('fr-FR')} F</span>
+                        </div>
+                    </div>
+                </section>
+            )}
 
             {/* CADRE D'ÉMARGEMENT ET VISAS COMPTABLES */}
             <footer className="mt-6 pt-3 border-t border-gray-400 text-[7pt]">

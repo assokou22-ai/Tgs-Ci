@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { FeatureId } from '../types.ts';
 import SyncStatusIndicator from './SyncStatusIndicator.tsx';
 import DriveStatusBadge from './DriveStatusBadge.tsx';
@@ -9,7 +9,7 @@ import GlobalSearch from './GlobalSearch.tsx';
 import { useAppSettings } from '../hooks/useAppSettings.ts';
 import { useFirebase } from '../context/FirebaseContext.tsx';
 import { motion, AnimatePresence } from 'framer-motion';
-import { LogOutIcon, MenuIcon, ChevronLeft, ChevronRight } from 'lucide-react';
+import { LogOutIcon, MenuIcon, ChevronLeft, ChevronRight, LayoutGrid, X } from 'lucide-react';
 import { useOrientation } from '../hooks/useOrientation.ts';
 
 
@@ -38,6 +38,15 @@ interface DashboardLayoutProps {
     onExitRole?: () => void;
 }
 
+/** Libellé court pour la barre d'onglets (petits écrans). */
+const shortLabel = (label: string) => {
+    const clean = label.replace(/\(.*?\)/g, '').trim();
+    const words = clean.split(/\s+/);
+    if (clean.length <= 11) return clean;
+    const first = words[0].length >= 4 ? words[0] : words.slice(0, 2).join(' ');
+    return first.length > 12 ? first.slice(0, 11) + '.' : first;
+};
+
 const DashboardLayout: React.FC<DashboardLayoutProps> = ({ 
     title, 
     subtitle, 
@@ -53,6 +62,14 @@ const DashboardLayout: React.FC<DashboardLayoutProps> = ({
     const { user, authReady, signInWithGoogle, signOutUser } = useFirebase();
     const { isMobileLandscape } = useOrientation();
     const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+
+    // Bouton « retour » Android : ferme d'abord le menu « Plus »
+    useEffect(() => {
+        if (!isMobileMenuOpen) return;
+        const onBack = (e: Event) => { e.preventDefault(); setIsMobileMenuOpen(false); };
+        window.addEventListener('androidback', onBack);
+        return () => window.removeEventListener('androidback', onBack);
+    }, [isMobileMenuOpen]);
     
     // Persistent desktop sidebar state (default expanded)
     const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(() => {
@@ -106,13 +123,22 @@ const DashboardLayout: React.FC<DashboardLayoutProps> = ({
             onClick: item.onClick ? item.onClick : (onTabChange ? () => onTabChange(item.id) : undefined)
         }));
 
+    // Onglets du bas : 4 premiers modules (+ le module actif s'il est plus loin) et « Plus »
+    const MAX_TABS = 4;
+    const hasMore = true; // « Plus » donne aussi accès au compte, à la synchro et au changement d'espace
+    let tabItems = visibleItems.slice(0, MAX_TABS);
+    const activeItem = visibleItems.find(i => i.isActive);
+    if (hasMore && activeItem && !tabItems.includes(activeItem)) tabItems = [...tabItems.slice(0, MAX_TABS - 1), activeItem];
+    const moreActive = false;
+    void moreActive;
+
     return (
-        <div className="min-h-screen bg-black text-white selection:bg-apple-blue selection:text-white font-sans flex overflow-x-hidden">
+        <div className="min-h-[100dvh] app-bg text-white selection:bg-apple-blue selection:text-white font-sans flex overflow-x-hidden">
             
             {/* COLLAPSIBLE LEFT SIDEBAR FOR DESKTOP */}
             <aside 
                 className={`
-                    fixed top-0 left-0 bottom-0 z-[110] bg-[#0A0A0C] border-r border-white/5 
+                    fixed top-0 left-0 bottom-0 z-[110] bg-[#0A0B0F]/95 border-r border-white/5 
                     transition-all duration-300 ease-in-out hidden lg:flex flex-col
                     ${isSidebarOpen ? 'w-64' : 'w-20'}
                 `}
@@ -272,18 +298,18 @@ const DashboardLayout: React.FC<DashboardLayoutProps> = ({
             {/* MAIN PORTFOLIO PANELS AREA */}
             <div 
                 className={`
-                    flex-1 flex flex-col min-h-screen bg-black text-white transition-all duration-300 ease-in-out
+                    flex-1 flex flex-col min-h-[100dvh] min-w-0 text-white transition-all duration-300 ease-in-out
                     ${isSidebarOpen ? 'lg:pl-64' : 'lg:pl-20'}
                 `}
             >
                 {/* BARRE DE NAVIGATION EN TÊTE */}
                 <header 
                     className={`
-                        fixed top-0 right-0 z-[100] ${isMobileLandscape ? 'h-14' : 'h-16 md:h-20'} flex items-center px-3 sm:px-4 md:px-8 transition-all duration-300 ease-in-out left-0 pointer-events-none select-none
+                        fixed top-0 right-0 z-[100] ${isMobileLandscape ? 'h-12' : 'h-12 sm:h-14 lg:h-20'} pt-0 flex items-center px-2.5 sm:px-4 lg:px-8 transition-all duration-300 ease-in-out left-0 pointer-events-none select-none
                         ${isSidebarOpen ? 'lg:left-64' : 'lg:left-20'}
                     `}
                 >
-                    <div className="absolute inset-0 bg-black/75 backdrop-blur-2xl border-b border-white/5 pointer-events-none"></div>
+                    <div className="absolute inset-0 bg-[#090b10]/90 backdrop-blur-xl border-b border-white/[0.06] pointer-events-none"></div>
                     
                     <div className="relative max-w-[1800px] w-full mx-auto flex items-center justify-between gap-2 sm:gap-4 pointer-events-auto">
                         
@@ -293,7 +319,7 @@ const DashboardLayout: React.FC<DashboardLayoutProps> = ({
                                 whileHover={{ scale: 1.05 }}
                                 whileTap={{ scale: 0.95 }}
                                 onClick={handleMenuClick}
-                                className="p-2 sm:p-2.5 bg-white/5 hover:bg-white/10 rounded-2xl transition-all text-apple-blue hover:text-white border border-white/5 flex items-center gap-2 shrink-0 cursor-pointer"
+                                className="hidden lg:flex p-2.5 bg-white/5 hover:bg-white/10 rounded-2xl transition-all text-apple-blue hover:text-white border border-white/5 items-center gap-2 shrink-0 cursor-pointer"
                                 title={isSidebarOpen ? "Réduire le menu" : "Agrandir le menu"}
                             >
                                 <MenuIcon className="w-4 h-4 shrink-0" />
@@ -304,7 +330,7 @@ const DashboardLayout: React.FC<DashboardLayoutProps> = ({
                                 )}
                             </motion.button>
 
-                            <div className="w-px h-6 bg-white/10 hidden sm:block"></div>
+                            <div className="w-px h-6 bg-white/10 hidden lg:block"></div>
 
                             <div className="flex items-center gap-2 sm:gap-3 min-w-0">
                                 {(onBack || onExitRole) && (
@@ -312,7 +338,7 @@ const DashboardLayout: React.FC<DashboardLayoutProps> = ({
                                         whileHover={{ scale: 1.1 }}
                                         whileTap={{ scale: 0.9 }}
                                         onClick={onBack ? onBack : handleExit}
-                                        className="flex items-center justify-center w-8 h-8 bg-apple-blue hover:bg-blue-600 rounded-xl text-white shadow-xl shadow-blue-500/20 transition-all shrink-0 cursor-pointer"
+                                        className="no-min-h flex items-center justify-center w-8 h-8 bg-apple-blue hover:bg-blue-600 rounded-xl text-white shadow-lg shadow-blue-500/20 transition-all shrink-0 cursor-pointer"
                                         title={onBack ? "Retour" : "Quitter le module"}
                                     >
                                         <ArrowLeftIcon className="w-4 h-4" />
@@ -321,7 +347,7 @@ const DashboardLayout: React.FC<DashboardLayoutProps> = ({
                                 
                                 <div className="flex flex-col min-w-0">
                                     <div className="flex items-center gap-1.5 sm:gap-2">
-                                        <h1 className="text-xs sm:text-sm font-black text-white uppercase tracking-[0.15em] italic truncate max-w-[100px] sm:max-w-xs md:max-w-none leading-none">
+                                        <h1 className="text-[0.8rem] sm:text-sm font-black text-white uppercase tracking-[0.08em] sm:tracking-[0.15em] truncate max-w-[38vw] sm:max-w-xs md:max-w-none leading-none">
                                             {title}
                                         </h1>
                                         {statsBadge && (
@@ -358,7 +384,7 @@ const DashboardLayout: React.FC<DashboardLayoutProps> = ({
                             {/* Bouton direct visible sur tous les écrans pour quitter vers le portail */}
                             <button
                                 onClick={handleExit}
-                                className="flex items-center justify-center gap-1.5 p-2 sm:px-3 sm:py-1.5 rounded-xl bg-red-500/10 hover:bg-red-500/20 border border-red-500/30 text-red-400 text-xs font-bold transition-all active:scale-95 shrink-0 cursor-pointer"
+                                className="hidden sm:flex no-min-h items-center justify-center gap-1.5 p-2 sm:px-3 sm:py-1.5 rounded-xl bg-red-500/10 hover:bg-red-500/20 border border-red-500/30 text-red-400 text-xs font-bold transition-all active:scale-95 shrink-0 cursor-pointer"
                                 title="Quitter le module et revenir à la sélection des espaces"
                             >
                                 <ArrowUturnLeftIcon className="w-3.5 h-3.5 text-red-400" />
@@ -381,7 +407,7 @@ const DashboardLayout: React.FC<DashboardLayoutProps> = ({
                                         </button>
                                     ) : (
                                         <button 
-                                            onClick={signInWithGoogle}
+                                            onClick={() => signInWithGoogle(false)}
                                             className="hidden md:flex items-center gap-2 text-[10px] font-black uppercase tracking-widest px-3 py-1.5 rounded-full border border-blue-500/10 bg-blue-500/5 text-blue-400 hover:bg-blue-500/10 transition-all active:scale-95 shrink-0 cursor-pointer"
                                             title="Se connecter avec Google pour synchroniser de manière sécurisée"
                                         >
@@ -406,82 +432,102 @@ const DashboardLayout: React.FC<DashboardLayoutProps> = ({
                 </header>
 
                 {/* MAIN CHRONICLE CHILDREN AREA */}
-                <main className={`flex-1 ${isMobileLandscape ? 'pt-14' : 'pt-16 md:pt-20'} flex flex-col`}>
-                    <div className={`max-w-[1800px] w-full mx-auto ${isMobileLandscape ? 'p-3' : 'p-3 sm:p-4 md:p-10'} pb-28 md:pb-12`}>
+                <main className={`flex-1 ${isMobileLandscape ? 'pt-12' : 'pt-12 sm:pt-14 lg:pt-20'} flex flex-col min-w-0`}>
+                    <div className={`max-w-[1800px] w-full mx-auto ${isMobileLandscape ? 'p-2.5' : 'p-2.5 sm:p-4 lg:p-10'} pb-[calc(env(safe-area-inset-bottom,0px)+5rem)] lg:pb-12`}>
                         {children}
                     </div>
                 </main>
             </div>
 
-            {/* OVERLAY MENU MOBILE */}
+            {/* BARRE D'ONGLETS MOBILE / TABLETTE (v1.2.0) */}
+            <nav className="tabbar lg:hidden" aria-label="Navigation principale">
+                <div className="max-w-xl mx-auto grid gap-1" style={{ gridTemplateColumns: `repeat(${tabItems.length + (hasMore ? 1 : 0)}, minmax(0, 1fr))` }}>
+                    {tabItems.map((item) => {
+                        const Icon = item.icon;
+                        return (
+                            <button
+                                key={item.id}
+                                onClick={() => handleNavClick(item.onClick)}
+                                className={`tabbar-btn relative flex flex-col items-center justify-center gap-0.5 rounded-xl py-1.5 px-1 transition-colors ${item.isActive ? 'text-white' : 'text-zinc-500 active:text-zinc-200'}`}
+                                aria-current={item.isActive ? 'page' : undefined}
+                            >
+                                <span className={`flex items-center justify-center rounded-full transition-all ${item.isActive ? 'bg-apple-blue/20 px-3.5 py-1' : 'px-3.5 py-1'}`}>
+                                    {Icon && <Icon className={`w-[1.2rem] h-[1.2rem] ${item.isActive ? 'text-apple-blue' : ''}`} />}
+                                </span>
+                                {!isMobileLandscape && <span className="text-[0.62rem] font-semibold leading-tight truncate max-w-full">{shortLabel(item.label)}</span>}
+                                {item.badge !== undefined && item.badge !== 0 && (
+                                    <span className="absolute top-0.5 right-[18%] min-w-[1rem] h-4 px-1 rounded-full bg-apple-blue text-white text-[0.55rem] font-bold flex items-center justify-center">{item.badge}</span>
+                                )}
+                            </button>
+                        );
+                    })}
+                    {hasMore && (
+                        <button
+                            onClick={() => setIsMobileMenuOpen(true)}
+                            className={`tabbar-btn flex flex-col items-center justify-center gap-0.5 rounded-xl py-1.5 px-1 ${isMobileMenuOpen || moreActive ? 'text-white' : 'text-zinc-500'}`}
+                        >
+                            <span className={`flex items-center justify-center rounded-full px-3.5 py-1 ${moreActive ? 'bg-apple-blue/20' : ''}`}>
+                                <LayoutGrid className={`w-[1.2rem] h-[1.2rem] ${moreActive ? 'text-apple-blue' : ''}`} />
+                            </span>
+                            {!isMobileLandscape && <span className="text-[0.62rem] font-semibold leading-tight">Plus</span>}
+                        </button>
+                    )}
+                </div>
+            </nav>
+
+            {/* MENU « PLUS » : feuille compacte en bas d'écran */}
             <AnimatePresence>
                 {isMobileMenuOpen && (
-                    <motion.div 
-                        initial={{ opacity: 0, y: -20 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        exit={{ opacity: 0, y: -20 }}
-                        className="fixed inset-0 z-[120] bg-black/95 backdrop-blur-3xl flex flex-col pt-24 px-6 pb-12 overflow-y-auto"
+                    <motion.div
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        transition={{ duration: 0.15 }}
+                        className="fixed inset-0 z-[120] bg-black/60 lg:hidden"
+                        onClick={() => setIsMobileMenuOpen(false)}
                     >
-                        <div className="max-w-lg mx-auto w-full space-y-8">
-                            {/* Barre supérieure rapide du menu mobile avec bouton direct Quitter */}
-                            <div className="flex items-center justify-between p-3 bg-white/[0.03] border border-white/10 rounded-2xl">
-                                <button
-                                    onClick={handleExit}
-                                    className="flex items-center gap-2 px-4 py-2 bg-red-600/20 hover:bg-red-600/30 border border-red-500/40 rounded-xl text-xs font-black uppercase tracking-wider text-red-300 transition-all active:scale-95 cursor-pointer shadow-md"
-                                >
-                                    <LogOutIcon className="w-4 h-4 text-red-400" />
-                                    <span>Quitter le module</span>
-                                </button>
-
-                                <button
-                                    onClick={() => setIsMobileMenuOpen(false)}
-                                    className="flex items-center gap-1.5 px-3 py-2 bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl text-xs font-bold text-zinc-400 hover:text-white transition-all cursor-pointer"
-                                >
-                                    <span>Fermer</span>
-                                    <span className="text-zinc-500 font-mono">✕</span>
-                                </button>
+                        <div
+                            className="sheet-enter absolute left-0 right-0 bottom-0 max-h-[82dvh] overflow-y-auto rounded-t-3xl bg-[#11131a] border-t border-white/10 shadow-2xl pb-[calc(env(safe-area-inset-bottom,0px)+0.75rem)]"
+                            onClick={(e) => e.stopPropagation()}
+                        >
+                            <div className="sticky top-0 bg-[#11131a] pt-2 pb-2 px-4 z-10">
+                                <div className="w-10 h-1 rounded-full bg-white/20 mx-auto mb-2.5" />
+                                <div className="flex items-center justify-between">
+                                    <div className="min-w-0">
+                                        <p className="text-[0.62rem] font-bold uppercase tracking-[0.2em] text-apple-blue">TGS-CI · {title}</p>
+                                        <p className="text-sm font-bold text-white">Tous les modules</p>
+                                    </div>
+                                    <button onClick={() => setIsMobileMenuOpen(false)} className="no-min-h w-8 h-8 rounded-full bg-white/10 text-zinc-300 flex items-center justify-center" aria-label="Fermer">
+                                        <X className="w-4 h-4" />
+                                    </button>
+                                </div>
                             </div>
 
-                            <div className="text-center space-y-1.5">
-                                <p className="text-apple-blue font-black uppercase tracking-[0.4em] text-[10px]">REPARERMONMAC Ecosystem</p>
-                                <h2 className="text-3xl font-black text-white tracking-tighter uppercase italic">Navigation Rapide</h2>
-                            </div>
-                            
-                            <div className="grid grid-cols-2 gap-4">
-                                {visibleItems.map((item) => (
-                                    <motion.button
-                                        key={item.id}
-                                        whileHover={{ scale: 1.02 }}
-                                        whileTap={{ scale: 0.98 }}
-                                        onClick={() => handleNavClick(item.onClick)}
-                                        className={`
-                                            flex flex-col items-center justify-center aspect-square rounded-[32px] border transition-all gap-3 p-5
-                                            ${item.isActive 
-                                                ? 'bg-apple-blue border-blue-400 text-white shadow-2xl shadow-blue-500/30' 
-                                                : 'bg-white/5 border-white/5 text-apple-muted hover:bg-white/10 hover:border-white/10'
-                                            }
-                                        `}
-                                    >
-                                        <div className={`p-3.5 rounded-2xl ${item.isActive ? 'bg-white/20' : 'bg-apple-blue/10'}`}>
-                                            <item.icon className={`w-7 h-7 ${item.isActive ? 'text-white' : 'text-apple-blue'}`} />
-                                        </div>
-                                        <div className="flex flex-col items-center gap-1 text-center">
-                                            <span className="text-[11px] font-black uppercase leading-tight tracking-wider">{item.label}</span>
+                            <div className="px-3 grid grid-cols-1 xs:grid-cols-2 gap-1.5">
+                                {visibleItems.map((item) => {
+                                    const Icon = item.icon;
+                                    return (
+                                        <button
+                                            key={item.id}
+                                            onClick={() => handleNavClick(item.onClick)}
+                                            className={`flex items-center gap-3 rounded-2xl px-3 py-2.5 text-left border transition-colors ${item.isActive ? 'bg-apple-blue/15 border-apple-blue/40 text-white' : 'bg-white/[0.03] border-white/[0.05] text-zinc-300 active:bg-white/10'}`}
+                                        >
+                                            <span className={`shrink-0 w-8 h-8 rounded-xl flex items-center justify-center ${item.isActive ? 'bg-apple-blue text-white' : 'bg-apple-blue/10 text-apple-blue'}`}>
+                                                {Icon && <Icon className="w-4 h-4" />}
+                                            </span>
+                                            <span className="flex-1 min-w-0 text-[0.8rem] font-semibold leading-tight line-clamp-2">{item.label}</span>
                                             {item.badge !== undefined && (
-                                                <span className="px-2 py-0.5 rounded-full bg-apple-blue text-white text-[9px] font-bold border border-white/20">
-                                                    {item.badge}
-                                                </span>
+                                                <span className="shrink-0 px-1.5 py-0.5 rounded-full bg-apple-blue text-white text-[0.6rem] font-bold">{item.badge}</span>
                                             )}
-                                        </div>
-                                    </motion.button>
-                                ))}
+                                        </button>
+                                    );
+                                })}
                             </div>
 
-                            {/* Santé & Synchronisation dans le menu mobile */}
-                            <div className="p-4 bg-white/[0.03] border border-white/10 rounded-2xl flex items-center justify-between gap-3">
-                                <div>
-                                    <span className="text-[10px] font-black uppercase tracking-widest text-zinc-400">Cloud & Stockage</span>
-                                    <p className="text-[10px] text-zinc-500 mt-0.5">Données protégées localement et synchronisées</p>
+                            <div className="mx-3 mt-3 p-3 rounded-2xl bg-white/[0.03] border border-white/[0.06] flex items-center justify-between gap-3">
+                                <div className="min-w-0">
+                                    <p className="text-[0.7rem] font-bold text-zinc-300">Cloud & stockage</p>
+                                    <p className="text-[0.65rem] text-zinc-500 truncate">{user?.email || 'Non connecté'}</p>
                                 </div>
                                 <div className="flex items-center gap-2 shrink-0">
                                     <StorageHealthIndicator />
@@ -489,37 +535,18 @@ const DashboardLayout: React.FC<DashboardLayoutProps> = ({
                                 </div>
                             </div>
 
-                            <div className="pt-6 border-t border-white/10 flex flex-col gap-3">
-                                {authReady && (
-                                    user ? (
-                                        <button 
-                                            onClick={() => { signOutUser(); setIsMobileMenuOpen(false); }}
-                                            className="flex items-center justify-center gap-3 w-full py-4 bg-red-600/10 border border-red-500/20 rounded-2xl text-xs font-black uppercase tracking-widest text-red-500 hover:bg-red-500/20 transition-all"
-                                        >
-                                            {user.photoURL && <img src={user.photoURL} alt="" className="w-5 h-5 rounded-full" referrerPolicy="no-referrer" />}
-                                            <span>Déconnexion ({user.displayName || 'Google'})</span>
-                                        </button>
-                                    ) : (
-                                        <button 
-                                            onClick={() => { signInWithGoogle(); setIsMobileMenuOpen(false); }}
-                                            className="flex items-center justify-center gap-3 w-full py-4 bg-blue-600/10 border border-blue-500/20 rounded-2xl text-xs font-black uppercase tracking-widest text-blue-400 hover:bg-blue-500/20 transition-all"
-                                        >
-                                            Connexion Google Sync
-                                        </button>
-                                    )
-                                )}
-                                <button 
-                                    onClick={handleExit}
-                                    className="flex items-center justify-center gap-3 w-full py-4 bg-red-600/20 hover:bg-red-600/30 border border-red-500/40 rounded-2xl text-xs font-black uppercase tracking-widest text-red-300 transition-all cursor-pointer shadow-lg active:scale-95"
-                                >
-                                    <LogOutIcon className="w-4 h-4 text-red-400" />
-                                    <span>Quitter le module (Accueil)</span>
-                                </button>
-                                <button 
-                                    onClick={() => setIsMobileMenuOpen(false)} 
-                                    className="w-full py-3 text-xs font-bold uppercase text-zinc-400 hover:text-white transition-colors tracking-widest"
-                                >
-                                    Fermer ce menu (rester ici)
+                            <div className="px-3 mt-3 grid grid-cols-2 gap-2">
+                                {authReady && (user ? (
+                                    <button onClick={() => { signOutUser(); setIsMobileMenuOpen(false); }} className="flex items-center justify-center gap-2 py-2.5 rounded-xl bg-white/5 border border-white/10 text-[0.72rem] font-bold text-zinc-300">
+                                        <LogOutIcon className="w-4 h-4" /> Déconnexion
+                                    </button>
+                                ) : (
+                                    <button onClick={() => { signInWithGoogle(false); setIsMobileMenuOpen(false); }} className="flex items-center justify-center gap-2 py-2.5 rounded-xl bg-blue-600/15 border border-blue-500/30 text-[0.72rem] font-bold text-blue-300">
+                                        Connexion Google
+                                    </button>
+                                ))}
+                                <button onClick={handleExit} className={`flex items-center justify-center gap-2 py-2.5 rounded-xl bg-red-600/15 border border-red-500/30 text-[0.72rem] font-bold text-red-300 ${authReady ? '' : 'col-span-2'}`}>
+                                    <ArrowUturnLeftIcon className="w-4 h-4" /> Changer d'espace
                                 </button>
                             </div>
                         </div>

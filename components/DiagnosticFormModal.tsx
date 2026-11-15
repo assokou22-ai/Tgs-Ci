@@ -60,14 +60,38 @@ const DiagnosticFormModal: React.FC<DiagnosticFormModalProps> = ({ isOpen, onClo
         }
       }
 
+      // Récupérer toutes les photos possibles du dossier (diagnosticImages, photos, attachments, intakeImages)
+      const initialImages: string[] = [];
+      const legacy = ticket as unknown as { diagnosis?: string; diagnostic?: string; initialDiagnosis?: string; photos?: string[]; inspectionPhotos?: string[] };
+      const seen = new Set<string>();
+      const addImg = (img?: string) => {
+        if (img && typeof img === 'string' && img.trim().length > 0 && !seen.has(img)) {
+          seen.add(img);
+          initialImages.push(img);
+        }
+      };
+      if (Array.isArray(ticket.diagnosticImages)) ticket.diagnosticImages.forEach(addImg);
+      if (Array.isArray(legacy.photos)) legacy.photos.forEach(addImg);
+      if (Array.isArray(legacy.inspectionPhotos)) legacy.inspectionPhotos.forEach(addImg);
+      if (Array.isArray(ticket.attachments)) {
+        ticket.attachments.forEach(att => {
+          if (att && att.data && (att.type === 'image' || att.data.startsWith('data:image'))) {
+            addImg(att.data);
+          }
+        });
+      }
+      if (initialImages.length === 0 && Array.isArray(ticket.intakeImages)) {
+        ticket.intakeImages.forEach(addImg);
+      }
+
       const timer = setTimeout(() => {
         setSelectedScenario(activeCond);
         setReport(initialReport as DiagnosticCheck[]);
-        setImages(ticket.diagnosticImages || []);
+        setImages(initialImages);
       }, 0);
       return () => clearTimeout(timer);
     }
-  }, [isOpen, ticket.diagnosticReport, ticket.diagnosticImages, ticket.diagnosticSheetB?.entryCondition]);
+  }, [isOpen, ticket]);
 
   const handleScenarioChange = (newScenario: EntryCondition) => {
     // Check if the current report contains any customized modifications
@@ -251,6 +275,33 @@ const DiagnosticFormModal: React.FC<DiagnosticFormModalProps> = ({ isOpen, onClo
             <button onClick={onClose} className="text-apple-muted hover:text-white transition-colors text-2xl font-bold ml-4">&times;</button>
         </div>
 
+        {/* Rappel du diagnostic historique ou remarques antérieures */}
+        {(() => {
+          const leg = ticket as unknown as { diagnosis?: string; diagnostic?: string; initialDiagnosis?: string };
+          const diagStr = leg.diagnosis || leg.diagnostic || leg.initialDiagnosis || ticket.customFields?.diagnostic;
+          const constatsStr = ticket.customFields?.constatsParticuliers;
+          if (!diagStr && !constatsStr) return null;
+          return (
+            <div className="p-3 bg-purple-950/40 border border-purple-500/40 rounded-xl mb-3 text-xs space-y-1.5 shadow-inner">
+              <span className="text-[9px] font-black uppercase tracking-wider text-purple-300 flex items-center gap-1.5">
+                <CloudArrowDownIcon className="w-3.5 h-3.5 text-purple-400" /> Informations diagnostic antérieures enregistrées
+              </span>
+              {diagStr && (
+                <p className="text-slate-200 text-xs italic">
+                  <span className="font-bold text-slate-400 not-italic uppercase text-[10px]">Diagnostic initial : </span>
+                  {String(diagStr)}
+                </p>
+              )}
+              {constatsStr && (
+                <p className="text-slate-300 text-xs italic">
+                  <span className="font-bold text-slate-400 not-italic uppercase text-[10px]">Constats particuliers : </span>
+                  {constatsStr}
+                </p>
+              )}
+            </div>
+          );
+        })()}
+
         {/* Quick Batch Bar */}
         <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 bg-white/[0.03] rounded-xl border border-white/5 mb-3 text-[10px]">
           <div className="text-slate-400 font-bold uppercase tracking-wider text-[9px]">
@@ -339,7 +390,10 @@ const DiagnosticFormModal: React.FC<DiagnosticFormModalProps> = ({ isOpen, onClo
                       
                       <button 
                           type="button" 
-                          onClick={() => cameraInputRef.current?.click()} 
+                          onClick={() => {
+                              if (cameraInputRef.current) cameraInputRef.current.value = '';
+                              cameraInputRef.current?.click();
+                          }} 
                           disabled={images.length >= 6}
                           className="px-3.5 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white text-[10px] font-black rounded-xl uppercase tracking-widest shadow-lg shadow-blue-900/20 flex items-center gap-1.5 transition-all"
                       >
@@ -347,12 +401,33 @@ const DiagnosticFormModal: React.FC<DiagnosticFormModalProps> = ({ isOpen, onClo
                       </button>
                       <button 
                           type="button" 
-                          onClick={() => fileInputRef.current?.click()} 
+                          onClick={() => {
+                              if (fileInputRef.current) fileInputRef.current.value = '';
+                              fileInputRef.current?.click();
+                          }} 
                           disabled={images.length >= 6}
                           className="px-3.5 py-2 bg-white/10 hover:bg-white/20 disabled:opacity-40 text-white text-[10px] font-black rounded-xl uppercase tracking-widest flex items-center gap-1.5 transition-all"
                       >
                           <PhotoIcon className="w-3.5 h-3.5 text-slate-300" /> Galerie
                       </button>
+                      {ticket.intakeImages && ticket.intakeImages.length > 0 && images.length < 6 && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const current = [...images];
+                            ticket.intakeImages?.forEach(img => {
+                              if (current.length < 6 && !current.includes(img)) {
+                                current.push(img);
+                              }
+                            });
+                            setImages(current);
+                          }}
+                          className="px-3 py-2 bg-purple-600/20 hover:bg-purple-600/30 text-purple-300 border border-purple-500/40 text-[10px] font-black rounded-xl uppercase tracking-widest flex items-center gap-1.5 transition-all"
+                          title="Importer les photos enregistrées au dépôt initial"
+                        >
+                          <CloudArrowDownIcon className="w-3.5 h-3.5 text-purple-400" /> + Photos Dépôt ({ticket.intakeImages.length})
+                        </button>
+                      )}
                   </div>
               </div>
 

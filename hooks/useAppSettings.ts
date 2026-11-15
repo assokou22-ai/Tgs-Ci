@@ -1,7 +1,7 @@
 
 import React, { useState, useCallback, createContext, useContext, ReactNode, useMemo } from 'react';
 import { storageService } from '../services/storageService.ts';
-import { CustomFieldDef, ThemeType, ColorPalette, AppFeatures, FeatureId } from '../types.ts';
+import { CustomFieldDef, ThemeType, ColorPalette, AppFeatures, FeatureId, ProfitabilitySettings } from '../types.ts';
 
 export interface PrintSettings {
   showTechnicianNotes: boolean;
@@ -20,7 +20,9 @@ export interface PrinterConfig {
   id: string;
   name: string;
   type: 'thermal_80' | 'thermal_58' | 'office_a4' | 'labels_zebra' | 'other';
-  connection: 'browser' | 'network' | 'bluetooth' | 'usb';
+  connection: 'browser' | 'network' | 'bluetooth' | 'usb' | 'pc_relay';
+  /** Nom exact de l'imprimante sous Windows (relais PC) */
+  windowsName?: string;
   address?: string;
   paperWidth?: number;
   marginOffset?: number; // offset in mm
@@ -71,6 +73,7 @@ export interface AppSettings {
   printers: PrinterConfig[];
   device: DeviceOptimizationSettings;
   workshop: WorkshopSettings;
+  profitability: ProfitabilitySettings;
   syncEmails?: string[];
   backupAppIdentifier?: string;
 }
@@ -130,11 +133,21 @@ const defaultSettings: AppSettings = {
   },
   printers: [
     {
+      id: 'hp_p1566',
+      name: 'HP LaserJet P1566 (partagée via le PC)',
+      type: 'office_a4',
+      connection: 'pc_relay',
+      address: '',
+      windowsName: 'HP LaserJet P1566',
+      isDefaultInvoices: true,
+      isDefaultTickets: true
+    },
+    {
       id: 'default_system',
       name: 'Imprimante Standard (Navigateur/A4)',
       type: 'office_a4',
       connection: 'browser',
-      isDefaultInvoices: true,
+      isDefaultInvoices: false,
       isDefaultTickets: false
     },
     {
@@ -143,7 +156,7 @@ const defaultSettings: AppSettings = {
       type: 'thermal_80',
       connection: 'browser',
       isDefaultInvoices: false,
-      isDefaultTickets: true,
+      isDefaultTickets: false,
       marginOffset: 0,
       fontContrast: 'standard'
     }
@@ -167,6 +180,19 @@ const defaultSettings: AppSettings = {
     currency: 'F CFA',
     tvaRate: 18,
     defaultWarrantyMonths: 3
+  },
+  profitability: {
+    enableProfitabilityIndicators: true,
+    enableTreasuryTracking: false,
+    taxProvisionRate: 0,
+    fixedCharges: [],
+    initialCapital: 2000000,
+    reinvestmentRate: 0,
+    manualTaxReservePaid: 0,
+    manualReinvestedUsed: 0,
+    includeFacturesInTreasury: true,
+    lowTreasuryThreshold: 0,
+    enableOptionalAlerts: false
   },
   syncEmails: ['contact@tgs-ci.com'],
   backupAppIdentifier: 'RM_MACBOOK'
@@ -198,12 +224,22 @@ interface AppSettingsContextType {
     isFeatureEnabled: (id: FeatureId) => boolean;
 }
 
+/** v1.2.0 : la HP LaserJet P1566 (USB sur le PC, partagée en réseau) devient l'imprimante par défaut. */
+const ensureDefaultPrinter = (s: AppSettings): AppSettings => {
+    const printers = Array.isArray(s.printers) ? [...s.printers] : [];
+    if (printers.some(p => p.id === 'hp_p1566')) return s;
+    const hp = defaultSettings.printers.find(p => p.id === 'hp_p1566')!;
+    const updated = { ...s, printers: [{ ...hp }, ...printers.map(p => ({ ...p, isDefaultInvoices: false, isDefaultTickets: false }))] };
+    try { storageService.set(SETTINGS_KEY, updated); } catch { /* ignore */ }
+    return updated;
+};
+
 const AppSettingsContext = createContext<AppSettingsContextType | null>(null);
 
 export const AppSettingsProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
     const [settings, setSettings] = useState<AppSettings>(() => {
       const stored = storageService.get<Partial<AppSettings>>(SETTINGS_KEY, defaultSettings);
-      return deepMerge(defaultSettings, stored);
+      return ensureDefaultPrinter(deepMerge(defaultSettings as unknown as Record<string, unknown>, stored) as unknown as AppSettings);
     });
 
     const updateSettings = useCallback(<K extends keyof AppSettings>(category: K, newSettings: Partial<AppSettings[K]> | AppSettings[K]) => {

@@ -34,10 +34,10 @@ const SyncStatusIndicator: React.FC<SyncStatusIndicatorProps> = ({ compact }) =>
     const { isMobile, isTablet } = useDeviceProfile();
     const isCompactMode = compact !== undefined ? compact : (isMobile || isTablet);
     const { showToast } = useToastContext();
-    const { user, googleAccessToken, signInWithGoogle, driveSyncStatus, driveMetadata } = useFirebase();
+    const { user, authReady, googleAccessToken, signInWithGoogle, driveSyncStatus, driveMetadata } = useFirebase();
     const isOnline = useOnlineStatus();
     const quality = useNetworkQuality();
-    const { isSyncing, pendingChanges } = useSyncStatus();
+    const { isSyncing, pendingChanges, lastError, isQuotaExceeded } = useSyncStatus();
     const [isForcingSync, setIsForcingSync] = useState(false);
     const [isOpen, setIsOpen] = useState(false);
     const [queueItems, setQueueItems] = useState<SyncQueueItem[]>([]);
@@ -195,17 +195,25 @@ const SyncStatusIndicator: React.FC<SyncStatusIndicatorProps> = ({ compact }) =>
 
     const handleManualSync = async () => {
         if (isSyncing || !isOnline || isForcingSync) return;
-        
+        if (!user) {
+            showToast("Connexion Google requise pour synchroniser avec le Cloud.", "warning");
+            await signInWithGoogle(false);
+            return;
+        }
+
         setIsForcingSync(true);
         showToast("Synchronisation complète lancée (Envoi + Réception)...", "info");
-        
+
         try {
-            await processSyncQueue();
-            await syncFromCloud();
+            const pushRes = await processSyncQueue(true);
+            if (!pushRes.ok) {
+                throw new Error(pushRes.error || "Échec de l'envoi local vers le Cloud.");
+            }
+            await syncFromCloud(true);
             showToast("Synchronisation complète réussie !", "success");
         } catch (error) {
             console.error("Manual sync failed:", error);
-            showToast("Échec de la synchronisation", "error");
+            showToast(error instanceof Error ? error.message : "Échec de la synchronisation", "error");
         } finally {
             setIsForcingSync(false);
             loadQueue();
@@ -287,8 +295,9 @@ const SyncStatusIndicator: React.FC<SyncStatusIndicatorProps> = ({ compact }) =>
 
     const connectionInfo = getConnectionQualityLabel();
 
-    const isRed = !isOnline || quality <= 1;
-    const isOrange = isOnline && (quality === 2 || quality === 3 || isSyncing || isForcingSync || pendingChanges > 0);
+    const isAuthMissing = authReady && !user;
+    const isRed = !isOnline || quality <= 1 || Boolean(isQuotaExceeded);
+    const isOrange = isOnline && !isRed && (isAuthMissing || Boolean(lastError) || quality === 2 || quality === 3 || isSyncing || isForcingSync || pendingChanges > 0);
 
     const renderBars = () => {
         if (!isOnline) {
@@ -387,11 +396,17 @@ const SyncStatusIndicator: React.FC<SyncStatusIndicatorProps> = ({ compact }) =>
 
                     <span className="font-mono hidden sm:inline">
                         {finalIsRed && !isOnline
-                            ? 'HORS LIGNE' 
-                            : isSyncing || isForcingSync 
-                            ? 'SYNC EN COURS' 
-                            : pendingChanges > 0 
-                            ? `ATTENTE (${pendingChanges})` 
+                            ? 'HORS LIGNE'
+                            : isQuotaExceeded
+                            ? 'QUOTA CLOUD'
+                            : isAuthMissing
+                            ? 'GOOGLE REQUIS'
+                            : isSyncing || isForcingSync
+                            ? 'SYNC EN COURS'
+                            : lastError
+                            ? 'ERREUR SYNC'
+                            : pendingChanges > 0
+                            ? `ATTENTE (${pendingChanges})`
                             : 'SYNC CLOUD OK'
                         }
                     </span>
@@ -458,16 +473,49 @@ const SyncStatusIndicator: React.FC<SyncStatusIndicatorProps> = ({ compact }) =>
                                         </div>
                                     </div>
 
-                                    {/* Security promise details */}
-                                    <div className="p-3 bg-zinc-950/80 rounded-xl border border-white/5 flex gap-2.5">
-                                        <ShieldCheckIcon className="w-5 h-5 text-blue-500 shrink-0 mt-0.5" />
-                                        <div className="space-y-1">
-                                            <h4 className="text-[10px] font-bold text-zinc-300 uppercase tracking-wide">Architecturation Anti-Bogue de Réseau</h4>
-                                            <p className="text-[10px] text-zinc-500 leading-relaxed">
-                                                En cas d&apos;interventions dans des zones à faible signal, chaque ajout/modification reste scellé localement dans la base IndexedDB persistante de l&apos;appareil. Zéro perte de données possible.
-                                            </p>
+                                    {/* Alerte connexion Google ou quota Cloud */}
+                                    {isAuthMissing ? (
+                                        <div className="p-3 bg-orange-950/30 rounded-xl border border-orange-500/30 space-y-2.5">
+                                            <div className="flex gap-2.5">
+                                                <ExclamationTriangleIcon className="w-5 h-5 text-orange-400 shrink-0 mt-0.5" />
+                                                <div className="space-y-1">
+                                                    <h4 className="text-[10px] font-bold text-orange-300 uppercase tracking-wide">Connexion Google Requise</h4>
+                                                    <p className="text-[10px] text-zinc-300 leading-relaxed">
+                                                        Cet appareil n&apos;est pas encore connecté à Google. Connectez-vous pour synchroniser les fiches avec le Cloud.
+                                                    </p>
+                                                </div>
+                                            </div>
+                                            <button
+                                                onClick={() => signInWithGoogle(false)}
+                                                disabled={!isOnline}
+                                                className="w-full py-2.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white font-black rounded-lg uppercase tracking-widest text-[9px] transition-all"
+                                            >
+                                                Connecter Google &amp; Synchroniser
+                                            </button>
                                         </div>
-                                    </div>
+                                    ) : (isQuotaExceeded || lastError) ? (
+                                        <div className="p-3 bg-red-950/30 rounded-xl border border-red-500/30 flex gap-2.5">
+                                            <ExclamationTriangleIcon className="w-5 h-5 text-red-400 shrink-0 mt-0.5" />
+                                            <div className="space-y-1">
+                                                <h4 className="text-[10px] font-bold text-red-300 uppercase tracking-wide">
+                                                    {isQuotaExceeded ? 'Quota Journalier Cloud Atteint' : 'Incident de Synchronisation'}
+                                                </h4>
+                                                <p className="text-[10px] text-zinc-300 leading-relaxed">
+                                                    {lastError || 'Quota Cloud temporairement dépassé.'}
+                                                </p>
+                                            </div>
+                                        </div>
+                                    ) : (
+                                        <div className="p-3 bg-zinc-950/80 rounded-xl border border-white/5 flex gap-2.5">
+                                            <ShieldCheckIcon className="w-5 h-5 text-blue-500 shrink-0 mt-0.5" />
+                                            <div className="space-y-1">
+                                                <h4 className="text-[10px] font-bold text-zinc-300 uppercase tracking-wide">Architecturation Anti-Bogue de Réseau</h4>
+                                                <p className="text-[10px] text-zinc-500 leading-relaxed">
+                                                    En cas d&apos;interventions dans des zones à faible signal, chaque ajout/modification reste scellé localement dans la base IndexedDB persistante de l&apos;appareil. Zéro perte de données possible.
+                                                </p>
+                                            </div>
+                                        </div>
+                                    )}
                                 </div>
 
                                 {/* État Stockage Local & Persistance */}

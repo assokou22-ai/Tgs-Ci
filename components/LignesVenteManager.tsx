@@ -1,10 +1,19 @@
 // components/LignesVenteManager.tsx
-import React, { useState, useEffect } from 'react';
-import { RepairTicket, LigneVenteFiche, StockItem } from '../types.ts';
+import React, { useState, useEffect, useMemo } from 'react';
+import { RepairTicket, LigneVenteFiche, StockItem, ActivityCategory, PartSupplySource } from '../types.ts';
 import { getCompatibleStockItems, calculateLineItemPrices } from '../services/inventoryService.ts';
 import { dbGetStock } from '../services/dbService.ts';
 import { TrashIcon, PlusIcon, BanknotesIcon, ExclamationTriangleIcon, PencilIcon, SparklesIcon } from './icons.tsx';
 import { isLegacyTicket } from '../utils/ticketHelpers.ts';
+import { useAppSettings } from '../hooks/useAppSettings.ts';
+import { useProfitabilityData } from '../hooks/useProfitabilityData.ts';
+import {
+    ACTIVITY_LABELS,
+    PART_SOURCE_SHORT_LABELS,
+    calculateTicketProfitability,
+    categorizeLineActivity,
+    inferLinePartSource,
+} from '../utils/profitability.ts';
 
 // Détermine si la fiche est soumise à la nouvelle politique de stock stricte (créée le 18 Juin 2026 ou après)
 const isNewStockPolicy = (ticketCreatedAt?: string): boolean => {
@@ -36,7 +45,7 @@ interface LignesVenteManagerProps {
 }
 
 export const LignesVenteManager: React.FC<LignesVenteManagerProps> = ({ ticket, onChange }) => {
-    const lines = ticket.ligneVentes || [];
+    const lines = useMemo(() => ticket.ligneVentes || [], [ticket.ligneVentes]);
     const isNewPolicy = isNewStockPolicy(ticket.createdAt);
 
     // State pour l'ajout/modification d'une ligne
@@ -60,6 +69,13 @@ export const LignesVenteManager: React.FC<LignesVenteManagerProps> = ({ ticket, 
     const [reductionValeur, setReductionValeur] = useState(0);
     const [motifReduction, setMotifReduction] = useState('');
     const [prixAchat, setPrixAchat] = useState(0); // Pour le calcul de marge
+    const [activiteOverride, setActiviteOverride] = useState<'' | ActivityCategory>('');
+    const [sourcePiece, setSourcePiece] = useState<'' | PartSupplySource>('');
+
+    const { settings } = useAppSettings();
+    const { stockMap, stockUsages, externalPurchases } = useProfitabilityData();
+    const taxProvisionRate = settings.profitability?.taxProvisionRate ?? 0;
+    const showProfitability = settings.profitability?.enableProfitabilityIndicators !== false;
 
     // Charger les articles de stock compatibles quand la catégorie change
     useEffect(() => {
@@ -129,19 +145,21 @@ export const LignesVenteManager: React.FC<LignesVenteManagerProps> = ({ ticket, 
         };
     }, [ticket.macModel, ticket.modelNumber]);
 
-    // Lorsqu'on sélectionne un article de stock
+    // Lorsqu'on sélectionne un article de stock (aucun blocage même si dispo <= 0)
     const handleSelectStockItem = (item: StockItem) => {
         setSelectedStockItem(item);
         setDesignation(item.name);
         setPrixStandard(item.sellingPrice || 0);
         setPrixAchat(item.cost || 0);
         
-        // Auto statut intelligent (réservé si du stock est dispo)
+        // Auto statut & provenance intelligents (sans aucun blocage)
         const dispo = (item.quantity || 0) - (item.quantite_reservee || 0);
         if (dispo >= 1) {
             setStatutLigne('reserve');
+            setSourcePiece('en_stock');
         } else {
             setStatutLigne('prevu');
+            setSourcePiece('a_commander');
         }
     };
 
@@ -154,11 +172,13 @@ export const LignesVenteManager: React.FC<LignesVenteManagerProps> = ({ ticket, 
         quantite
     );
 
+    const effectivePrixAchat = sourcePiece === 'fourni_client' ? 0 : prixAchat;
+
     // Estimation de la marge brute
     let margeBrute: number | null = null;
     let warningMargeDangereuse = false;
-    if (prix_unitaire_final > 0 && prixAchat > 0) {
-        margeBrute = (prix_unitaire_final - prixAchat) / prix_unitaire_final;
+    if (prix_unitaire_final > 0 && effectivePrixAchat > 0) {
+        margeBrute = (prix_unitaire_final - effectivePrixAchat) / prix_unitaire_final;
         if (margeBrute < 0.2) { // En dessous de 20%
             warningMargeDangereuse = true;
         }
@@ -168,16 +188,23 @@ export const LignesVenteManager: React.FC<LignesVenteManagerProps> = ({ ticket, 
         e.preventDefault();
         if (!designation.trim()) return;
 
+        // Zéro blocage si l'utilisateur saisit une ligne sans article de stock sélectionné,
+        // et une pièce fournie par le client ne doit jamais décrémenter le stock atelier
+        const resolvedTypeLigne =
+            sourcePiece === 'fourni_client'
+                ? (typeLigne === 'article_stock' ? 'prestation' : typeLigne)
+                : (typeLigne === 'article_stock' && !selectedStockItem ? 'article_hors_stock' : typeLigne);
+
         const newLine: LigneVenteFiche = {
             id: editingLineId || generateLineId(),
             fiche_id: ticket.id || '',
-            type_ligne: typeLigne,
-            article_stock_id: typeLigne === 'article_stock' ? selectedStockItem?.id || null : null,
+            type_ligne: resolvedTypeLigne,
+            article_stock_id: resolvedTypeLigne === 'article_stock' && sourcePiece !== 'fourni_client' ? selectedStockItem?.id || null : null,
             designation: designation.toUpperCase(),
-            modele_compatible: typeLigne === 'article_stock' && selectedStockItem?.compatibleModels?.join(', ')
+            modele_compatible: resolvedTypeLigne === 'article_stock' && selectedStockItem?.compatibleModels?.join(', ')
                 ? selectedStockItem.compatibleModels.join(', ')
                 : (ticket.macModel || 'GÉNÉRIQUE').toUpperCase(),
-            categorie: typeLigne === 'article_stock' ? selectedCategoryId : 'HORS_STOCK',
+            categorie: resolvedTypeLigne === 'article_stock' ? (selectedCategoryId || 'AUTRE') : 'HORS_STOCK',
             quantite: quantite,
             prix_unitaire_standard: prixStandard,
             reduction_active: reductionActive,
@@ -186,7 +213,9 @@ export const LignesVenteManager: React.FC<LignesVenteManagerProps> = ({ ticket, 
             prix_unitaire_final: prix_unitaire_final,
             motif_reduction: reductionActive ? motifReduction : '',
             statut_ligne: statutLigne,
-            prix_achat: prixAchat
+            prix_achat: effectivePrixAchat,
+            ...(activiteOverride ? { activite: activiteOverride } : {}),
+            ...(sourcePiece ? { source_piece: sourcePiece } : {}),
         };
 
         if (editingLineId) {
@@ -212,6 +241,8 @@ export const LignesVenteManager: React.FC<LignesVenteManagerProps> = ({ ticket, 
         setReductionType('pourcentage');
         setReductionValeur(0);
         setMotifReduction('');
+        setActiviteOverride('');
+        setSourcePiece('');
     };
 
     const handleStartEdit = (l: LigneVenteFiche) => {
@@ -233,13 +264,15 @@ export const LignesVenteManager: React.FC<LignesVenteManagerProps> = ({ ticket, 
         
         setDesignation(l.designation);
         setPrixStandard(l.prix_unitaire_standard);
-        setPrixAchat(l.prix_achat || 0);
+        setPrixAchat(l.source_piece === 'fourni_client' ? 0 : (l.prix_achat || 0));
         setQuantite(l.quantite);
         setStatutLigne(l.statut_ligne);
         setReductionActive(l.reduction_active);
         setReductionType(l.reduction_type || 'pourcentage');
         setReductionValeur(l.reduction_valeur || 0);
         setMotifReduction(l.motif_reduction || '');
+        setActiviteOverride(l.activite || '');
+        setSourcePiece(l.source_piece || '');
     };
 
     const handleDeleteLine = (idToDelete: string) => {
@@ -249,6 +282,26 @@ export const LignesVenteManager: React.FC<LignesVenteManagerProps> = ({ ticket, 
     const totalFiche = lines.reduce((acc, l) => acc + (l.prix_unitaire_final * l.quantite), 0);
     const totalStandardFiche = lines.reduce((acc, l) => acc + (l.prix_unitaire_standard * l.quantite), 0);
     const totalRemiseFiche = totalStandardFiche - totalFiche;
+
+    const autoDetectedActivite = useMemo(() => categorizeLineActivity({
+        designation,
+        categorie: typeLigne === 'article_stock' ? selectedCategoryId : 'HORS_STOCK',
+        type_ligne: typeLigne
+    }), [designation, selectedCategoryId, typeLigne]);
+
+    const dossierProfitability = useMemo(() => {
+        const previewTicket: Partial<RepairTicket> = {
+            ...ticket,
+            id: ticket.id || '__draft__',
+            ligneVentes: lines,
+        };
+        return calculateTicketProfitability(previewTicket, {
+            stockMap,
+            stockUsages: ticket.id ? stockUsages : [],
+            externalPurchases: ticket.id ? externalPurchases : [],
+            taxProvisionRate,
+        });
+    }, [ticket, lines, stockMap, stockUsages, externalPurchases, taxProvisionRate]);
 
     return (
         <div className="space-y-6">
@@ -348,33 +401,34 @@ export const LignesVenteManager: React.FC<LignesVenteManagerProps> = ({ ticket, 
                             <label className="block text-[8px] font-black text-gray-400 uppercase tracking-wider mb-1">Type d'imputation</label>
                             <select 
                                 value={typeLigne}
-                                onChange={(e) => {
-                                    setTypeLigne(e.target.value as 'article_stock' | 'article_hors_stock' | 'prestation');
+                                    onChange={(e) => {
+                                    const nextType = e.target.value as 'article_stock' | 'article_hors_stock' | 'prestation';
+                                    setTypeLigne(nextType);
                                     setSelectedCategoryId('');
                                     setSelectedStockItem(null);
                                     setDesignation('');
                                     setPrixStandard(0);
                                     setPrixAchat(0);
+                                    setSourcePiece(nextType === 'article_hors_stock' ? 'a_commander' : nextType === 'article_stock' ? 'en_stock' : '');
                                 }}
                                 className="w-full bg-zinc-900 border border-white/10 rounded-xl px-3 py-2.5 text-xs text-white uppercase font-bold focus:border-blue-500 focus:outline-none"
                             >
                                 <option value="article_stock">🛒 Pièce de l'Inventaire</option>
-                                <option value="article_hors_stock">📦 Pièce Hors-Stock</option>
+                                <option value="article_hors_stock">📦 Pièce Hors-Stock / À commander</option>
                                 <option value="prestation">⚙️ Main d'œuvre / Prestation</option>
                             </select>
                         </div>
 
-                        {/* Catégorie (pour lier au stock) */}
+                        {/* Catégorie (pour lier au stock — jamais bloquante) */}
                         {typeLigne === 'article_stock' && (
                             <div>
-                                <label className="block text-[8px] font-black text-gray-400 uppercase tracking-wider mb-1">Catégorie Pièce</label>
+                                <label className="block text-[8px] font-black text-gray-400 uppercase tracking-wider mb-1">Catégorie Pièce (optionnelle)</label>
                                 <select 
                                     value={selectedCategoryId}
                                     onChange={(e) => setSelectedCategoryId(e.target.value)}
                                     className="w-full bg-zinc-900 border border-white/10 rounded-xl px-3 py-2.5 text-xs text-white uppercase font-bold focus:border-blue-500 focus:outline-none"
-                                    required={isNewPolicy}
                                 >
-                                    <option value="">-- Choisir --</option>
+                                    <option value="">-- Libre / Toutes --</option>
                                     <option value="ECRAN">Écran</option>
                                     <option value="BATTERIE">Batterie</option>
                                     <option value="CLAVIER">Clavier</option>
@@ -386,20 +440,20 @@ export const LignesVenteManager: React.FC<LignesVenteManagerProps> = ({ ticket, 
                             </div>
                         )}
 
-                        {/* Sélection de l'article de stock compatible */}
+                        {/* Sélection de l'article de stock compatible (0 blocage si stock vide) */}
                         {typeLigne === 'article_stock' && selectedCategoryId && (
                             <div>
-                                <label className="block text-[8px] font-black text-gray-400 uppercase tracking-wider mb-1">Sélectionner la pièce</label>
+                                <label className="block text-[8px] font-black text-gray-400 uppercase tracking-wider mb-1">Sélectionner la pièce (ou saisie libre)</label>
                                 <select 
                                     value={selectedStockItem?.id || ''}
                                     onChange={(e) => {
                                         const item = stockItems.find(i => i.id === e.target.value) || (selectedStockItem?.id === e.target.value ? selectedStockItem : null);
                                         if (item) handleSelectStockItem(item);
+                                        else setSelectedStockItem(null);
                                     }}
                                     className="w-full bg-zinc-900 border border-white/10 rounded-xl px-3 py-2.5 text-xs text-white uppercase font-bold focus:border-blue-500 focus:outline-none"
-                                    required={isNewPolicy}
                                 >
-                                    <option value="">-- Sélectionner ({stockItems.length} comp.) --</option>
+                                    <option value="">-- Saisie libre ({stockItems.length} en stock) --</option>
                                     {selectedStockItem && !stockItems.some(i => i.id === selectedStockItem.id) && (
                                         <option value={selectedStockItem.id}>
                                              {selectedStockItem.name} ({selectedStockItem.color || 'Gris'} - {selectedStockItem.condition || 'OEM'}) - stock: {(selectedStockItem.quantity || 0) - (selectedStockItem.quantite_reservee || 0)}
@@ -409,7 +463,7 @@ export const LignesVenteManager: React.FC<LignesVenteManagerProps> = ({ ticket, 
                                         const dispo = (item.quantity || 0) - (item.quantite_reservee || 0);
                                         return (
                                             <option key={item.id} value={item.id}>
-                                                {item.name} ({item.color || 'Gris'} - {item.condition || 'OEM'}) - stock: {dispo} {dispo <= 0 ? '(⚠️ HORS STOCK)' : ''}
+                                                {item.name} ({item.color || 'Gris'} - {item.condition || 'OEM'}) - stock: {dispo} {dispo <= 0 ? '(Stock 0 — À commander)' : ''}
                                             </option>
                                         );
                                     })}
@@ -462,9 +516,28 @@ export const LignesVenteManager: React.FC<LignesVenteManagerProps> = ({ ticket, 
                         )}
                     </div>
 
-                    {/* Inputs manuels ou pré-remplis */}
-                    {(typeLigne !== 'article_stock' || selectedStockItem || !isNewPolicy) && (
-                        <div className="grid grid-cols-1 md:grid-cols-4 gap-4 pt-2 animate-fade-in">
+                    {/* Inputs manuels ou pré-remplis (toujours accessibles, zéro blocage) */}
+                    <div className="grid grid-cols-1 md:grid-cols-4 gap-4 pt-2 animate-fade-in">
+                            {typeLigne === 'article_stock' && selectedStockItem && ((selectedStockItem.quantity || 0) - (selectedStockItem.quantite_reservee || 0)) <= 0 && (
+                                <div className="md:col-span-4 p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/25 flex flex-wrap items-center justify-between gap-2 text-[11px] text-amber-200">
+                                    <span>
+                                        Stock disponible à <strong>0</strong> pour cette pièce (aucun blocage). Vous pouvez la marquer <strong>« À commander »</strong>.
+                                    </span>
+                                    {sourcePiece !== 'a_commander' && (
+                                        <button
+                                            type="button"
+                                            onClick={() => {
+                                                setSourcePiece('a_commander');
+                                                setStatutLigne('prevu');
+                                            }}
+                                            className="px-2.5 py-1 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 border border-amber-400/40 text-[10px] font-black uppercase text-amber-200 cursor-pointer"
+                                        >
+                                            Marquer « À commander »
+                                        </button>
+                                    )}
+                                </div>
+                            )}
+
                             <div className="md:col-span-2 space-y-1.5">
                                 <div className="flex items-center justify-between">
                                     <label className="block text-[8px] font-black text-gray-400 uppercase tracking-wider">
@@ -545,8 +618,7 @@ export const LignesVenteManager: React.FC<LignesVenteManagerProps> = ({ ticket, 
                                     value={prixStandard}
                                     onChange={(e) => setPrixStandard(Number(e.target.value))}
                                     placeholder="Tarif unitaire standard..."
-                                    disabled={typeLigne === 'article_stock' && isNewPolicy}
-                                    className="w-full bg-zinc-900 border border-white/10 rounded-xl px-3 py-2.5 text-xs text-white font-mono font-black focus:border-blue-500 focus:outline-none disabled:opacity-60"
+                                    className="w-full bg-zinc-900 border border-white/10 rounded-xl px-3 py-2.5 text-xs text-white font-mono font-black focus:border-blue-500 focus:outline-none"
                                     required
                                 />
                             </div>
@@ -562,23 +634,100 @@ export const LignesVenteManager: React.FC<LignesVenteManagerProps> = ({ ticket, 
                                         required
                                     />
                                 </div>
-                                {typeLigne === 'article_stock' && (
-                                    <div>
-                                        <label className="block text-[8px] font-black text-gray-400 uppercase tracking-wider mb-1">Statut ligne</label>
-                                        <select 
-                                            value={statutLigne}
-                                            onChange={(e) => setStatutLigne(e.target.value as 'prevu' | 'reserve' | 'utilise')}
-                                            className="w-full bg-zinc-900 border border-white/10 rounded-xl px-2 py-2.5 text-[10px] text-center text-white font-black uppercase focus:border-blue-500 focus:outline-none"
-                                        >
-                                            <option value="prevu">Prévu</option>
-                                            <option value="reserve">Réservé</option>
-                                            <option value="utilise">Utilisé (Rendu)</option>
-                                        </select>
-                                    </div>
+                                <div>
+                                    <label className="block text-[8px] font-black text-gray-400 uppercase tracking-wider mb-1">Statut ligne</label>
+                                    <select 
+                                        value={statutLigne}
+                                        onChange={(e) => setStatutLigne(e.target.value as 'prevu' | 'reserve' | 'utilise')}
+                                        className="w-full bg-zinc-900 border border-white/10 rounded-xl px-2 py-2.5 text-[10px] text-center text-white font-black uppercase focus:border-blue-500 focus:outline-none"
+                                    >
+                                        <option value="prevu">Prévu</option>
+                                        <option value="reserve">Réservé</option>
+                                        <option value="utilise">Utilisé (Engagé)</option>
+                                    </select>
+                                </div>
+                            </div>
+
+                            {/* Provenance pièce : En stock | À commander | Fourni par le client */}
+                            <div className="md:col-span-2">
+                                <label className="block text-[8px] font-black text-cyan-400 uppercase tracking-wider mb-1">
+                                    Provenance pièce (Stock / Commande / Client)
+                                </label>
+                                <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
+                                    {[
+                                        { id: '' as const, label: 'Auto / MO' },
+                                        { id: 'en_stock' as const, label: 'En stock' },
+                                        { id: 'a_commander' as const, label: 'À commander' },
+                                        { id: 'fourni_client' as const, label: 'Fourni client' },
+                                    ].map(opt => {
+                                        const active = sourcePiece === opt.id;
+                                        return (
+                                            <button
+                                                key={opt.id || 'auto'}
+                                                type="button"
+                                                onClick={() => {
+                                                    setSourcePiece(opt.id);
+                                                    if (opt.id === 'fourni_client') {
+                                                        setPrixAchat(0);
+                                                        setSelectedStockItem(null);
+                                                    } else if (opt.id === 'a_commander' && !editingLineId) {
+                                                        setStatutLigne('prevu');
+                                                    }
+                                                }}
+                                                className={`px-2 py-2 rounded-xl text-[10px] font-black uppercase border transition-all cursor-pointer ${
+                                                    active
+                                                        ? opt.id === 'fourni_client'
+                                                            ? 'bg-emerald-600/30 border-emerald-400 text-emerald-200'
+                                                            : opt.id === 'a_commander'
+                                                                ? 'bg-amber-600/30 border-amber-400 text-amber-200'
+                                                                : 'bg-blue-600/30 border-blue-400 text-blue-200'
+                                                        : 'bg-zinc-900 border-white/10 text-zinc-400 hover:text-white'
+                                                }`}
+                                            >
+                                                {opt.label}
+                                            </button>
+                                        );
+                                    })}
+                                </div>
+                            </div>
+
+                            {showProfitability && (
+                                <div>
+                                    <label className="block text-[8px] font-black text-gray-400 uppercase tracking-wider mb-1">
+                                        Activité (Rentabilité)
+                                    </label>
+                                    <select
+                                        value={activiteOverride}
+                                        onChange={(e) => setActiviteOverride(e.target.value as '' | ActivityCategory)}
+                                        className="w-full bg-zinc-900 border border-white/10 rounded-xl px-3 py-2.5 text-xs text-white font-bold focus:border-blue-500 focus:outline-none"
+                                    >
+                                        <option value="">Auto ({ACTIVITY_LABELS[autoDetectedActivite]})</option>
+                                        <option value="reparation">Réparation</option>
+                                        <option value="vente_pieces">Vente de pièces</option>
+                                        <option value="vente_macbook">Vente de MacBook</option>
+                                    </select>
+                                </div>
+                            )}
+                            <div>
+                                <label className="block text-[8px] font-black text-amber-400 uppercase tracking-wider mb-1">
+                                    Coût d'achat pièce / unité (F)
+                                </label>
+                                <input
+                                    type="number"
+                                    min="0"
+                                    value={effectivePrixAchat}
+                                    onChange={(e) => setPrixAchat(Math.max(0, Number(e.target.value) || 0))}
+                                    placeholder="0"
+                                    disabled={sourcePiece === 'fourni_client' || (typeLigne === 'article_stock' && sourcePiece !== 'a_commander' && (selectedStockItem?.cost || 0) > 0)}
+                                    className="w-full bg-zinc-900 border border-amber-500/20 rounded-xl px-3 py-2.5 text-xs text-amber-300 font-mono font-bold focus:border-amber-400 focus:outline-none disabled:opacity-60"
+                                />
+                                {sourcePiece === 'fourni_client' && (
+                                    <span className="text-[9px] text-emerald-400 block mt-0.5">
+                                        0 F — pièce fournie par le client
+                                    </span>
                                 )}
                             </div>
                         </div>
-                    )}
 
                     {/* Zone Réduction */}
                     {designation && (
@@ -660,11 +809,11 @@ export const LignesVenteManager: React.FC<LignesVenteManagerProps> = ({ ticket, 
 
                             {/* Alerte et Marge */}
                             {warningMargeDangereuse && margeBrute !== null && (
-                                <div className="p-3 bg-red-600/10 border border-red-500/20 rounded-xl text-red-400 flex items-start gap-2.5 animate-bounce">
-                                    <ExclamationTriangleIcon className="w-5 h-5 mt-0.5" />
+                                <div className="p-3 bg-red-600/10 border border-red-500/20 rounded-xl text-red-400 flex items-start gap-2.5">
+                                    <ExclamationTriangleIcon className="w-5 h-5 mt-0.5 shrink-0" />
                                     <div>
-                                        <p className="text-[10px] font-black uppercase tracking-wider">Alerte de marge faible detected !</p>
-                                        <p className="text-xs font-medium">La marge brute de cet article ({Math.round(margeBrute * 100)}%) est sous le seuil d'éco-profitabilité de 20% (Prix d'achat: {prixAchat.toLocaleString()} F CFA). S'assurer de justifier dans le motif.</p>
+                                        <p className="text-[10px] font-black uppercase tracking-wider">Info marge faible (non bloquant)</p>
+                                        <p className="text-xs font-medium">La marge brute de cet article ({Math.round(margeBrute * 100)}%) est sous 20% (Coût d'achat : {effectivePrixAchat.toLocaleString()} F CFA).</p>
                                     </div>
                                 </div>
                             )}
@@ -699,12 +848,13 @@ export const LignesVenteManager: React.FC<LignesVenteManagerProps> = ({ ticket, 
                         <table className="w-full text-left border-collapse">
                             <thead>
                                 <tr className="border-b border-white/5 pb-2 text-[9px] font-black text-gray-500 uppercase tracking-widest whitespace-nowrap">
-                                    <th className="py-2">Imputation</th>
+                                    <th className="py-2">Imputation &amp; Origine</th>
                                     <th className="py-2">Libellé / Désignation</th>
                                     <th className="py-2 text-center">Quantité</th>
                                     <th className="py-2 text-right">Standard</th>
                                     <th className="py-2 text-right">Remise</th>
                                     <th className="py-2 text-right">Prix Net</th>
+                                    {showProfitability && <th className="py-2 text-right">Marge Prév. / Réelle</th>}
                                     <th className="py-2 text-center rounded-r-xl">Statut</th>
                                 </tr>
                             </thead>
@@ -712,11 +862,38 @@ export const LignesVenteManager: React.FC<LignesVenteManagerProps> = ({ ticket, 
                                 {lines.map((l) => {
                                     const totalLigne = l.prix_unitaire_final * l.quantite;
                                     const diffTotal = (l.prix_unitaire_standard - l.prix_unitaire_final) * l.quantite;
+                                    const lineProf = dossierProfitability.lines.find(lp => lp.id === l.id);
+                                    const lineActivity = lineProf?.activite || categorizeLineActivity(l);
+                                    const lineSource = lineProf?.sourcePiece ?? inferLinePartSource(l, ticket);
+                                    const activityColor =
+                                        lineActivity === 'vente_macbook'
+                                            ? 'bg-purple-500/15 text-purple-300 border-purple-500/30'
+                                            : lineActivity === 'vente_pieces'
+                                                ? 'bg-amber-500/15 text-amber-300 border-amber-500/30'
+                                                : 'bg-blue-500/15 text-blue-300 border-blue-500/30';
+                                    const sourceColor =
+                                        lineSource === 'fourni_client'
+                                            ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
+                                            : lineSource === 'a_commander'
+                                                ? 'bg-amber-500/15 text-amber-300 border-amber-500/30'
+                                                : 'bg-cyan-500/15 text-cyan-300 border-cyan-500/30';
                                     
                                     return (
                                         <tr key={l.id} className="group hover:bg-white/5 transition-colors">
                                             <td className="py-3 font-semibold text-[10px] uppercase text-gray-400">
-                                                {l.type_ligne === 'article_stock' ? '🛒 Stock' : l.type_ligne === 'article_hors_stock' ? '📦 Hors-Stk' : '⚙️ Labor'}
+                                                <div>{l.type_ligne === 'article_stock' ? '🛒 Stock' : l.type_ligne === 'article_hors_stock' ? '📦 Hors-Stk' : '⚙️ Labor'}</div>
+                                                <div className="flex flex-wrap gap-1 mt-1">
+                                                    {showProfitability && (
+                                                        <span className={`inline-block px-1.5 py-0.5 rounded border text-[8px] font-black uppercase ${activityColor}`}>
+                                                            {ACTIVITY_LABELS[lineActivity]}
+                                                        </span>
+                                                    )}
+                                                    {lineSource && (
+                                                        <span className={`inline-block px-1.5 py-0.5 rounded border text-[8px] font-black uppercase ${sourceColor}`}>
+                                                            {PART_SOURCE_SHORT_LABELS[lineSource]}
+                                                        </span>
+                                                    )}
+                                                </div>
                                             </td>
                                             <td className="py-3">
                                                 <div className="flex items-center justify-between gap-3 mr-3 pr-2">
@@ -760,7 +937,32 @@ export const LignesVenteManager: React.FC<LignesVenteManagerProps> = ({ ticket, 
                                             </td>
                                             <td className="py-3 text-right font-mono font-black text-blue-400">
                                                  {totalLigne.toLocaleString()} F
-                                             </td>
+                                            </td>
+                                            {showProfitability && (
+                                                <td className="py-3 text-right font-mono">
+                                                    {l.statut_ligne === 'annule' ? (
+                                                        <span className="text-zinc-500 text-[10px]">0 F</span>
+                                                    ) : lineProf ? (
+                                                        <div>
+                                                            <span className={`font-black ${lineProf.netMargin >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                                                Prév: {lineProf.netMargin.toLocaleString()} F
+                                                            </span>
+                                                            <div className={`text-[9.5px] font-bold ${lineProf.realNetMargin >= 0 ? 'text-cyan-300' : 'text-rose-300'}`}>
+                                                                Réelle: {lineProf.realNetMargin.toLocaleString()} F
+                                                            </div>
+                                                            {(lineProf.partCost > 0 || lineProf.taxProvision > 0) && (
+                                                                <div className="text-[8.5px] text-zinc-400 font-normal">
+                                                                    {lineProf.partCost > 0 ? `Pièce -${lineProf.partCost.toLocaleString()}` : ''}
+                                                                    {lineProf.partCost > 0 && lineProf.taxProvision > 0 ? ' • ' : ''}
+                                                                    {lineProf.taxProvision > 0 ? `Fisc -${lineProf.taxProvision.toLocaleString()}` : ''}
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                    ) : (
+                                                        <span className="text-zinc-400">{totalLigne.toLocaleString()} F</span>
+                                                    )}
+                                                </td>
+                                            )}
                                              <td className="py-3 text-center">
                                                 <span className={`px-2 py-0.5 rounded-full text-[8.5px] font-black uppercase text-center ${
                                                     l.statut_ligne === 'utilise' 
@@ -788,12 +990,28 @@ export const LignesVenteManager: React.FC<LignesVenteManagerProps> = ({ ticket, 
 
                 {/* Synthèse Totale Fiche */}
                 {lines.length > 0 && (
-                    <div className="border-t border-white/5 pt-4 text-xs font-medium space-y-1.5 text-right font-sans text-slate-300">
+                    <div className="border-t border-white/5 pt-4 text-xs font-medium space-y-2 text-right font-sans text-slate-300">
                         <div>Tarification Catalogue Hors Taxes : <span className="font-mono font-semibold text-gray-400">{totalStandardFiche.toLocaleString()} F CFA</span></div>
                         {totalRemiseFiche > 0 && (
                             <div className="text-emerald-400">Remise Exceptionnelle Appliquée : <span className="font-mono font-black">-{totalRemiseFiche.toLocaleString()} F CFA</span></div>
                         )}
                         <div className="text-base font-black text-white">Montant Total des Prestations : <span className="font-mono text-xl tracking-tight text-blue-400">{totalFiche.toLocaleString()} F CFA</span></div>
+                        {showProfitability && (
+                            <div className="mt-2 pt-2 border-t border-white/5 flex flex-wrap items-center justify-end gap-4 text-[11px]">
+                                <span className="text-zinc-400">
+                                    Coût pièces (1x) : <strong className="font-mono text-amber-300">-{dossierProfitability.totalPartCost.toLocaleString()} F</strong>
+                                </span>
+                                <span className="text-zinc-400">
+                                    Provision fiscale ({taxProvisionRate}%) : <strong className="font-mono text-orange-300">-{dossierProfitability.totalTaxProvision.toLocaleString()} F</strong>
+                                </span>
+                                <span className="text-zinc-200">
+                                    Marge Prévisionnelle : <strong className={`font-mono text-sm ${dossierProfitability.netMargin >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>{dossierProfitability.netMargin.toLocaleString()} F</strong>
+                                </span>
+                                <span className="text-zinc-200">
+                                    Marge Réelle ({Math.round(dossierProfitability.collectionRatio * 100)}% encaissé) : <strong className={`font-mono text-sm ${dossierProfitability.realNetMargin >= 0 ? 'text-cyan-300' : 'text-rose-400'}`}>{dossierProfitability.realNetMargin.toLocaleString()} F CFA</strong>
+                                </span>
+                            </div>
+                        )}
                     </div>
                 )}
             </div>

@@ -83,6 +83,41 @@ const DiagnosticSheetBModal: React.FC<DiagnosticSheetBModalProps> = ({ isOpen, o
       setData(prev => ({...prev, [name]: value}));
   };
 
+  // Permet d'appliquer les variantes de tensions selon DC IN (20V vs 5V)
+  const applyDcInProfile = (mode: '20V' | '5V', ppbusCustom?: '0V' | '5V') => {
+    const isAir = deviceType === 'air';
+    const ppbusNominal = isAir ? 8.6 : 12.6;
+
+    if (mode === '20V') {
+      const updated = data.tensionValues.map(t => {
+        if (t.line.toLowerCase().includes('dc in')) {
+          return { ...t, value: '20.0V', status: 'Correct' as const, nominalValue: 20.0 };
+        }
+        if (t.line.toLowerCase().includes('ppbus')) {
+          return { ...t, nominalValue: ppbusNominal };
+        }
+        return t;
+      });
+      setData(prev => ({ ...prev, tensionValues: updated }));
+      showToast("Variante 20V appliquée : rails modifiables selon mesures", "info");
+    } else {
+      const ppbusVal = ppbusCustom === '5V' ? '5.0V' : '0.0V';
+      const updated = data.tensionValues.map(t => {
+        const lineLower = t.line.toLowerCase();
+        if (lineLower.includes('dc in')) {
+          return { ...t, value: '5.0V', status: 'Anormal' as const, nominalValue: 20.0 };
+        }
+        if (lineLower.includes('ppbus')) {
+          return { ...t, value: ppbusVal, status: (ppbusCustom === '5V' ? 'Anormal' : 'Absent') as const, nominalValue: ppbusNominal };
+        }
+        // Tous les rails aval jusqu'au CPU sont définis à 0V / Absent
+        return { ...t, value: '0.0V', status: 'Absent' as const };
+      });
+      setData(prev => ({ ...prev, tensionValues: updated }));
+      showToast(`Variante 5V appliquée : DCIN 5V, PPBUS ${ppbusVal}, rails aval à 0V`, "info");
+    }
+  };
+
   const handleTensionChange = (index: number, field: keyof TensionValue, value: string) => {
     const newTensions = [...data.tensionValues];
     const current = newTensions[index];
@@ -91,6 +126,26 @@ const DiagnosticSheetBModal: React.FC<DiagnosticSheetBModalProps> = ({ isOpen, o
     
     if (field === 'value') {
         updated.status = calculateVoltageStatus(value, updated.nominalValue);
+
+        // Si l'utilisateur saisit directement 5 ou 5V sur DC IN, appliquer la variante 5V
+        if (current.line.toLowerCase().includes('dc in')) {
+            const num = parseFloat(value.replace(',', '.').replace(/[^\d.]/g, ''));
+            if (num === 5) {
+                const isAir = deviceType === 'air';
+                const ppbusNominal = isAir ? 8.6 : 12.6;
+                const autoTensions = newTensions.map((t, idx2) => {
+                    if (idx2 === index) return { ...t, value, status: 'Anormal' as const, nominalValue: 20.0 };
+                    if (t.line.toLowerCase().includes('ppbus')) {
+                        const existingVal = t.value?.trim();
+                        const pVal = existingVal === '5.0V' || existingVal === '5V' ? '5.0V' : '0.0V';
+                        return { ...t, value: pVal, status: (pVal === '5.0V' ? 'Anormal' : 'Absent') as const, nominalValue: ppbusNominal };
+                    }
+                    return { ...t, value: '0.0V', status: 'Absent' as const };
+                });
+                setData({ ...data, tensionValues: autoTensions });
+                return;
+            }
+        }
     }
     
     newTensions[index] = updated;
@@ -250,7 +305,53 @@ const DiagnosticSheetBModal: React.FC<DiagnosticSheetBModalProps> = ({ isOpen, o
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
              <div className="space-y-4">
-                <h3 className="text-gray-300 font-bold text-sm uppercase border-b border-gray-700 pb-2">Mesures de tensions (Logic Board)</h3>
+                <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 border-b border-gray-700 pb-2">
+                    <h3 className="text-gray-300 font-bold text-sm uppercase">Mesures de tensions (Logic Board)</h3>
+                    {/* Variantes DC IN 20V vs 5V */}
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                        <button
+                            type="button"
+                            onClick={() => applyDcInProfile('20V')}
+                            className="px-2.5 py-1 bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/40 rounded text-[10px] font-black uppercase tracking-wider transition-all"
+                            title="Négociation normale : 20V injecté, rails modifiables selon mesures"
+                        >
+                            ⚡ DC IN 20V (Normal)
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => applyDcInProfile('5V', '0V')}
+                            className="px-2.5 py-1 bg-amber-600/20 hover:bg-amber-600/30 text-amber-300 border border-amber-500/40 rounded text-[10px] font-black uppercase tracking-wider transition-all"
+                            title="Blocage négociation : 5V injecté, PPBUS 0V/5V et rails aval à 0V"
+                        >
+                            ⚠️ DC IN 5V (Blocage USB-C)
+                        </button>
+                    </div>
+                </div>
+
+                {/* Si DC IN est à 5V, proposer le réglage rapide direct pour PPBUS_G3H (0V vs 5V) */}
+                {data.tensionValues.some(t => t.line.toLowerCase().includes('dc in') && (t.value.startsWith('5') || t.value === '5V' || t.value === '5.0V')) && (
+                    <div className="p-2.5 bg-amber-950/30 border border-amber-500/30 rounded-lg flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 text-xs animate-fade-in">
+                        <span className="text-[10px] font-bold text-amber-300 uppercase">
+                            Variante 5V active — Régler PPBUS_G3H :
+                        </span>
+                        <div className="flex gap-2">
+                            <button
+                                type="button"
+                                onClick={() => applyDcInProfile('5V', '0V')}
+                                className="px-2.5 py-1 bg-gray-800 hover:bg-gray-700 text-white rounded text-[10px] font-bold border border-gray-600"
+                            >
+                                PPBUS à 0.0V (Absent)
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => applyDcInProfile('5V', '5V')}
+                                className="px-2.5 py-1 bg-amber-600/40 hover:bg-amber-600/60 text-amber-200 rounded text-[10px] font-bold border border-amber-500/40"
+                            >
+                                PPBUS à 5.0V (Anormal)
+                            </button>
+                        </div>
+                    </div>
+                )}
                 <div className="space-y-2">
                     {data.tensionValues.map((t, idx) => (
                         <div key={idx} className="grid grid-cols-12 gap-2 items-center bg-gray-700/30 p-2 rounded border border-gray-700">
@@ -316,8 +417,27 @@ const DiagnosticSheetBModal: React.FC<DiagnosticSheetBModalProps> = ({ isOpen, o
                         <input name="testDuration" value={data.testDuration} onChange={handleMainChange} className={inputStyle} placeholder="ex: 1h 30min"/>
                     </div>
                     <div>
-                        <label className="text-xs text-gray-400">Délai estimé de réparation</label>
-                        <input name="repairDelay" value={data.repairDelay} onChange={handleMainChange} className={inputStyle} placeholder="ex: 3 à 5 jours"/>
+                        <div className="flex justify-between items-center mb-1">
+                            <label className="text-xs text-gray-400 font-bold">Délai estimé de réparation</label>
+                            <span className="text-[10px] text-blue-400 font-bold uppercase">Heures & Jours</span>
+                        </div>
+                        <div className="flex flex-wrap gap-1.5 mb-2">
+                            {['48 heures', '72 heures', '5 jours', '10 jours', '15 jours', '20 jours'].map(opt => (
+                                <button
+                                    key={opt}
+                                    type="button"
+                                    onClick={() => setData(prev => ({ ...prev, repairDelay: opt }))}
+                                    className={`px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-wider transition-all border ${
+                                        data.repairDelay === opt
+                                            ? 'bg-blue-600 text-white border-blue-400 shadow'
+                                            : 'bg-gray-800 text-gray-300 border-gray-700 hover:bg-gray-700 hover:text-white'
+                                    }`}
+                                >
+                                    {opt}
+                                </button>
+                            ))}
+                        </div>
+                        <input name="repairDelay" value={data.repairDelay} onChange={handleMainChange} className={inputStyle} placeholder="ex: 48 heures, 72 heures, 5 jours..."/>
                     </div>
                 </div>
                 <div className="flex justify-between items-end mb-1">
@@ -360,7 +480,10 @@ const DiagnosticSheetBModal: React.FC<DiagnosticSheetBModalProps> = ({ isOpen, o
                       <input type="file" ref={fileInputRef} onChange={handleImageUpload} multiple accept="image/*" className="hidden" />
                       <button 
                         type="button"
-                        onClick={() => cameraInputRef.current?.click()}
+                        onClick={() => {
+                          if (cameraInputRef.current) cameraInputRef.current.value = '';
+                          cameraInputRef.current?.click();
+                        }}
                         disabled={(data.images?.length || 0) >= 6}
                         className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white text-xs font-bold rounded-md transition-all flex items-center gap-1.5"
                       >
@@ -368,7 +491,10 @@ const DiagnosticSheetBModal: React.FC<DiagnosticSheetBModalProps> = ({ isOpen, o
                       </button>
                       <button 
                         type="button"
-                        onClick={() => fileInputRef.current?.click()}
+                        onClick={() => {
+                          if (fileInputRef.current) fileInputRef.current.value = '';
+                          fileInputRef.current?.click();
+                        }}
                         disabled={(data.images?.length || 0) >= 6}
                         className="px-3 py-1.5 bg-purple-600 hover:bg-purple-500 disabled:opacity-40 text-white text-xs font-bold rounded-md transition-all flex items-center gap-1.5"
                       >

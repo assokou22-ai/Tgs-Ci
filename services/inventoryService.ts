@@ -143,7 +143,7 @@ export const handleTicketStockTransitions = async (
     for (const oldL of prevLines) {
         if (!newMap.has(oldL.id)) {
             // Ligne supprimée de la fiche ! Si son état était reservé ou utilisé, on doit restaurer l'inventaire
-            if (oldL.type_ligne === 'article_stock' && oldL.article_stock_id) {
+            if (oldL.type_ligne === 'article_stock' && oldL.article_stock_id && oldL.source_piece !== 'fourni_client') {
                 const stockItemDef = await dbGet('stock', oldL.article_stock_id) as unknown as StockItem;
                 if (stockItemDef) {
                     const updatedItem = { ...stockItemDef };
@@ -183,8 +183,8 @@ export const handleTicketStockTransitions = async (
 
     // 2. Gérer les lignes ajoutées ou modifiées
     for (const newL of newLines) {
-        if (newL.type_ligne !== 'article_stock' || !newL.article_stock_id) {
-            continue; // Ignorer les lignes hors stock / prestations
+        if (newL.type_ligne !== 'article_stock' || !newL.article_stock_id || newL.source_piece === 'fourni_client') {
+            continue; // Ignorer les lignes hors stock / prestations / pièces fournies par le client
         }
 
         const oldL = prevMap.get(newL.id);
@@ -319,7 +319,8 @@ export const syncSalesLinesToServices = (ligneVentes: LigneVenteFiche[]): Repair
                 // Titre lisible incluant la quantité si > 1
                 name: `${l.designation}${l.quantite > 1 ? ` (x${l.quantite})` : ''}${detailRemise}`.toUpperCase(),
                 price: l.prix_unitaire_final * l.quantite,
-                category: l.categorie
+                category: l.categorie,
+                ...(l.activite ? { activite: l.activite } : {})
             };
         });
 };

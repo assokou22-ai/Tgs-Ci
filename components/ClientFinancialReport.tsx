@@ -239,33 +239,45 @@ export const ClientFinancialReport: React.FC<ClientFinancialReportProps> = ({ on
         // Only sum finalized documents toward total debt to prevent non-fiat drafts from showing as due liability
         const calculableItems = filteredItems.filter(it => it.status !== 'Draft' && it.status !== 'Brouillon' && it.status !== 'Refusé' && it.status !== 'Annulé');
 
-        const totalBilled = calculableItems.reduce((sum, it) => sum + it.total, 0);
-        const totalPaid = calculableItems.reduce((sum, it) => sum + it.advance, 0);
+        const totalBilled = calculableItems.reduce((sum, it) => sum + (Number(it.total) || 0), 0);
+        const totalPaid = calculableItems.reduce((sum, it) => {
+            const itemTotal = Number(it.total) || 0;
+            const itemAdvance = Number(it.advance) || 0;
+            return sum + (it.status === 'Payé' ? itemTotal : Math.min(itemTotal, Math.max(0, itemAdvance)));
+        }, 0);
         const remainingBalance = Math.max(0, totalBilled - totalPaid);
 
         // Factures Payées vs Impayées
         const facturesItems = calculableItems.filter(it => it.type === 'Facture');
-        const facturesPayees = facturesItems.filter(f => f.status === 'Payé' || f.advance >= f.total);
-        const facturesImpayees = facturesItems.filter(f => f.status !== 'Payé' && f.advance < f.total);
+        const facturesPayees = facturesItems.filter(f => f.status === 'Payé' || (Number(f.advance) || 0) >= (Number(f.total) || 0));
+        const facturesImpayees = facturesItems.filter(f => f.status !== 'Payé' && (Number(f.advance) || 0) < (Number(f.total) || 0));
 
         const facturesPayeesCount = facturesPayees.length;
-        const facturesPayeesSum = facturesPayees.reduce((sum, f) => sum + f.total, 0);
+        const facturesPayeesSum = facturesPayees.reduce((sum, f) => sum + (Number(f.total) || 0), 0);
 
         const facturesImpayeesCount = facturesImpayees.length;
-        const facturesImpayeesSum = facturesImpayees.reduce((sum, f) => sum + f.total, 0);
-        const facturesImpayeesReste = facturesImpayees.reduce((sum, f) => sum + Math.max(0, f.total - f.advance), 0);
+        const facturesImpayeesSum = facturesImpayees.reduce((sum, f) => sum + (Number(f.total) || 0), 0);
+        const facturesImpayeesReste = facturesImpayees.reduce((sum, f) => {
+            const fTotal = Number(f.total) || 0;
+            const fAdvance = Number(f.advance) || 0;
+            return sum + Math.max(0, fTotal - fAdvance);
+        }, 0);
 
         // Commandes Soldées vs Commandes Restantes (Non-soldées ou En cours)
         const commandesItems = calculableItems.filter(it => it.type === 'Commande');
-        const commandesSoldees = commandesItems.filter(c => c.status === 'Payé' || c.advance >= c.total);
-        const commandesRestantes = commandesItems.filter(c => c.status !== 'Payé' && c.advance < c.total);
+        const commandesSoldees = commandesItems.filter(c => c.status === 'Payé' || (Number(c.advance) || 0) >= (Number(c.total) || 0));
+        const commandesRestantes = commandesItems.filter(c => c.status !== 'Payé' && (Number(c.advance) || 0) < (Number(c.total) || 0));
 
         const commandesSoldeesCount = commandesSoldees.length;
-        const commandesSoldeesSum = commandesSoldees.reduce((sum, c) => sum + c.total, 0);
+        const commandesSoldeesSum = commandesSoldees.reduce((sum, c) => sum + (Number(c.total) || 0), 0);
 
         const commandesRestantesCount = commandesRestantes.length;
-        const commandesRestantesSum = commandesRestantes.reduce((sum, c) => sum + c.total, 0);
-        const commandesRestantesRemaining = commandesRestantes.reduce((sum, c) => sum + Math.max(0, c.total - c.advance), 0);
+        const commandesRestantesSum = commandesRestantes.reduce((sum, c) => sum + (Number(c.total) || 0), 0);
+        const commandesRestantesRemaining = commandesRestantes.reduce((sum, c) => {
+            const cTotal = Number(c.total) || 0;
+            const cAdvance = Number(c.advance) || 0;
+            return sum + (c.status === 'Payé' ? 0 : Math.max(0, cTotal - cAdvance));
+        }, 0);
 
         return {
             items: filteredItems,

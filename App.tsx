@@ -1,13 +1,13 @@
-import React, { useState, useEffect, ErrorInfo, ReactNode } from 'react';
+import React, { useState, useEffect, ErrorInfo, ReactNode, Suspense, lazy } from 'react';
 import { Role } from './types.ts';
 import RoleSelection from './components/RoleSelection.tsx';
 import StoreSelection from './components/StoreSelection.tsx';
-import AdminDashboard from './components/AdminDashboard.tsx';
-import AccueilDashboard from './components/AccueilDashboard.tsx';
-import EditorDashboard from './components/EditorDashboard.tsx';
-import FactureCommandeDashboard from './components/FactureCommandeDashboard.tsx';
-import EngagementsSavDashboard from './components/EngagementsSavDashboard.tsx';
-import AssistantClienteleDashboard from './components/AssistantClienteleDashboard.tsx';
+const AdminDashboard = lazy(() => import('./components/AdminDashboard.tsx'));
+const AccueilDashboard = lazy(() => import('./components/AccueilDashboard.tsx'));
+const EditorDashboard = lazy(() => import('./components/EditorDashboard.tsx'));
+const FactureCommandeDashboard = lazy(() => import('./components/FactureCommandeDashboard.tsx'));
+const EngagementsSavDashboard = lazy(() => import('./components/EngagementsSavDashboard.tsx'));
+const AssistantClienteleDashboard = lazy(() => import('./components/AssistantClienteleDashboard.tsx'));
 import CustomStyleInjector from './components/CustomStyleInjector.tsx';
 import useRepairTickets from './hooks/useRepairTickets.ts';
 import useAppointments from './hooks/useAppointments.ts';
@@ -86,6 +86,13 @@ class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoundarySta
   }
 }
 
+const DashboardLoader: React.FC = () => (
+    <div className="app-bg min-h-[100dvh] flex flex-col items-center justify-center gap-3 text-white">
+        <div className="w-9 h-9 rounded-full border-2 border-white/15 border-t-blue-500 animate-spin" />
+        <p className="text-xs font-semibold text-white/60 tracking-wide">Chargement de l'espace…</p>
+    </div>
+);
+
 const AppContent: React.FC = () => {
     useTheme();
     useGoogleDriveAutoSync();
@@ -124,6 +131,10 @@ const AppContent: React.FC = () => {
             initializeRealtimeSync();
             
             const recordSession = async () => {
+                try {
+                    if (sessionStorage.getItem('tgs_device_session_logged')) return;
+                    sessionStorage.setItem('tgs_device_session_logged', '1');
+                } catch { /* ignore */ }
                 const { browser, os } = parseUserAgent();
                 let ipDetails = { ipAddress: 'Local/Hors-ligne', location: 'Localisation indisponible', coordinates: 'Inconnues' };
                 try {
@@ -201,7 +212,7 @@ const AppContent: React.FC = () => {
     if (!role) return <RoleSelection onSelectRole={handleSelectRole} />;
 
     return (
-        <>
+        <Suspense fallback={<DashboardLoader />}>
             <CustomStyleInjector />
             {role === 'Accueil' && <AccueilDashboard tickets={tickets} addTicket={addTicket} updateTicket={updateTicket} deleteTicket={deleteTicket} loading={loading} onExitRole={handleExitCurrentRole} />}
             {role === 'Assistant Clientèle' && <AssistantClienteleDashboard tickets={tickets} updateTicket={updateTicket} deleteTicket={deleteTicket} loading={loading} onExitRole={handleExitCurrentRole} />}
@@ -209,7 +220,7 @@ const AppContent: React.FC = () => {
             {role === 'Editeur' && <EditorDashboard tickets={tickets} updateTicket={updateTicket} deleteTicket={deleteTicket} appointments={appointments} bulkUpdateTickets={bulkUpdateTickets} onExitRole={handleExitCurrentRole} />}
             {role === 'Facture et Commande' && <FactureCommandeDashboard onExitRole={handleExitCurrentRole} />}
             {role === 'Engagements SAV' && <EngagementsSavDashboard onExitRole={handleExitCurrentRole} />}
-        </>
+        </Suspense>
     );
 };
 

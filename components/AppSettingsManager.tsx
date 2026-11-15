@@ -26,6 +26,8 @@ import { generateAiTheme } from '../services/aiThemeService.ts';
 import { useToastContext } from '../context/ToastContext.tsx';
 import ConfirmationModal from './ConfirmationModal.tsx';
 import Modal from './Modal.tsx';
+import TeamAccessManager from './TeamAccessManager.tsx';
+import DeviceServicesPanel from './DeviceServicesPanel.tsx';
 
 const ToggleSwitch: React.FC<{ label: string; description?: string; isEnabled: boolean; onToggle: () => void; colorClass?: string }> = ({ label, description, isEnabled, onToggle, colorClass = 'bg-blue-600' }) => (
     <div className="flex items-center justify-between p-4 bg-gray-900/30 border border-gray-700/60 rounded-xl transition-all hover:border-gray-600">
@@ -445,7 +447,7 @@ const AppSettingsManager: React.FC = () => {
                     }`}
                 >
                     <Printer className="w-4 h-4" />
-                    Matériel & Imprimantes
+                    Imprimantes & Serveur IA
                 </button>
                 <button
                     onClick={() => { setActiveTab('device'); setTestPrintLogs(null); }}
@@ -566,7 +568,7 @@ const AppSettingsManager: React.FC = () => {
                             <p className="text-xs text-gray-400 mt-1">Configurez les paramètres monétaires et taux d'imposition globaux.</p>
                         </div>
 
-                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
                             <div className="space-y-1.5 text-left">
                                 <label className="text-[10px] font-black uppercase text-gray-400 tracking-wider">Devise Monétaire Actuelle</label>
                                 <input 
@@ -593,6 +595,24 @@ const AppSettingsManager: React.FC = () => {
                                 </div>
                             </div>
                             <div className="space-y-1.5 text-left">
+                                <label className="text-[10px] font-black uppercase text-amber-400 tracking-wider">Provision Fiscale CA (%)</label>
+                                <div className="relative">
+                                    <input 
+                                        type="number" 
+                                        min="0"
+                                        max="100"
+                                        step="0.5"
+                                        value={settings.profitability?.taxProvisionRate ?? 0} 
+                                        onChange={(e) => updateSettings('profitability', { taxProvisionRate: Math.max(0, Math.min(100, Number(e.target.value) || 0)) })}
+                                        className="w-full bg-gray-900 border border-amber-500/30 rounded-xl p-3 pr-10 text-sm text-amber-300 focus:outline-none focus:ring-2 focus:ring-amber-500 text-right font-mono font-bold"
+                                        placeholder="0"
+                                    />
+                                    <div className="absolute inset-y-0 right-0 pr-3.5 flex items-center pointer-events-none text-amber-500 text-xs font-bold">
+                                        %
+                                    </div>
+                                </div>
+                            </div>
+                            <div className="space-y-1.5 text-left">
                                 <label className="text-[10px] font-black uppercase text-gray-400 tracking-wider">Garantie par Défaut (Mois)</label>
                                 <div className="relative">
                                     <input 
@@ -603,6 +623,102 @@ const AppSettingsManager: React.FC = () => {
                                         placeholder="3"
                                     />
                                 </div>
+                            </div>
+                        </div>
+
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-3 border-t border-gray-700/60">
+                            <ToggleSwitch
+                                label="1. Indicateurs de rentabilité par activité & marges"
+                                description="Affiche la marge prévisionnelle/réelle par ligne, dossier et activité (Réparation, Pièces, MacBook) + charges fixes."
+                                isEnabled={settings.profitability?.enableProfitabilityIndicators !== false}
+                                onToggle={() => updateSettings('profitability', { enableProfitabilityIndicators: settings.profitability?.enableProfitabilityIndicators === false })}
+                                colorClass="bg-emerald-600"
+                            />
+                            <ToggleSwitch
+                                label="2. Suivi Capital (~2M), Trésorerie, Réserves & Dépenses à payer"
+                                description="Désactivé par défaut. À activer le jour où vous lancez le suivi avec votre capital de 2M (ou sur un autre magasin)."
+                                isEnabled={Boolean(settings.profitability?.enableTreasuryTracking)}
+                                onToggle={() => {
+                                    const nextEnabled = !settings.profitability?.enableTreasuryTracking;
+                                    updateSettings('profitability', {
+                                        enableTreasuryTracking: nextEnabled,
+                                        ...(nextEnabled && !settings.profitability?.treasuryStartDate
+                                            ? { treasuryStartDate: new Date().toISOString().slice(0, 10) }
+                                            : {}),
+                                    });
+                                }}
+                                colorClass="bg-cyan-600"
+                            />
+                        </div>
+
+                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4 pt-3 border-t border-gray-700/60">
+                            <div className="space-y-1.5 text-left">
+                                <div className="flex items-center justify-between gap-2">
+                                    <label className="text-[10px] font-black uppercase text-cyan-400 tracking-wider">Démarrage suivi Trésorerie</label>
+                                    {settings.profitability?.treasuryStartDate && (
+                                        <button
+                                            type="button"
+                                            onClick={() => updateSettings('profitability', { treasuryStartDate: '' })}
+                                            className="text-[9px] text-cyan-300 hover:underline font-bold cursor-pointer"
+                                        >
+                                            Tout historique
+                                        </button>
+                                    )}
+                                </div>
+                                <input
+                                    type="date"
+                                    value={settings.profitability?.treasuryStartDate || ''}
+                                    onChange={(e) => updateSettings('profitability', { treasuryStartDate: e.target.value })}
+                                    className="w-full bg-gray-900 border border-cyan-500/30 rounded-xl p-3 text-sm text-cyan-200 focus:outline-none focus:ring-2 focus:ring-cyan-500 font-mono font-bold"
+                                />
+                            </div>
+                            <div className="space-y-1.5 text-left">
+                                <label className="text-[10px] font-black uppercase text-emerald-400 tracking-wider">Capital Atelier Initial (F CFA)</label>
+                                <input
+                                    type="number"
+                                    min="0"
+                                    step="50000"
+                                    value={settings.profitability?.initialCapital ?? 2000000}
+                                    onChange={(e) => updateSettings('profitability', { initialCapital: Math.max(0, Number(e.target.value) || 0) })}
+                                    className="w-full bg-gray-900 border border-emerald-500/30 rounded-xl p-3 text-sm text-emerald-300 focus:outline-none focus:ring-2 focus:ring-emerald-500 text-right font-mono font-bold"
+                                />
+                            </div>
+                            <div className="space-y-1.5 text-left">
+                                <label className="text-[10px] font-black uppercase text-cyan-400 tracking-wider">Réinvestissement Stock (%)</label>
+                                <div className="relative">
+                                    <input
+                                        type="number"
+                                        min="0"
+                                        max="100"
+                                        step="5"
+                                        value={settings.profitability?.reinvestmentRate ?? 0}
+                                        onChange={(e) => updateSettings('profitability', { reinvestmentRate: Math.max(0, Math.min(100, Number(e.target.value) || 0)) })}
+                                        className="w-full bg-gray-900 border border-cyan-500/30 rounded-xl p-3 pr-10 text-sm text-cyan-300 focus:outline-none focus:ring-2 focus:ring-cyan-500 text-right font-mono font-bold"
+                                    />
+                                    <div className="absolute inset-y-0 right-0 pr-3.5 flex items-center pointer-events-none text-cyan-500 text-xs font-bold">
+                                        %
+                                    </div>
+                                </div>
+                            </div>
+                            <div className="space-y-1.5 text-left">
+                                <label className="text-[10px] font-black uppercase text-gray-400 tracking-wider">Seuil Alerte Trésorerie (0 = off)</label>
+                                <input
+                                    type="number"
+                                    min="0"
+                                    step="50000"
+                                    value={settings.profitability?.lowTreasuryThreshold ?? 0}
+                                    onChange={(e) => updateSettings('profitability', { lowTreasuryThreshold: Math.max(0, Number(e.target.value) || 0) })}
+                                    className="w-full bg-gray-900 border border-gray-700 rounded-xl p-3 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-600 text-right font-mono font-bold"
+                                />
+                            </div>
+                            <div className="flex items-end">
+                                <ToggleSwitch
+                                    label="Alertes seuils (optionnel)"
+                                    description="Indicateurs visuels non bloquants (stock & trésorerie)."
+                                    isEnabled={Boolean(settings.profitability?.enableOptionalAlerts)}
+                                    onToggle={() => updateSettings('profitability', { enableOptionalAlerts: !settings.profitability?.enableOptionalAlerts })}
+                                    colorClass="bg-amber-600"
+                                />
                             </div>
                         </div>
                     </section>
@@ -645,6 +761,7 @@ const AppSettingsManager: React.FC = () => {
             {/* TAB 2: PRINTER CONFIGURATION LIST */}
             {activeTab === 'hardware' && (
                 <div className="space-y-6 animate-fade-in">
+                    <DeviceServicesPanel />
                     <section className="bg-gray-800/50 p-6 rounded-2xl shadow-xl border border-gray-700/80 space-y-5">
                         <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-4">
                             <div>
@@ -693,6 +810,7 @@ const AppSettingsManager: React.FC = () => {
                                             <div>Liaison : <span className="text-white font-semibold">
                                                 {p.connection === 'browser' ? 'Navigateur standard' 
                                                  : p.connection === 'network' ? 'IP LAN Réseau' 
+                                                 : p.connection === 'pc_relay' ? 'Partagée via PC' 
                                                  : p.connection === 'bluetooth' ? 'Bluetooth' 
                                                  : 'Câble USB'}
                                             </span></div>
@@ -806,6 +924,7 @@ const AppSettingsManager: React.FC = () => {
                                         onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setPrinterForm(prev => ({ ...prev, connection: e.target.value as PrinterConfig['connection'] }))}
                                         className="w-full bg-gray-900 border border-gray-700 rounded-xl p-3 text-sm text-white"
                                     >
+                                        <option value="pc_relay">Partagée via un PC Windows (relais d'impression TGS CI)</option>
                                         <option value="browser">Navigateur Spooler (Système standard / AirPrint)</option>
                                         <option value="network">Réseau Local IP (Liaison Socket brute port 9100)</option>
                                         <option value="bluetooth">Bluetooth (Série RFCOMM)</option>
@@ -816,14 +935,14 @@ const AppSettingsManager: React.FC = () => {
                                 {printerForm.connection !== 'browser' && (
                                     <div className="space-y-1.5 animate-slide-in">
                                         <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest">
-                                            {printerForm.connection === 'network' ? 'Adresse IP Réseau de l\'imprimante' : 'Adresse MAC / Port COM'}
+                                            {printerForm.connection === 'pc_relay' ? 'Adresse IP du PC où l\'imprimante est branchée' : printerForm.connection === 'network' ? 'Adresse IP Réseau de l\'imprimante' : 'Adresse MAC / Port COM'}
                                         </label>
                                         <input 
                                             type="text" 
                                             value={printerForm.address || ''} 
                                             onChange={(e) => setPrinterForm(prev => ({ ...prev, address: e.target.value }))}
                                             className="w-full bg-gray-900 border border-gray-700 rounded-xl p-3 text-sm font-mono text-blue-400"
-                                            placeholder={printerForm.connection === 'network' ? 'Ex: 192.168.1.150' : 'Ex: 00:11:22:33:FF:EE'}
+                                            placeholder={printerForm.connection === 'pc_relay' ? 'Ex: 192.168.1.20' : printerForm.connection === 'network' ? 'Ex: 192.168.1.150' : 'Ex: 00:11:22:33:FF:EE'}
                                         />
                                     </div>
                                 )}
@@ -1033,6 +1152,7 @@ const AppSettingsManager: React.FC = () => {
             {/* TAB 4: SUPER ADMINISTRATOR MODULAR FEAT SWITCHES */}
             {activeTab === 'features' && (
                 <div className="space-y-6 animate-fade-in">
+                    <TeamAccessManager />
                     <section className="bg-gray-800/50 p-6 rounded-2xl shadow-xl border border-gray-700/80">
                         <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-6">
                             <div>

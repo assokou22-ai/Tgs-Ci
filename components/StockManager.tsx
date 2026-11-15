@@ -31,7 +31,7 @@ const StockForm: React.FC<{
         color: itemToEdit?.color || '',
         compatibleModels: itemToEdit?.compatibleModels?.join(', ') || '',
         condition: itemToEdit?.condition || 'Neuf',
-        alertThreshold: itemToEdit?.alertThreshold || 1,
+        alertThreshold: itemToEdit?.alertThreshold ?? 0,
         supplier: itemToEdit?.supplier || '',
         location: itemToEdit?.location || '',
         entryDate: itemToEdit?.entryDate || new Date().toISOString().split('T')[0],
@@ -140,8 +140,8 @@ const StockForm: React.FC<{
                                 <input name="quantity" type="number" value={item.quantity} onChange={handleChange} className={inputStyle} required/>
                             </div>
                             <div>
-                                <label className={labelStyle}>Seuil Alerte (seuil_alerte)</label>
-                                <input name="alertThreshold" type="number" value={item.alertThreshold} onChange={handleChange} className={inputStyle} />
+                                <label className={labelStyle}>Seuil Alerte (optionnel, 0 = sans min.)</label>
+                                <input name="alertThreshold" type="number" min="0" value={item.alertThreshold} onChange={handleChange} className={inputStyle} />
                             </div>
                             <div>
                                 <label className={labelStyle}>État (etat)</label>
@@ -490,12 +490,13 @@ const StockManager: React.FC<StockManagerProps> = ({ addLog, initialFilter, tick
                                     </thead>
                                     <tbody className="divide-y divide-white/5">
                                         {stock.map(item => {
-                                            const isLow = item.quantity <= (item.alertThreshold || 0);
+                                            const threshold = item.alertThreshold || 0;
+                                            const isLow = settings.profitability?.enableOptionalAlerts === true && threshold > 0 && item.quantity <= threshold;
                                             return (
-                                                <tr key={item.id} className={`hover:bg-white/[0.04] transition-colors group ${!item.isActive ? 'opacity-40 grayscale' : ''} ${isLow && item.isActive ? 'bg-red-500/5 animate-pulse-subtle' : ''}`}>
+                                                <tr key={item.id} className={`hover:bg-white/[0.04] transition-colors group ${!item.isActive ? 'opacity-40 grayscale' : ''} ${isLow && item.isActive ? 'bg-amber-500/5' : ''}`}>
                                                     <td className="px-6 py-4">
                                                         <div className="flex items-center gap-3">
-                                                            {isLow && item.isActive && <div className="w-2 h-2 rounded-full bg-red-500 shadow-[0_0_8px_#ef4444]"></div>}
+                                                            {isLow && item.isActive && <div className="w-2 h-2 rounded-full bg-amber-400 shadow-[0_0_8px_#f59e0b]" title="Seuil optionnel atteint"></div>}
                                                             <div>
                                                                 <p className="font-black text-white uppercase tracking-tight text-sm">{item.name}</p>
                                                                 <div className="flex gap-2 mt-1">
@@ -513,11 +514,13 @@ const StockManager: React.FC<StockManagerProps> = ({ addLog, initialFilter, tick
                                                     </td>
                                                     <td className="px-6 py-4 text-center">
                                                         <span className={`px-4 py-1 rounded-lg font-black text-sm border ${
-                                                            item.quantity > (item.alertThreshold || 0) 
-                                                            ? 'text-green-400 bg-green-400/10 border-green-500/20' 
-                                                            : item.quantity > 0 
-                                                            ? 'text-yellow-400 bg-yellow-400/10 border-yellow-500/20' 
-                                                            : 'text-red-400 bg-red-500/10 border-red-500/20'
+                                                            threshold === 0
+                                                            ? (item.quantity > 0 ? 'text-green-400 bg-green-400/10 border-green-500/20' : 'text-slate-300 bg-white/5 border-white/10')
+                                                            : item.quantity > threshold
+                                                            ? 'text-green-400 bg-green-400/10 border-green-500/20'
+                                                            : item.quantity > 0
+                                                            ? 'text-yellow-400 bg-yellow-400/10 border-yellow-500/20'
+                                                            : 'text-amber-400 bg-amber-500/10 border-amber-500/20'
                                                         }`}>
                                                             {item.quantity}
                                                         </span>

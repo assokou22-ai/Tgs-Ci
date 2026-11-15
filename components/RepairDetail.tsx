@@ -19,7 +19,8 @@ import {
     CheckBadgeIcon,
     WhatsAppIcon,
     SparklesIcon,
-    CloudArrowDownIcon
+    CloudArrowDownIcon,
+    CameraIcon
 } from './icons.tsx';
 import NotificationModal from './NotificationModal.tsx';
 import DiagnosticSheetBModal from './DiagnosticSheetBModal.tsx';
@@ -53,6 +54,8 @@ import WaitingStatusModal from './WaitingStatusModal.tsx';
 import RegularizeTicketModal from './RegularizeTicketModal.tsx';
 import TechnicalBlockageModal from './TechnicalBlockageModal.tsx';
 import { getTicketFinancialSummary } from '../utils/ticketHelpers.ts';
+import { useProfitabilityData } from '../hooks/useProfitabilityData.ts';
+import { calculateTicketProfitability, ACTIVITY_LABELS, ACTIVITY_ORDER, PART_SOURCE_SHORT_LABELS } from '../utils/profitability.ts';
 import { YangoDeliveryViewModal } from './YangoDeliveryViewModal.tsx';
 import { PaymentLedgerManager } from './PaymentLedgerManager.tsx';
 import { InspectionPhotoGallery } from './InspectionPhotoGallery.tsx';
@@ -81,7 +84,7 @@ const RepairDetail: React.FC<RepairDetailProps> = ({ ticket, onBack, onUpdate, r
     const [isStockUsageOpen, setStockUsageOpen] = useState(false);
     const [isExternalPurchaseOpen, setExternalPurchaseOpen] = useState(false);
     const [isPreviewOpen, setIsPreviewOpen] = useState(false);
-    const [previewType, setPreviewType] = useState<'standard' | 'legal' | 'technical_report' | 'p3_report' | 'blockage_note'>('standard');
+    const [previewType, setPreviewType] = useState<'standard' | 'legal' | 'technical_report' | 'p3_report' | 'blockage_note' | 'diagnostic_p2'>('standard');
     const [isUpdating, setIsUpdating] = useState(false);
     const [isRegularizing, setIsRegularizing] = useState(false);
     const [isRegularizeModalOpen, setIsRegularizeModalOpen] = useState(false);
@@ -171,11 +174,18 @@ const RepairDetail: React.FC<RepairDetailProps> = ({ ticket, onBack, onUpdate, r
 
     const getInitialRepairDays = useCallback(() => {
         if (ticket.diagnosticSheetB?.repairDelay) {
-            const matches = ticket.diagnosticSheetB.repairDelay.match(/\d+/g);
+            const raw = ticket.diagnosticSheetB.repairDelay.toLowerCase();
+            const matches = raw.match(/\d+/g);
             if (matches && matches.length > 0) {
                 const numbers = matches.map(Number);
-                const maxDays = Math.max(...numbers);
-                if (maxDays > 0) return maxDays;
+                const firstNum = numbers[0];
+                if (firstNum > 0) {
+                    if (raw.includes('h') || raw.includes('heure')) {
+                        // 24h -> 1j, 48h -> 2j, 72h -> 3j
+                        return Math.max(1, Math.ceil(firstNum / 24));
+                    }
+                    return firstNum;
+                }
             }
         }
         return 3; // fallback default
@@ -196,6 +206,8 @@ const RepairDetail: React.FC<RepairDetailProps> = ({ ticket, onBack, onUpdate, r
     const { settings } = useAppSettings();
     const { movements } = useStock();
     const { purchases } = useExternalPurchases();
+    const { stockMap, stockUsages, externalPurchases } = useProfitabilityData();
+    const taxProvisionRate = settings.profitability?.taxProvisionRate ?? 0;
 
     const usedParts = useMemo(() => {
         return movements.filter(m => m.ticket_id === ticket.id);
@@ -205,11 +217,41 @@ const RepairDetail: React.FC<RepairDetailProps> = ({ ticket, onBack, onUpdate, r
         return purchases.filter(p => p.ticket_id === ticket.id);
     }, [purchases, ticket.id]);
 
+    const dossierProfitability = useMemo(() => {
+        return calculateTicketProfitability(ticket, {
+            stockMap,
+            stockUsages,
+            externalPurchases,
+            taxProvisionRate,
+        });
+    }, [ticket, stockMap, stockUsages, externalPurchases, taxProvisionRate]);
+
     const handleUpdateWithFeedback = async (updatedTicket: RepairTicket, actionDescription: string) => {
         if (isUpdating) return;
         setIsUpdating(true);
         try {
-            await onUpdate(updatedTicket);
+            // Sécurité anti-effacement : préserver impérativement les prestations et le coût des réparations
+            const safeguardedTicket: RepairTicket = {
+                ...updatedTicket,
+                services: (Array.isArray(updatedTicket.services) && updatedTicket.services.length > 0)
+                    ? updatedTicket.services
+                    : (Array.isArray(ticket.services) && ticket.services.length > 0 ? ticket.services : []),
+                ligneVentes: (Array.isArray(updatedTicket.ligneVentes) && updatedTicket.ligneVentes.length > 0)
+                    ? updatedTicket.ligneVentes
+                    : (Array.isArray(ticket.ligneVentes) && ticket.ligneVentes.length > 0 ? ticket.ligneVentes : []),
+                costs: {
+                    ...(ticket.costs || {}),
+                    ...(updatedTicket.costs || {}),
+                    diagnostic: updatedTicket.costs?.diagnostic !== undefined ? Number(updatedTicket.costs.diagnostic) : (Number(ticket.costs?.diagnostic) || 5000),
+                    repair: (Number(updatedTicket.costs?.repair) || 0) > 0
+                        ? Number(updatedTicket.costs?.repair)
+                        : (Number(ticket.costs?.repair) || (Array.isArray(ticket.services) ? ticket.services.reduce((s, x) => s + (Number(x.price) || 0), 0) : 0)),
+                    advance: (updatedTicket.costs?.advance !== undefined && Number(updatedTicket.costs.advance) > 0)
+                        ? Number(updatedTicket.costs.advance)
+                        : (Number(ticket.costs?.advance) || 0)
+                }
+            };
+            await onUpdate(safeguardedTicket);
             playTone(660, 100);
         } catch (error) { console.error(`Failed to ${actionDescription}:`, error); } finally { setIsUpdating(false); }
     };
@@ -633,8 +675,72 @@ const RepairDetail: React.FC<RepairDetailProps> = ({ ticket, onBack, onUpdate, r
     const totalCost = fin.totalBilled;
     const balance = fin.balanceDue;
 
-    const hasDiagnosticData = !!(ticket.diagnosticReport?.length || ticket.customFields?.diagnostic || ticket.customFields?.constatsParticuliers);
-    const hasExpertiseBData = !!ticket.diagnosticSheetB;
+    const legacyProps = ticket as unknown as {
+        diagnosis?: string;
+        diagnostic?: string;
+        initialDiagnosis?: string;
+        photos?: string[];
+        inspectionPhotos?: string[];
+        techNotes?: string;
+    };
+
+    // Extraction exclusive des photos de diagnostic technique (exclut strictement les photos de réception d'accueil)
+    const diagnosticPhotos = useMemo(() => {
+        const list: string[] = [];
+        const seen = new Set<string>();
+
+        const addImg = (img?: string) => {
+            if (img && typeof img === 'string' && img.trim().length > 0 && !seen.has(img)) {
+                seen.add(img);
+                list.push(img);
+            }
+        };
+
+        if (Array.isArray(ticket.diagnosticImages)) {
+            ticket.diagnosticImages.forEach(addImg);
+        }
+        if (Array.isArray(ticket.diagnosticSheetB?.images)) {
+            ticket.diagnosticSheetB.images.forEach(addImg);
+        }
+
+        return list;
+    }, [ticket.diagnosticImages, ticket.diagnosticSheetB?.images]);
+
+    // Extraction universelle des textes de diagnostic (formats récents et historiques)
+    const legacyDiagnosticText = useMemo(() => {
+        const text = legacyProps.diagnosis || 
+                     legacyProps.diagnostic || 
+                     legacyProps.initialDiagnosis || 
+                     ticket.customFields?.diagnostic || 
+                     ticket.customFields?.technicalVerdict || 
+                     ticket.customFields?.diagnosis || '';
+        return typeof text === 'string' ? text.trim() : '';
+    }, [ticket, legacyProps.diagnosis, legacyProps.diagnostic, legacyProps.initialDiagnosis]);
+
+    const legacyConstatsText = useMemo(() => {
+        const text = ticket.customFields?.constatsParticuliers || 
+                     ticket.customFields?.constats || '';
+        return typeof text === 'string' ? text.trim() : '';
+    }, [ticket]);
+
+    const legacyTechNotes = useMemo(() => {
+        const text = ticket.technicianNotes || legacyProps.techNotes || ticket.customFields?.technicianNotes || '';
+        return typeof text === 'string' ? text.trim() : '';
+    }, [ticket, legacyProps.techNotes]);
+
+    const hasStructuredReport = Array.isArray(ticket.diagnosticReport) && ticket.diagnosticReport.length > 0;
+    const hasExpertiseBData = !!ticket.diagnosticSheetB && (
+        (Array.isArray(ticket.diagnosticSheetB.tensionValues) && ticket.diagnosticSheetB.tensionValues.some(t => t.value && t.value.trim() !== '')) ||
+        (Array.isArray(ticket.diagnosticSheetB.diagnosticPoints) && ticket.diagnosticSheetB.diagnosticPoints.some(p => p.notes && p.notes.trim() !== '')) ||
+        !!ticket.diagnosticSheetB.visualInspection ||
+        (Array.isArray(ticket.diagnosticSheetB.images) && ticket.diagnosticSheetB.images.length > 0)
+    );
+    const hasExplicitDiagText = !!(legacyProps.diagnosis || legacyProps.diagnostic || legacyProps.initialDiagnosis || ticket.customFields?.technicalVerdict);
+    const hasDiagnosticData = hasStructuredReport || 
+                              hasExpertiseBData || 
+                              hasExplicitDiagText || 
+                              diagnosticPhotos.length > 0 || 
+                              !!ticket.diagnosticCreatedAt;
 
     const handleWhatsApp = () => {
         setIsWhatsAppShareOpen(true);
@@ -1329,9 +1435,9 @@ const RepairDetail: React.FC<RepairDetailProps> = ({ ticket, onBack, onUpdate, r
                         )
                     )}
 
-                    {/* SECTION DIAGNOSTIC - RENDU VISUEL ENRICHI */}
-                    {(hasDiagnosticData || hasExpertiseBData || (ticket.diagnosticReport && ticket.diagnosticReport.length > 0)) && (
-                        <div className="apple-card p-6 md:p-8 bg-purple-900/10 border-purple-500/30 space-y-5">
+                    {/* SECTION DIAGNOSTIC - RENDU VISUEL ENRICHI & RÉTROCOMPATIBLE */}
+                    {hasDiagnosticData && (
+                        <div className="apple-card p-6 md:p-8 bg-purple-900/10 border-purple-500/30 space-y-6">
                             <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 border-b border-purple-500/20 pb-4">
                                 <div className="flex items-center gap-3">
                                     <div className="p-2.5 bg-purple-500/15 border border-purple-500/30 rounded-xl text-purple-400">
@@ -1349,7 +1455,7 @@ const RepairDetail: React.FC<RepairDetailProps> = ({ ticket, onBack, onUpdate, r
                                             )}
                                         </h3>
                                         <p className="text-[10px] text-slate-400 font-bold uppercase mt-0.5">
-                                            {ticket.diagnosticCreatedAt ? `Validé le ${new Date(ticket.diagnosticCreatedAt).toLocaleString('fr-FR')}` : 'Rapport technique standardisé'}
+                                            {ticket.diagnosticCreatedAt ? `Validé le ${new Date(ticket.diagnosticCreatedAt).toLocaleString('fr-FR')}` : 'Rapport technique certifié'}
                                         </p>
                                     </div>
                                 </div>
@@ -1362,8 +1468,9 @@ const RepairDetail: React.FC<RepairDetailProps> = ({ ticket, onBack, onUpdate, r
                                         <PencilIcon className="w-3.5 h-3.5" /> Modifier
                                     </button>
                                     <button 
-                                        onClick={() => { setPreviewType('standard'); setIsPreviewOpen(true); }}
+                                        onClick={() => { setPreviewType('diagnostic_p2'); setIsPreviewOpen(true); }}
                                         className="px-3 py-1.5 bg-purple-600 hover:bg-purple-500 text-white rounded-xl text-[9px] font-black uppercase tracking-widest shadow-lg shadow-purple-900/40 transition-all flex items-center gap-1.5"
+                                        title="Imprimer ou consulter le Rapport d'Expertise Technique P2"
                                     >
                                         <PrinterIcon className="w-3.5 h-3.5" /> Rapport P2
                                     </button>
@@ -1410,20 +1517,67 @@ const RepairDetail: React.FC<RepairDetailProps> = ({ ticket, onBack, onUpdate, r
                                 </div>
                             )}
                             
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                {ticket.customFields?.constatsParticuliers && (
-                                    <div className="p-4 bg-black/40 rounded-2xl border border-white/5">
-                                        <p className="text-[8px] font-black text-slate-500 uppercase mb-2">Observations Physiques</p>
-                                        <p className="text-xs text-slate-200 italic">"{ticket.customFields.constatsParticuliers}"</p>
+                            {/* Blocs textuels : Constats physiques, Conclusion & Notes technicien */}
+                            {(legacyConstatsText || legacyDiagnosticText || legacyTechNotes) && (
+                                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                                    {legacyConstatsText && (
+                                        <div className="p-4 bg-black/40 rounded-2xl border border-white/5">
+                                            <p className="text-[8px] font-black text-slate-400 uppercase mb-2 tracking-wider">Observations Physiques & Constats</p>
+                                            <p className="text-xs text-slate-200 italic leading-relaxed whitespace-pre-wrap">"{legacyConstatsText}"</p>
+                                        </div>
+                                    )}
+                                    {legacyDiagnosticText && (
+                                        <div className="p-4 bg-black/40 rounded-2xl border border-purple-500/20">
+                                            <p className="text-[8px] font-black text-purple-400 uppercase mb-2 tracking-wider">Conclusion & Diagnostic Technique</p>
+                                            <p className="text-xs text-purple-100 font-medium leading-relaxed whitespace-pre-wrap">"{legacyDiagnosticText}"</p>
+                                        </div>
+                                    )}
+                                    {legacyTechNotes && (
+                                        <div className="p-4 bg-black/40 rounded-2xl border border-amber-500/20">
+                                            <p className="text-[8px] font-black text-amber-400 uppercase mb-2 tracking-wider">Notes d'Atelier Technicien</p>
+                                            <p className="text-xs text-slate-300 leading-relaxed whitespace-pre-wrap">{legacyTechNotes}</p>
+                                        </div>
+                                    )}
+                                </div>
+                            )}
+
+                            {/* Galerie des Photos de Diagnostic avec zoom plein écran */}
+                            {diagnosticPhotos.length > 0 && (
+                                <div className="space-y-3 pt-3 border-t border-purple-500/20">
+                                    <div className="flex items-center justify-between">
+                                        <div className="flex items-center gap-2">
+                                            <CameraIcon className="w-4 h-4 text-purple-400" />
+                                            <p className="text-[9px] font-black uppercase tracking-widest text-purple-300">
+                                                Preuves Visuelles & Photos Diagnostic ({diagnosticPhotos.length})
+                                            </p>
+                                        </div>
+                                        <span className="text-[9px] text-slate-400 font-bold uppercase">
+                                            Cliquer sur une photo pour agrandir
+                                        </span>
                                     </div>
-                                )}
-                                {ticket.customFields?.diagnostic && (
-                                    <div className="p-4 bg-black/40 rounded-2xl border border-white/5">
-                                        <p className="text-[8px] font-black text-slate-500 uppercase mb-2">Conclusion Technique</p>
-                                        <p className="text-xs text-slate-200 italic">"{ticket.customFields.diagnostic}"</p>
+                                    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3">
+                                        {diagnosticPhotos.map((photo, idx) => (
+                                            <div 
+                                                key={idx}
+                                                onClick={() => setZoomedImage(photo)}
+                                                className="group relative aspect-square rounded-xl overflow-hidden border border-white/10 bg-black/60 cursor-pointer hover:border-purple-500/60 hover:ring-2 hover:ring-purple-500/40 transition-all shadow-lg"
+                                                title={`Agrandir la photo ${idx + 1}`}
+                                            >
+                                                <img 
+                                                    src={photo} 
+                                                    alt={`Photo diagnostic ${idx + 1}`} 
+                                                    className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                                                />
+                                                <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity flex items-end p-2">
+                                                    <span className="text-[9px] font-black text-white flex items-center gap-1">
+                                                        <Eye className="w-3 h-3 text-purple-400" /> Cliché {idx + 1}
+                                                    </span>
+                                                </div>
+                                            </div>
+                                        ))}
                                     </div>
-                                )}
-                            </div>
+                                </div>
+                            )}
                         </div>
                     )}
 
@@ -1586,12 +1740,49 @@ const RepairDetail: React.FC<RepairDetailProps> = ({ ticket, onBack, onUpdate, r
                     <div className="apple-card p-6 md:p-8">
                         <div className="flex items-center justify-between mb-6 flex-wrap gap-2">
                             <h3 className="text-[10px] md:text-xs font-black text-apple-muted uppercase tracking-[0.2em]">DÉSIGNATION DES PRESTATIONS</h3>
-                            {(ticket.status === RepairStatus.ANNULE || fin.isInfacturable) && (
-                                <span className="px-2.5 py-1 rounded-full bg-rose-500/20 text-rose-300 border border-rose-500/30 text-[9px] font-black uppercase tracking-wider">
-                                    🚫 INFACTURABLE (0 F AU POINT)
-                                </span>
-                            )}
+                            <div className="flex items-center gap-2">
+                                {(ticket.status === RepairStatus.ANNULE || fin.isInfacturable) && (
+                                    <span className="px-2.5 py-1 rounded-full bg-rose-500/20 text-rose-300 border border-rose-500/30 text-[9px] font-black uppercase tracking-wider">
+                                        🚫 INFACTURABLE (0 F AU POINT)
+                                    </span>
+                                )}
+                                {onEdit && (
+                                    <button 
+                                        type="button"
+                                        onClick={() => onEdit(ticket)} 
+                                        className="px-3 py-1.5 bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 border border-blue-500/30 rounded-xl text-[9px] font-black uppercase tracking-wider transition-all flex items-center gap-1.5 shadow-sm active:scale-95"
+                                        title="Ajouter une prestation (ex: batterie), appliquer une remise ou modifier les lignes"
+                                    >
+                                        <PencilIcon className="w-3.5 h-3.5" />
+                                        <span>Ajouter / Modifier Prestations</span>
+                                    </button>
+                                )}
+                            </div>
                         </div>
+
+                        {/* Liste détaillée des prestations / services / pièces */}
+                        {Array.isArray(ticket.services) && ticket.services.length > 0 ? (
+                            <div className="space-y-2 mb-6">
+                                {ticket.services.map((svc, idx) => (
+                                    <div key={idx} className="flex justify-between items-center p-3 bg-black/40 rounded-xl border border-white/5 hover:border-white/10 transition-all">
+                                        <div className="flex items-center gap-3">
+                                            <span className="w-6 h-6 rounded-lg bg-blue-600/20 text-blue-400 font-mono text-[10px] font-black flex items-center justify-center shrink-0">
+                                                {idx + 1}
+                                            </span>
+                                            <div>
+                                                <p className="text-xs font-bold text-white uppercase">{svc.name}</p>
+                                                {svc.category && <p className="text-[8px] text-slate-400 font-bold uppercase tracking-wider">{svc.category}</p>}
+                                            </div>
+                                        </div>
+                                        <span className="font-mono text-xs sm:text-sm font-black text-emerald-400 shrink-0 ml-3">
+                                            {Number(svc.price).toLocaleString('fr-FR')} F CFA
+                                        </span>
+                                    </div>
+                                ))}
+                            </div>
+                        ) : (
+                            <p className="text-xs text-slate-500 italic mb-6">Aucune prestation chiffrée enregistrée.</p>
+                        )}
 
                         {fin.isInfacturable && (
                             <div className="mb-6 p-4 rounded-2xl bg-rose-500/10 border border-rose-500/30 text-rose-300 space-y-2 animate-fade-in">
@@ -1644,6 +1835,165 @@ const RepairDetail: React.FC<RepairDetailProps> = ({ ticket, onBack, onUpdate, r
                                 )}
                             </div>
                         </div>
+
+                        {/* Rentabilité du Dossier & Détail Ligne par Ligne */}
+                        {settings.profitability?.enableProfitabilityIndicators !== false && (
+                        <div className="mt-6 pt-6 border-t border-white/10 space-y-4">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                                <h4 className="text-[10px] font-black uppercase tracking-[0.2em] text-emerald-400">
+                                    Rentabilité du Dossier &amp; Détail par Ligne
+                                </h4>
+                                <span className="text-[10px] font-mono text-slate-400">
+                                    Pièces déduites 1x &bull; Provision fiscale {dossierProfitability.taxRate}% sur CA
+                                </span>
+                            </div>
+
+                            {dossierProfitability.isInfacturable ? (
+                                <div className="p-3 rounded-xl bg-rose-500/10 border border-rose-500/20 text-[11px] text-rose-300">
+                                    Dossier infacturable : CA, coûts et marge comptabilisés à 0 F CFA.
+                                </div>
+                            ) : (
+                                <>
+                                    <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+                                        <div className="p-3.5 rounded-2xl bg-black/40 border border-white/10">
+                                            <p className="text-[9px] font-black text-slate-400 uppercase">CA Facturé / Encaissé</p>
+                                            <p className="text-base font-black font-mono text-white mt-1">
+                                                {dossierProfitability.totalCA.toLocaleString('fr-FR')} F
+                                            </p>
+                                            <p className="text-[10px] font-mono text-cyan-300 mt-0.5">
+                                                Réel : {dossierProfitability.realCA.toLocaleString('fr-FR')} F
+                                            </p>
+                                        </div>
+                                        <div className="p-3.5 rounded-2xl bg-black/40 border border-amber-500/20">
+                                            <p className="text-[9px] font-black text-amber-400 uppercase">Coût Pièces (1x)</p>
+                                            <p className="text-base font-black font-mono text-amber-300 mt-1">
+                                                -{dossierProfitability.totalPartCost.toLocaleString('fr-FR')} F
+                                            </p>
+                                            <p className="text-[10px] font-mono text-amber-200/80 mt-0.5">
+                                                Engagé : -{dossierProfitability.realPartCost.toLocaleString('fr-FR')} F
+                                            </p>
+                                        </div>
+                                        <div className="p-3.5 rounded-2xl bg-black/40 border border-orange-500/20">
+                                            <p className="text-[9px] font-black text-orange-400 uppercase">Prov. Fiscale ({dossierProfitability.taxRate}%)</p>
+                                            <p className="text-base font-black font-mono text-orange-300 mt-1">
+                                                -{dossierProfitability.totalTaxProvision.toLocaleString('fr-FR')} F
+                                            </p>
+                                            <p className="text-[10px] font-mono text-orange-200/80 mt-0.5">
+                                                Réelle : -{dossierProfitability.realTaxProvision.toLocaleString('fr-FR')} F
+                                            </p>
+                                        </div>
+                                        <div className={`p-3.5 rounded-2xl border ${dossierProfitability.netMargin >= 0 ? 'bg-emerald-500/10 border-emerald-500/30' : 'bg-rose-500/10 border-rose-500/30'}`}>
+                                            <p className={`text-[9px] font-black uppercase ${dossierProfitability.netMargin >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                                Marge Prévisionnelle ({dossierProfitability.marginRate.toFixed(1)}%)
+                                            </p>
+                                            <p className={`text-base font-black font-mono mt-1 ${dossierProfitability.netMargin >= 0 ? 'text-emerald-300' : 'text-rose-300'}`}>
+                                                {dossierProfitability.netMargin.toLocaleString('fr-FR')} F
+                                            </p>
+                                        </div>
+                                        <div className={`p-3.5 rounded-2xl border ${dossierProfitability.realNetMargin >= 0 ? 'bg-cyan-500/10 border-cyan-500/30' : 'bg-rose-500/10 border-rose-500/30'}`}>
+                                            <p className={`text-[9px] font-black uppercase ${dossierProfitability.realNetMargin >= 0 ? 'text-cyan-300' : 'text-rose-400'}`}>
+                                                Marge Réelle ({Math.round(dossierProfitability.collectionRatio * 100)}% enc.)
+                                            </p>
+                                            <p className={`text-base font-black font-mono mt-1 ${dossierProfitability.realNetMargin >= 0 ? 'text-cyan-200' : 'text-rose-300'}`}>
+                                                {dossierProfitability.realNetMargin.toLocaleString('fr-FR')} F
+                                            </p>
+                                        </div>
+                                    </div>
+
+                                    {dossierProfitability.activitiesPresent.length > 0 && (
+                                        <div className="flex flex-wrap gap-2">
+                                            {ACTIVITY_ORDER.filter(act => dossierProfitability.byActivity[act].lineCount > 0).map(act => {
+                                                const summary = dossierProfitability.byActivity[act];
+                                                return (
+                                                    <div key={act} className="px-3 py-1.5 rounded-xl bg-white/5 border border-white/10 text-[10px] flex flex-wrap items-center gap-2">
+                                                        <span className="font-black uppercase text-slate-300">{ACTIVITY_LABELS[act]}</span>
+                                                        <span className="font-mono text-white">{summary.ca.toLocaleString('fr-FR')} F CA</span>
+                                                        <span className={`font-mono font-black ${summary.netMargin >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                                            Prév {summary.netMargin.toLocaleString('fr-FR')} F
+                                                        </span>
+                                                        <span className={`font-mono font-bold ${summary.realNetMargin >= 0 ? 'text-cyan-300' : 'text-rose-300'}`}>
+                                                            / Réelle {summary.realNetMargin.toLocaleString('fr-FR')} F
+                                                        </span>
+                                                    </div>
+                                                );
+                                            })}
+                                        </div>
+                                    )}
+
+                                    {dossierProfitability.lines.length > 0 && (
+                                        <div className="overflow-x-auto rounded-2xl border border-white/10 bg-black/30">
+                                            <table className="w-full text-left border-collapse text-[11px]">
+                                                <thead>
+                                                    <tr className="border-b border-white/10 text-[9px] font-black uppercase text-slate-400">
+                                                        <th className="py-2.5 px-3">Ligne</th>
+                                                        <th className="py-2.5 px-3">Activité &amp; Origine</th>
+                                                        <th className="py-2.5 px-3 text-right">CA</th>
+                                                        <th className="py-2.5 px-3 text-right">Coût Pièces</th>
+                                                        <th className="py-2.5 px-3 text-right">Prov. Fisc.</th>
+                                                        <th className="py-2.5 px-3 text-right">Marge Prév.</th>
+                                                        <th className="py-2.5 px-3 text-right">Marge Réelle</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody className="divide-y divide-white/5">
+                                                    {dossierProfitability.lines.map(line => (
+                                                        <tr key={line.id} className="hover:bg-white/[0.03]">
+                                                            <td className="py-2 px-3 font-bold text-white uppercase">
+                                                                {line.designation}
+                                                                {line.quantite > 1 && <span className="ml-1 text-[9px] text-slate-400">x{line.quantite}</span>}
+                                                            </td>
+                                                            <td className="py-2 px-3">
+                                                                <div className="flex flex-wrap gap-1">
+                                                                    <span className={`px-2 py-0.5 rounded text-[9px] font-black uppercase border ${
+                                                                        line.activite === 'vente_macbook'
+                                                                            ? 'bg-purple-500/15 text-purple-300 border-purple-500/30'
+                                                                            : line.activite === 'vente_pieces'
+                                                                                ? 'bg-amber-500/15 text-amber-300 border-amber-500/30'
+                                                                                : 'bg-blue-500/15 text-blue-300 border-blue-500/30'
+                                                                    }`}>
+                                                                        {ACTIVITY_LABELS[line.activite]}
+                                                                    </span>
+                                                                    {line.sourcePiece && (
+                                                                        <span className={`px-2 py-0.5 rounded text-[9px] font-black uppercase border ${
+                                                                            line.sourcePiece === 'fourni_client'
+                                                                                ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
+                                                                                : line.sourcePiece === 'a_commander'
+                                                                                    ? 'bg-amber-500/15 text-amber-300 border-amber-500/30'
+                                                                                    : 'bg-cyan-500/15 text-cyan-300 border-cyan-500/30'
+                                                                        }`}>
+                                                                            {PART_SOURCE_SHORT_LABELS[line.sourcePiece]}
+                                                                        </span>
+                                                                    )}
+                                                                </div>
+                                                            </td>
+                                                            <td className="py-2 px-3 text-right font-mono text-white">
+                                                                {line.ca.toLocaleString('fr-FR')} F
+                                                            </td>
+                                                            <td className="py-2 px-3 text-right font-mono text-amber-300">
+                                                                {line.sourcePiece === 'fourni_client'
+                                                                    ? '0 F (Client)'
+                                                                    : line.partCost > 0
+                                                                        ? `-${line.partCost.toLocaleString('fr-FR')} F`
+                                                                        : '0 F'}
+                                                            </td>
+                                                            <td className="py-2 px-3 text-right font-mono text-orange-300">
+                                                                {line.taxProvision > 0 ? `-${line.taxProvision.toLocaleString('fr-FR')} F` : '0 F'}
+                                                            </td>
+                                                            <td className={`py-2 px-3 text-right font-mono font-black ${line.netMargin >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                                                {line.netMargin.toLocaleString('fr-FR')} F
+                                                            </td>
+                                                            <td className={`py-2 px-3 text-right font-mono font-black ${line.realNetMargin >= 0 ? 'text-cyan-300' : 'text-rose-400'}`}>
+                                                                {line.realNetMargin.toLocaleString('fr-FR')} F
+                                                            </td>
+                                                        </tr>
+                                                    ))}
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    )}
+                                </>
+                            )}
+                        </div>
+                        )}
                     </div>
                 </div>
 
@@ -1945,7 +2295,8 @@ const RepairDetail: React.FC<RepairDetailProps> = ({ ticket, onBack, onUpdate, r
             )}
 
             <PreviewModal isOpen={isPreviewOpen} onClose={() => setIsPreviewOpen(false)} fileName={`TGS_DOSSIER_${ticket.id}.pdf`}>
-                {previewType === 'legal' ? <PrintableLegalFolder ticket={ticket} customFieldDefs={settings.customFields.ticket} /> :
+                {previewType === 'diagnostic_p2' ? <PrintableDiagnosticReport ticket={ticket} /> :
+                 previewType === 'legal' ? <PrintableLegalFolder ticket={ticket} customFieldDefs={settings.customFields.ticket} /> :
                  previewType === 'p3_report' ? <PrintableTechnicalReportP3 ticket={ticket} /> :
                  previewType === 'blockage_note' ? <PrintableBlockageNote ticket={ticket} /> :
                  previewType === 'technical_report' ? <PrintableTechnicalReport ticket={ticket} /> : (
@@ -1962,8 +2313,8 @@ const RepairDetail: React.FC<RepairDetailProps> = ({ ticket, onBack, onUpdate, r
                             ticket.selectedLegalTemplate === 'bon' ? <PrintableEnterpriseBon ticket={ticket} /> : 
                             <PrintableLegalDocument ticket={ticket} template={ticket.selectedLegalTemplate || 'bon'} />
                         )}
-                        {(ticket.printDiagnosticIntegrated || (ticket.diagnosticReport && ticket.diagnosticReport.length > 0) || (ticket.diagnosticImages && ticket.diagnosticImages.length > 0)) && <PrintableDiagnosticReport ticket={ticket} />}
-                        {(ticket.showExpertiseB || !!ticket.diagnosticSheetB) && <PrintableDiagnosticSheetB ticket={ticket} />}
+                        {ticket.printDiagnosticIntegrated && hasDiagnosticData && <PrintableDiagnosticReport ticket={ticket} />}
+                        {ticket.showExpertiseB && <PrintableDiagnosticSheetB ticket={ticket} />}
                         {ticket.printFunctionalTests && <PrintableFunctionalTestsSheet ticket={ticket} />}
                         {ticket.printTechnicalReportP3 && <PrintableTechnicalReportP3 ticket={ticket} />}
                     </div>

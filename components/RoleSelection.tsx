@@ -125,7 +125,7 @@ const RoleSelection: React.FC<RoleSelectionProps> = ({ onSelectRole }) => {
   const enabledRoles = ROLES_CONFIG.filter(cfg => isFeatureEnabled(cfg.featureKey));
 
   return (
-    <div className="min-h-screen flex flex-col items-center justify-between p-4 md:p-8 text-white relative overflow-hidden bg-[#07080a] selection:bg-apple-blue selection:text-white">
+    <div className="min-h-[100dvh] flex flex-col items-center justify-between p-3 sm:p-4 md:p-8 text-white relative overflow-hidden app-bg selection:bg-apple-blue selection:text-white">
         <BackgroundAnimation />
         
         {/* Top subtle branding strip with Côte d'Ivoire & Bénin flags */}
@@ -134,7 +134,7 @@ const RoleSelection: React.FC<RoleSelectionProps> = ({ onSelectRole }) => {
                 <AppleLogo className="w-5 h-5 text-white" />
                 <span className="text-xs font-bold tracking-tight text-white uppercase">TGS-CI Pro</span>
                 <span className="text-zinc-600 text-xs">·</span>
-                <span className="text-[11px] text-zinc-400 font-medium">Atelier Spécialisé MacBook</span>
+                <span className="hidden sm:inline text-[11px] text-zinc-400 font-medium">Atelier Spécialisé MacBook</span>
             </div>
             
             <div className="flex items-center gap-3">
@@ -145,7 +145,7 @@ const RoleSelection: React.FC<RoleSelectionProps> = ({ onSelectRole }) => {
                     <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
                     <span className="text-xs font-bold text-white tracking-wide">Cocody, Abidjan</span>
                 </div>
-                <div className="flex items-center gap-2 mt-0.5">
+                <div className="hidden sm:flex items-center gap-2 mt-0.5">
                     <span className="text-[10px] text-zinc-300 font-medium">Côte d'Ivoire</span>
                     <CoteDIvoireFlag className="w-4 h-2.5" />
                     <span className="text-zinc-600 text-[10px]">·</span>
@@ -167,14 +167,14 @@ const RoleSelection: React.FC<RoleSelectionProps> = ({ onSelectRole }) => {
                 <h1 className="text-2xl sm:text-3xl md:text-5xl font-extrabold tracking-tight text-white">
                     Sélectionnez votre espace de travail
                 </h1>
-                <p className="mt-2 text-xs md:text-sm text-zinc-400 font-normal leading-relaxed">
+                <p className="hidden sm:block mt-2 text-xs md:text-sm text-zinc-400 font-normal leading-relaxed">
                     Chaque poste dispose d'outils dédiés pour la prise en charge, le diagnostic micro-électronique et la gestion clientèle.
                 </p>
             </div>
 
 
             {/* Visual Card Grid adaptatif selon le mode sélectionné */}
-            <div className={`w-full grid gap-4 md:gap-5 ${
+            <div className={`w-full grid ${isMobile ? 'gap-2' : 'gap-4 md:gap-5'} ${
                 isMobile 
                     ? 'grid-cols-1' 
                     : isTablet 
@@ -183,6 +183,25 @@ const RoleSelection: React.FC<RoleSelectionProps> = ({ onSelectRole }) => {
             }`}>
                 {enabledRoles.map((item) => {
                     const IconComponent = item.icon;
+                    if (isMobile) {
+                        // Téléphone : carte compacte sur une ligne
+                        return (
+                            <button
+                                key={item.role}
+                                onClick={() => onSelectRole(item.role)}
+                                className="group flex items-center gap-3 text-left rounded-2xl border border-white/[0.08] bg-[#0d0f14]/85 active:bg-[#151924] px-3 py-2.5 active:scale-[0.99] transition-all"
+                            >
+                                <span className={`shrink-0 w-10 h-10 rounded-xl flex items-center justify-center ${item.iconBg}`}>
+                                    <IconComponent className="w-5 h-5" />
+                                </span>
+                                <span className="flex-1 min-w-0">
+                                    <span className="block text-[0.95rem] font-extrabold text-white leading-tight truncate">{item.title}</span>
+                                    <span className="block text-[0.72rem] text-zinc-400 leading-snug truncate">{item.subtitle}</span>
+                                </span>
+                                <ArrowRight className="w-4 h-4 text-apple-blue shrink-0" />
+                            </button>
+                        );
+                    }
                     return (
                         <button
                             key={item.role}

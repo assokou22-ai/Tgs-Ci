@@ -127,7 +127,7 @@ const DashboardContent: React.FC = () => {
             
         const orderRevenue = commandes
             .filter(c => c.isRevenue && (c.status === 'Payé' || c.status === 'Reçu') && !c.isLinkedToTicket && filterFn(c.date))
-            .reduce((sum, c) => sum + c.total, 0);
+            .reduce((sum, c) => sum + (Number(c.total) || 0), 0);
 
         const revenueForPeriod = invoiceRevenue + orderRevenue;
         
@@ -135,7 +135,7 @@ const DashboardContent: React.FC = () => {
         
         const ordersForPeriod = commandes
             .filter(c => !c.isRevenue && (c.status === 'Commandé' || c.status === 'Reçu' || c.status === 'Payé') && filterFn(c.date))
-            .reduce((sum, c) => sum + c.total, 0);
+            .reduce((sum, c) => sum + (Number(c.total) || 0), 0);
 
         return { revenueForPeriod, pendingInvoices, ordersForPeriod };
     }, [factures, commandes, selectedYear, selectedMonth]);
@@ -189,7 +189,7 @@ const DashboardContent: React.FC = () => {
         // Commandes > 30 jours avec solde restant dû (exclut Payé et Annulé)
         const overdueOrders = commandes.filter(c => {
             if (c.status === 'Payé' || c.status === 'Annulé' || c.isLinkedToTicket) return false;
-            const due = c.total - (c.advance || 0);
+            const due = (Number(c.total) || 0) - (Number(c.advance) || 0);
             if (due <= 0) return false;
 
             const itemDate = new Date(c.date);
@@ -201,15 +201,17 @@ const DashboardContent: React.FC = () => {
             const itemDate = new Date(c.date);
             itemDate.setHours(0, 0, 0, 0);
             const diffDays = Math.floor((now.getTime() - itemDate.getTime()) / (1000 * 60 * 60 * 24));
+            const cmdTotal = Number(c.total) || 0;
+            const cmdAdvance = Number(c.advance) || 0;
             return {
                 id: c.id,
                 numero: c.numero,
                 clientName: c.clientName || 'STOCK INTERNE',
                 clientPhone: c.clientPhone || 'Aucun',
                 macModel: c.macModel,
-                total: c.total,
-                advance: c.advance || 0,
-                due: c.total - (c.advance || 0),
+                total: cmdTotal,
+                advance: cmdAdvance,
+                due: Math.max(0, cmdTotal - cmdAdvance),
                 diffDays,
                 date: c.date
             };

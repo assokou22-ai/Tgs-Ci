@@ -1,6 +1,6 @@
 
 import { useState, useEffect, useCallback } from 'react';
-import { RepairTicket, Role } from '../types.ts';
+import { RepairTicket, Role, RepairServiceItem, LigneVenteFiche } from '../types.ts';
 import { 
     dbGetTickets, 
     dbAddTicket, 
@@ -16,13 +16,14 @@ import {
     dbUpdateCommande
 } from '../services/dbService.ts';
 import { sanitizeTicket, sanitizeTickets } from '../utils/sanitize.ts';
-import { generateNextTicketSequence, isFallbackTicketId, extractTicketSequenceNumber } from '../utils/idGenerator.ts';
+import { isFallbackTicketId, extractTicketSequenceNumber } from '../utils/idGenerator.ts';
 import { useToastContext } from '../context/ToastContext.tsx';
 import { useFirebase } from '../context/FirebaseContext.tsx';
 import { useAppSettings } from './useAppSettings.ts';
 import { createGoogleContactFromRepairTicket } from '../services/googleContactsService.ts';
 import { handleTicketStockTransitions } from '../services/inventoryService.ts';
-import { optimizeTicketForFirestore } from '../utils/imageCompression.ts';
+import { prepareTicketForLocalStorage } from '../utils/imageCompression.ts';
+import { allocateTicketNumber, canUseCloudCounter, reserveTicketNumber } from '../services/ticketCounter.ts';
 
 
 const useRepairTickets = (enabled = true) => {
@@ -98,6 +99,59 @@ const useRepairTickets = (enabled = true) => {
           }
         }
 
+        // Restauration automatique de la prestation de réparation pour la fiche 26-RM-0886 (MacBook Pro 15 A1990)
+        const target0886 = storedTickets.find(t => (t.id || '').trim().toUpperCase() === '26-RM-0886');
+        if (target0886 && (!target0886.services || target0886.services.length === 0 || Number(target0886.costs?.repair || 0) === 0)) {
+          const restoredServices: RepairServiceItem[] = [
+            {
+              id: 'srv-26-RM-0886-cm',
+              updatedAt: new Date().toISOString(),
+              name: 'RÉPARATION DE LA CARTE MÈRE',
+              price: 80000,
+              category: 'prestation'
+            }
+          ];
+          const restoredLignes: LigneVenteFiche[] = [
+            {
+              id: 'lv-26-RM-0886-cm',
+              fiche_id: '26-RM-0886',
+              type_ligne: 'prestation',
+              article_stock_id: null,
+              designation: 'RÉPARATION DE LA CARTE MÈRE',
+              modele_compatible: (target0886.macModel || 'MACBOOK PRO 15 A1990').toUpperCase(),
+              categorie: 'prestation',
+              quantite: 1,
+              prix_unitaire_standard: 80000,
+              reduction_active: false,
+              reduction_type: null,
+              reduction_valeur: 0,
+              prix_unitaire_final: 80000,
+              motif_reduction: '',
+              statut_ligne: 'utilise',
+              prix_achat: 0
+            }
+          ];
+          const restoredTicket: RepairTicket = {
+            ...target0886,
+            services: restoredServices,
+            ligneVentes: restoredLignes,
+            costs: {
+              ...(target0886.costs || {}),
+              diagnostic: 5000,
+              repair: 80000,
+              advance: Number(target0886.costs?.advance) || 5000
+            },
+            updatedAt: new Date().toISOString()
+          };
+          try {
+            await dbUpdateTicket(restoredTicket);
+            const idx0886 = storedTickets.findIndex(t => (t.id || '').trim().toUpperCase() === '26-RM-0886');
+            if (idx0886 !== -1) storedTickets[idx0886] = restoredTicket;
+          } catch (restErr) {
+            console.warn("Auto-restore for ticket 26-RM-0886 failed:", restErr);
+          }
+        }
+
         const sanitizedTickets = sanitizeTickets(storedTickets);
         const sortedTickets = sanitizedTickets.sort((a, b) => {
           const timeA = new Date(a.createdAt).getTime();
@@ -124,11 +178,27 @@ const useRepairTickets = (enabled = true) => {
         };
         init();
         
+        const handleVisibilityChange = () => {
+            if (document.visibilityState === 'visible') {
+                refreshTickets();
+            }
+        };
+        const handleFocus = () => {
+            refreshTickets();
+        };
+
         window.addEventListener('datareceived', refreshTickets);
         window.addEventListener('tickets-updated', refreshTickets);
+        document.addEventListener('visibilitychange', handleVisibilityChange);
+        window.addEventListener('focus', handleFocus);
+        window.addEventListener('online', refreshTickets);
+
         return () => {
             window.removeEventListener('datareceived', refreshTickets);
             window.removeEventListener('tickets-updated', refreshTickets);
+            document.removeEventListener('visibilitychange', handleVisibilityChange);
+            window.removeEventListener('focus', handleFocus);
+            window.removeEventListener('online', refreshTickets);
         };
     }, [refreshTickets, enabled]);
 
@@ -138,19 +208,37 @@ const useRepairTickets = (enabled = true) => {
         throw new Error(`Rôle non autorisé.`);
     }
 
-    // Récupérer les tickets existants pour garantir un ID séquentiel officiel unique
-    const existingTickets = await dbGetTickets();
+    // Récupérer les tickets existants (priorité mémoire pour éviter de relire IndexedDB)
+    const existingTickets = tickets.length > 0 ? tickets : await dbGetTickets();
     const isEnterprise = Boolean(ticket.client?.isEnterprise);
 
     let cleanId = (ticket.id || '').trim().toUpperCase();
+    const proposedId = cleanId;
+    const targetYear = ticket.createdAt ? new Date(ticket.createdAt).getFullYear() : undefined;
+    let provisionalNumber = false;
     if (!cleanId || isFallbackTicketId(cleanId) || existingTickets.some(t => t.id === cleanId)) {
-        const targetYear = ticket.createdAt ? new Date(ticket.createdAt).getFullYear() : undefined;
-        cleanId = generateNextTicketSequence(existingTickets, isEnterprise, targetYear);
+        // Numéro attribué par le compteur central (ou provisoire si hors ligne)
+        const allocated = await allocateTicketNumber(existingTickets, isEnterprise, targetYear);
+        cleanId = allocated.id;
+        provisionalNumber = allocated.provisional;
+    } else if (canUseCloudCounter()) {
+        // Numéro proposé à l'écran : on le confirme auprès du compteur central
+        try {
+            cleanId = await reserveTicketNumber(existingTickets, isEnterprise, targetYear, cleanId);
+        } catch {
+            provisionalNumber = true;
+        }
+    } else {
+        provisionalNumber = true;
+    }
+    if (proposedId && proposedId !== cleanId && !isFallbackTicketId(proposedId)) {
+        showToast(`Numéro attribué : ${cleanId} (le ${proposedId} venait d'être utilisé sur un autre appareil).`, "info");
     }
 
     const ticketWithCleanId = {
         ...ticket,
-        id: cleanId
+        id: cleanId,
+        ...(provisionalNumber ? { _provisionalNumber: true } : {}),
     };
 
     const sanitizedTicket = sanitizeTicket(ticketWithCleanId);
@@ -173,7 +261,7 @@ const useRepairTickets = (enabled = true) => {
       ],
     };
 
-    const compressedTicket = await optimizeTicketForFirestore(newTicket);
+    const compressedTicket = await prepareTicketForLocalStorage(newTicket);
 
     try {
         await handleTicketStockTransitions(undefined, compressedTicket, role);
@@ -183,8 +271,18 @@ const useRepairTickets = (enabled = true) => {
     }
 
     await dbAddTicket(compressedTicket);
-    await refreshTickets();
+
+    // Mise à jour optimiste immédiate en mémoire (< 5ms)
+    setTickets(prev => {
+        const filtered = prev.filter(t => t.id !== compressedTicket.id);
+        return [compressedTicket, ...filtered];
+    });
     window.dispatchEvent(new CustomEvent('requestsync'));
+
+    // Rafraîchissement lourd différé en arrière-plan sans bloquer l'UI
+    setTimeout(() => {
+        refreshTickets().catch(console.error);
+    }, 250);
 
     // Synchronisation facultative vers Google Contacts
     if (settings.forms.autoCreateGoogleContact) {
@@ -209,13 +307,13 @@ const useRepairTickets = (enabled = true) => {
     }
 
     return compressedTicket;
-  }, [refreshTickets, googleAccessToken, showToast, settings.forms.autoCreateGoogleContact]);
+  }, [refreshTickets, googleAccessToken, showToast, settings.forms.autoCreateGoogleContact, tickets]);
 
   const updateTicket = useCallback(async (updatedTicket: RepairTicket, oldId?: string, role?: Role) => {
     // Force set the updatedAt timestamp to current time to ensure real-time merge latest-wins works correctly on other devices
     const ticketWithTimestamp = { ...updatedTicket, updatedAt: new Date().toISOString() };
     const sanitizedTicket = sanitizeTicket(ticketWithTimestamp);
-    const compressedTicket = await optimizeTicketForFirestore(sanitizedTicket);
+    const compressedTicket = await prepareTicketForLocalStorage(sanitizedTicket);
     
     // Auto-déterminer le rôle actif depuis les paramètres de l'URL si non spécifié
     let activeRole: Role = role || 'Administrateur';
@@ -291,8 +389,15 @@ const useRepairTickets = (enabled = true) => {
         }
         
         await dbUpdateTicket(compressedTicket);
-        await refreshTickets();
+
+        // Mise à jour optimiste immédiate en mémoire (< 5ms)
+        setTickets(prev => prev.map(t => ((oldId && t.id === oldId) || t.id === compressedTicket.id) ? compressedTicket : t));
         window.dispatchEvent(new CustomEvent('requestsync'));
+
+        // Rafraîchissement lourd différé en arrière-plan sans bloquer l'UI
+        setTimeout(() => {
+            refreshTickets().catch(console.error);
+        }, 250);
     } catch (error) {
         console.error("Update failed:", error);
         showToast(`Erreur lors de la mise à jour.`, "error");

@@ -4,6 +4,7 @@ import { useSyncStatus } from '../hooks/useSyncStatus.ts';
 import { useNetworkQuality } from '../hooks/useNetworkQuality.ts';
 import { useOnlineStatus } from '../hooks/useOnlineStatus.ts';
 import { useToastContext } from '../context/ToastContext.tsx';
+import { useFirebase } from '../context/FirebaseContext.tsx';
 import { 
     dbGetSyncQueue, 
     dbClearSyncQueue,
@@ -13,7 +14,7 @@ import {
     dbGetFactures, 
     dbGetCommandes 
 } from '../services/dbService.ts';
-import { processSyncQueue, syncFromCloud } from '../services/syncService.ts';
+import { processSyncQueue, syncFromCloud, requeueRecentLocalRecords } from '../services/syncService.ts';
 import { SyncQueueItem, EntityType } from '../types.ts';
 import { getSyncLogs, clearSyncLogs, SyncLogEntry } from '../utils/syncLogHelper.ts';
 import { 
@@ -34,14 +35,16 @@ import {
     History,
     Search,
     Trash2,
-    Info
+    Info,
+    LogIn
 } from 'lucide-react';
 
 export const SyncDiagnosticPanel: React.FC = () => {
     const { showToast } = useToastContext();
+    const { user, authReady, signInWithGoogle, isReconnectingGoogle } = useFirebase();
     const isOnline = useOnlineStatus();
     const networkQuality = useNetworkQuality();
-    const { pendingChanges, lastSync } = useSyncStatus();
+    const { pendingChanges, lastSync, lastError, isQuotaExceeded } = useSyncStatus();
 
     // Local state for counts
     const [counts, setCounts] = useState({
@@ -171,35 +174,63 @@ export const SyncDiagnosticPanel: React.FC = () => {
             showToast("La synchronisation requiert une connexion Internet active.", "warning");
             return;
         }
+        if (!user) {
+            showToast("Veuillez d'abord connecter votre compte Google pour synchroniser avec le Cloud.", "warning");
+            await signInWithGoogle(false);
+            return;
+        }
         if (localSyncingState !== 'idle' && localSyncingState !== 'done' && localSyncingState !== 'error') return;
 
         setLocalSyncingState('sending');
-        showToast("Lancement du diagnostic de synchronisation complète...", "info");
+        showToast("Lancement de la synchronisation complète (Envoi + Réception)...", "info");
 
         try {
-            // Step 1: Push local modifications
-            await processSyncQueue();
-            
-            // Step 2: Fetch latest modifications from Cloud
+            // Étape 0 : réindexer les fiches des dernières 48h éventuellement manquantes de la file
+            await requeueRecentLocalRecords(48);
+
+            // Étape 1 : envoyer les modifications locales vers le Cloud
+            const pushResult = await processSyncQueue(true);
+            if (!pushResult.ok) {
+                throw new Error(pushResult.error || "Certaines fiches n'ont pas pu être envoyées.");
+            }
+
+            // Étape 2 : télécharger les modifications distantes
             setLocalSyncingState('receiving');
-            await syncFromCloud();
+            await syncFromCloud(true);
 
             setLocalSyncingState('done');
             showToast("Base de données synchronisée avec succès !", "success");
-            
-            // Dispatch to let other components reload
+
             window.dispatchEvent(new CustomEvent('datareceived'));
-            
-            // Refresh counts
             await loadLocalDatabaseCounts();
         } catch (error) {
             console.error("Diagnostic manual sync failed:", error);
             setLocalSyncingState('error');
-            showToast("Erreur de synchronisation. Veuillez réessayer.", "error");
+            const errMsg = error instanceof Error ? error.message : "Erreur de synchronisation. Veuillez réessayer.";
+            showToast(errMsg, "error");
+            await loadLocalDatabaseCounts();
         } finally {
             setTimeout(() => {
                 setLocalSyncingState('idle');
             }, 3000);
+        }
+    };
+
+    const handleRequeueRecent = async () => {
+        try {
+            const count = await requeueRecentLocalRecords(48);
+            await loadLocalDatabaseCounts();
+            if (count > 0) {
+                showToast(`${count} fiche(s) récente(s) replacée(s) en file d'attente pour synchronisation.`, "success");
+                if (user && isOnline) {
+                    processSyncQueue(true).catch(console.error);
+                }
+            } else {
+                showToast("Toutes les fiches des dernières 48h sont déjà indexées.", "info");
+            }
+        } catch (err) {
+            console.error("Requeue recent failed:", err);
+            showToast("Impossible de réindexer les fiches récentes.", "error");
         }
     };
 
@@ -340,33 +371,51 @@ export const SyncDiagnosticPanel: React.FC = () => {
                 {/* CARD 1: Sync Health */}
                 <div className="bg-white/5 border border-white/5 p-5 rounded-2xl flex items-start gap-4">
                     <div className="mt-1">
-                        {pendingChanges === 0 && isOnline ? (
-                            <div className="p-2.5 bg-emerald-500/10 rounded-xl border border-emerald-500/20">
-                                <CheckCircle2 className="w-5 h-5 text-emerald-400" />
+                        {!isOnline || isQuotaExceeded ? (
+                            <div className="p-2.5 bg-red-500/10 rounded-xl border border-red-500/20">
+                                <ShieldAlert className="w-5 h-5 text-red-400" />
                             </div>
-                        ) : pendingChanges > 0 ? (
+                        ) : (authReady && !user) || lastError || pendingChanges > 0 || (!lastSync && counts.tickets === 0) ? (
                             <div className="p-2.5 bg-orange-500/10 rounded-xl border border-orange-500/20">
                                 <AlertTriangle className="w-5 h-5 text-orange-400 animate-pulse" />
                             </div>
                         ) : (
-                            <div className="p-2.5 bg-red-500/10 rounded-xl border border-red-500/20">
-                                <ShieldAlert className="w-5 h-5 text-red-400" />
+                            <div className="p-2.5 bg-emerald-500/10 rounded-xl border border-emerald-500/20">
+                                <CheckCircle2 className="w-5 h-5 text-emerald-400" />
                             </div>
                         )}
                     </div>
                     <div className="flex-1 space-y-1">
                         <span className="text-[9px] font-black uppercase tracking-widest text-apple-muted">État Global</span>
                         <h4 className="text-sm font-black text-white uppercase tracking-tight">
-                            {pendingChanges === 0 && isOnline ? "Instance Parfaitement à Jour" : 
-                             pendingChanges > 0 ? `${pendingChanges} Modifications en attente` : 
-                             "Dossier Local en Veille"}
+                            {!isOnline
+                                ? "Mode Hors Ligne Actif"
+                                : authReady && !user
+                                ? "Connexion Google Requise"
+                                : isQuotaExceeded
+                                ? "Quota Cloud Journalier Atteint"
+                                : lastError
+                                ? "Synchronisation Interrompue"
+                                : pendingChanges > 0
+                                ? `${pendingChanges} Modification(s) en attente`
+                                : !lastSync && counts.tickets === 0
+                                ? "Synchronisation Initiale Requise"
+                                : "Instance Parfaitement à Jour"}
                         </h4>
                         <p className="text-xs text-zinc-400 leading-relaxed">
-                            {pendingChanges === 0 && isOnline 
-                                ? "Toutes vos modifications ont bien été transmises sur le cloud de TGS." 
-                                : pendingChanges > 0 
-                                ? "Des fiches modifiées attendent d'être reçues par le cloud." 
-                                : "Stockage autonome hors ligne actif. reconnectez-vous pour actualiser."}
+                            {!isOnline
+                                ? "Stockage autonome hors ligne actif. Reconnectez-vous pour synchroniser."
+                                : authReady && !user
+                                ? "Cet appareil n'est pas connecté à Google. Connectez votre compte atelier pour télécharger et envoyer les fiches."
+                                : isQuotaExceeded
+                                ? "Le quota journalier de lectures Cloud Firestore est temporairement dépassé. Vos fiches locales sont protégées et restent en attente."
+                                : lastError
+                                ? lastError
+                                : pendingChanges > 0
+                                ? "Des fiches modifiées attendent d'être transmises vers le Cloud."
+                                : !lastSync && counts.tickets === 0
+                                ? "Aucune fiche locale pour le moment. Connectez Google et lancez la synchronisation."
+                                : "Toutes vos modifications ont bien été transmises sur le Cloud de TGS."}
                         </p>
                     </div>
                 </div>
@@ -379,13 +428,15 @@ export const SyncDiagnosticPanel: React.FC = () => {
                     <div className="flex-1 space-y-1">
                         <span className="text-[9px] font-black uppercase tracking-widest text-apple-muted">Dernière Connexion</span>
                         <h4 className="text-sm font-black text-white uppercase tracking-tight">
-                            {lastSync ? "Cloud Vérifié" : "Non Vérifié"}
+                            {user ? (lastSync ? "Cloud Vérifié" : "Connecté — En attente") : "Non Connecté"}
                         </h4>
                         <p className="text-xs text-zinc-300 font-semibold">
-                            {formatSyncDate(lastSync)}
+                            {user ? (user.email || formatSyncDate(lastSync)) : 'Compte Google non lié'}
                         </p>
                         <p className="text-[10px] text-zinc-400">
-                            La vérification télécharge les changements d&apos;autres postes de travail.
+                            {user && lastSync
+                                ? `Dernier échange : ${formatSyncDate(lastSync)}`
+                                : "La vérification télécharge les changements d'autres postes de travail."}
                         </p>
                     </div>
                 </div>
@@ -394,56 +445,71 @@ export const SyncDiagnosticPanel: React.FC = () => {
                 <div className="bg-white/5 border border-white/5 p-5 rounded-2xl flex flex-col justify-between">
                     <div className="space-y-1">
                         <span className="text-[9px] font-black uppercase tracking-widest text-apple-muted">Action Manuelle</span>
-                        <h4 className="text-xs font-black text-white uppercase tracking-wider">Mise à jour immédiate</h4>
+                        <h4 className="text-xs font-black text-white uppercase tracking-wider">
+                            {authReady && !user ? "Lier cet appareil au Cloud" : "Mise à jour immédiate"}
+                        </h4>
                         <p className="text-[10px] text-zinc-400 leading-normal">
-                            Forcez le transfert des données locales et le téléchargement des fiches clients depuis Firebase.
+                            {authReady && !user
+                                ? "Connectez votre compte Google autorisé pour récupérer immédiatement toutes les fiches sur cet ordinateur."
+                                : "Forcez le transfert des données locales et le téléchargement des fiches clients depuis Firebase."}
                         </p>
                     </div>
 
-                    <button
-                        onClick={handleForceSync}
-                        disabled={localSyncingState !== 'idle' && localSyncingState !== 'done' && localSyncingState !== 'error'}
-                        className={`mt-4 w-full py-3 px-4 rounded-xl flex items-center justify-center gap-2 font-black text-[10px] uppercase tracking-widest transition-all ${
-                            localSyncingState === 'sending' || localSyncingState === 'receiving'
-                                ? 'bg-amber-600 text-white cursor-wait'
-                                : localSyncingState === 'done'
-                                ? 'bg-emerald-600 text-white'
-                                : localSyncingState === 'error'
-                                ? 'bg-red-600 text-white'
-                                : 'bg-white text-black hover:bg-zinc-200 active:scale-95 shadow-xl'
-                        }`}
-                    >
-                        {localSyncingState === 'sending' && (
-                            <>
-                                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                                <span>Transfert des fiches...</span>
-                            </>
-                        )}
-                        {localSyncingState === 'receiving' && (
-                            <>
-                                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                                <span>Réception depuis le Cloud...</span>
-                            </>
-                        )}
-                        {localSyncingState === 'done' && (
-                            <>
-                                <Check className="w-3.5 h-3.5" />
-                                <span>Synchronisation Réussie !</span>
-                            </>
-                        )}
-                        {localSyncingState === 'error' && (
-                            <>
-                                <AlertTriangle className="w-3.5 h-3.5" />
-                                <span>Échec, Réessayez</span>
-                            </>
-                        )}
-                        {localSyncingState === 'idle' && (
-                            <>
-                                <RefreshCw className="w-3.5 h-3.5" />
-                                <span>Forcer la synchronisation</span>
-                            </>
-                        )}
-                    </button>
+                    {authReady && !user ? (
+                        <button
+                            onClick={() => signInWithGoogle(false)}
+                            disabled={!isOnline || isReconnectingGoogle}
+                            className="mt-4 w-full py-3 px-4 rounded-xl flex items-center justify-center gap-2 font-black text-[10px] uppercase tracking-widest transition-all bg-blue-600 hover:bg-blue-500 text-white active:scale-95 shadow-xl disabled:opacity-40"
+                        >
+                            <LogIn className="w-3.5 h-3.5" />
+                            <span>{isReconnectingGoogle ? "Connexion..." : "Connecter Google & Synchroniser"}</span>
+                        </button>
+                    ) : (
+                        <button
+                            onClick={handleForceSync}
+                            disabled={localSyncingState !== 'idle' && localSyncingState !== 'done' && localSyncingState !== 'error'}
+                            className={`mt-4 w-full py-3 px-4 rounded-xl flex items-center justify-center gap-2 font-black text-[10px] uppercase tracking-widest transition-all ${
+                                localSyncingState === 'sending' || localSyncingState === 'receiving'
+                                    ? 'bg-amber-600 text-white cursor-wait'
+                                    : localSyncingState === 'done'
+                                    ? 'bg-emerald-600 text-white'
+                                    : localSyncingState === 'error'
+                                    ? 'bg-red-600 text-white'
+                                    : 'bg-white text-black hover:bg-zinc-200 active:scale-95 shadow-xl'
+                            }`}
+                        >
+                            {localSyncingState === 'sending' && (
+                                <>
+                                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                                    <span>Transfert des fiches...</span>
+                                </>
+                            )}
+                            {localSyncingState === 'receiving' && (
+                                <>
+                                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                                    <span>Réception depuis le Cloud...</span>
+                                </>
+                            )}
+                            {localSyncingState === 'done' && (
+                                <>
+                                    <Check className="w-3.5 h-3.5" />
+                                    <span>Synchronisation Réussie !</span>
+                                </>
+                            )}
+                            {localSyncingState === 'error' && (
+                                <>
+                                    <AlertTriangle className="w-3.5 h-3.5" />
+                                    <span>Échec, Réessayez</span>
+                                </>
+                            )}
+                            {localSyncingState === 'idle' && (
+                                <>
+                                    <RefreshCw className="w-3.5 h-3.5" />
+                                    <span>Forcer la synchronisation</span>
+                                </>
+                            )}
+                        </button>
+                    )}
                 </div>
             </div>
 
@@ -577,19 +643,28 @@ export const SyncDiagnosticPanel: React.FC = () => {
                                 <p className="text-[10px] text-zinc-400 mt-0.5">Ces modifications sont conservées sur l&apos;appareil en attente de synchronisation.</p>
                             </div>
                             
-                            {localQueue.length > 0 && (
+                            <div className="flex flex-wrap items-center gap-2">
                                 <button
-                                    onClick={handleClearQueue}
-                                    className={`self-start sm:self-auto flex items-center gap-1.5 px-3 py-1.5 rounded-xl font-bold text-[10px] uppercase tracking-wider border transition-all ${
-                                        confirmClearQueue 
-                                            ? 'bg-red-600 hover:bg-red-700 text-white border-red-500 animate-pulse' 
-                                            : 'bg-red-500/10 hover:bg-red-500/20 text-red-400 border-red-500/20'
-                                    }`}
+                                    onClick={handleRequeueRecent}
+                                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl font-bold text-[10px] uppercase tracking-wider border bg-blue-500/10 hover:bg-blue-500/20 text-blue-300 border-blue-500/20 transition-all"
                                 >
-                                    <Trash2 className="w-3 h-3" />
-                                    {confirmClearQueue ? 'Confirmer la suppression ?' : 'Vider la file d\'attente'}
+                                    <RefreshCw className="w-3 h-3" />
+                                    Réindexer fiches (48h)
                                 </button>
-                            )}
+                                {localQueue.length > 0 && (
+                                    <button
+                                        onClick={handleClearQueue}
+                                        className={`self-start sm:self-auto flex items-center gap-1.5 px-3 py-1.5 rounded-xl font-bold text-[10px] uppercase tracking-wider border transition-all ${
+                                            confirmClearQueue 
+                                                ? 'bg-red-600 hover:bg-red-700 text-white border-red-500 animate-pulse' 
+                                                : 'bg-red-500/10 hover:bg-red-500/20 text-red-400 border-red-500/20'
+                                        }`}
+                                    >
+                                        <Trash2 className="w-3 h-3" />
+                                        {confirmClearQueue ? 'Confirmer la suppression ?' : 'Vider la file d\'attente'}
+                                    </button>
+                                )}
+                            </div>
                         </div>
                         
                         {localQueue.length === 0 ? (
@@ -614,9 +689,9 @@ export const SyncDiagnosticPanel: React.FC = () => {
                                                 <div>
                                                     <span className="font-bold block text-white">{getEntityLabel(item.entity)}</span>
                                                     <span className="text-[10px] text-zinc-400 font-medium">{getItemDescription(item)}</span>
-                                                    {item.retries && item.retries > 0 ? (
+                                                    {(item.retries && item.retries > 0) || item.lastError ? (
                                                         <span className="text-[9.5px] text-red-400 font-bold block mt-0.5">
-                                                            ⚠️ Échecs: {item.retries}/5 {item.lastError ? `(${item.lastError})` : ''}
+                                                            ⚠️ {item.retries ? `Tentatives: ${item.retries}` : 'En attente'}{item.lastError ? ` (${item.lastError})` : ''}
                                                         </span>
                                                     ) : null}
                                                 </div>

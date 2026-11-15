@@ -151,9 +151,13 @@ const AppointmentFormModal: React.FC<AppointmentFormModalProps> = ({ isOpen, onC
               <option value="30 jours">30 Jours</option>
             </optgroup>
             <optgroup label="Commande (5 jours sur 7 - Ouvrables uniquement)">
+              <option value="Immédiat">Immédiat (Stock disponible)</option>
+              <option value="5 jours ouvrables">5 Jours ouvrables</option>
+              <option value="10 jours ouvrables">10 Jours ouvrables</option>
               <option value="15 jours ouvrables">15 Jours ouvrables</option>
               <option value="20 jours ouvrables">20 Jours ouvrables</option>
               <option value="25 jours ouvrables">25 Jours ouvrables</option>
+              <option value="30 jours ouvrables">30 Jours ouvrables</option>
             </optgroup>
           </select>
           <p className="text-[10px] text-gray-400 italic">

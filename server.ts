@@ -3,6 +3,9 @@ import express from "express";
 import path from "path";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI } from "@google/genai";
+import firebaseConfig from "./firebase-applet-config.json";
+
+import { APP_VERSION } from "./version.ts";
 
 async function startServer() {
   const app = express();
@@ -11,9 +14,89 @@ async function startServer() {
   app.use(express.json({ limit: '50mb' }));
   app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
+  // --- Accès depuis l'application Android (origine https://localhost) et autres appareils ---
+  app.use('/api', (req, res, next) => {
+    const origin = req.headers.origin;
+    if (origin) {
+      res.setHeader('Access-Control-Allow-Origin', origin);
+      res.setHeader('Vary', 'Origin');
+    }
+    res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-TGS-Client');
+    res.setHeader('Access-Control-Max-Age', '86400');
+    if (req.method === 'OPTIONS') return res.status(204).end();
+    next();
+  });
+
   // Health check endpoint
   app.get("/api/health", (_req, res) => {
-    res.json({ status: "ok", timestamp: new Date().toISOString() });
+    res.json({ status: "ok", ai: !!process.env.GEMINI_API_KEY, version: APP_VERSION, timestamp: new Date().toISOString() });
+  });
+
+  // --- Contrôle d'accès IA : seuls les comptes de l'équipe peuvent consommer la clé Gemini ---
+  // Vérification du jeton Firebase via l'API Google (aucune dépendance supplémentaire),
+  // puis de l'appartenance à l'équipe via Firestore avec le jeton de l'utilisateur.
+  const OWNER_EMAILS = ['assokou22@gmail.com', 'thegoodstore@gmail.com', 'thegoodstoreci@gmail.com'];
+  const authCache = new Map<string, { email: string; ok: boolean; exp: number }>();
+  async function checkTeamAccess(idToken: string): Promise<{ ok: boolean; email?: string; reason?: string }> {
+    const cached = authCache.get(idToken);
+    if (cached && cached.exp > Date.now()) return { ok: cached.ok, email: cached.email };
+    const lookup = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${firebaseConfig.apiKey}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ idToken }),
+    });
+    if (!lookup.ok) return { ok: false, reason: 'Session Google expirée. Reconnectez-vous.' };
+    const info = await lookup.json() as { users?: Array<{ email?: string; emailVerified?: boolean }> };
+    const user = info.users?.[0];
+    const email = (user?.email || '').toLowerCase();
+    if (!email) return { ok: false, reason: 'Compte sans adresse e-mail.' };
+    let ok = OWNER_EMAILS.includes(email);
+    if (!ok && user?.emailVerified) {
+      const url = `https://firestore.googleapis.com/v1/projects/${firebaseConfig.projectId}/databases/${firebaseConfig.firestoreDatabaseId}/documents/members/${encodeURIComponent(email)}`;
+      const m = await fetch(url, { headers: { Authorization: `Bearer ${idToken}` } });
+      if (m.ok) {
+        const doc = await m.json() as { fields?: { active?: { booleanValue?: boolean } } };
+        ok = doc.fields?.active?.booleanValue !== false;
+      }
+    }
+    authCache.set(idToken, { email, ok, exp: Date.now() + 10 * 60_000 });
+    if (authCache.size > 500) authCache.clear();
+    return ok ? { ok, email } : { ok, email, reason: `Le compte ${email} n'est pas autorisé à utiliser l'IA de l'atelier.` };
+  }
+
+  app.use('/api/gemini', async (req, res, next) => {
+    try {
+      const header = String(req.headers.authorization || '');
+      const token = header.startsWith('Bearer ') ? header.slice(7) : '';
+      if (!token) return res.status(401).json({ error: "Connexion Google requise pour utiliser l'IA." });
+      const result = await checkTeamAccess(token);
+      if (!result.ok) return res.status(403).json({ error: result.reason || 'Accès refusé.' });
+      next();
+    } catch (e) {
+      console.error('Auth IA:', e);
+      res.status(503).json({ error: "Vérification du compte impossible pour le moment. Réessayez." });
+    }
+  });
+
+  // --- Route IA universelle : toutes les fonctions Gemini de l'application passent ici ---
+  // La clé reste sur le serveur ; le web (PC, iPad) et l'APK Android obtiennent le même résultat.
+  const ALLOWED_MODELS = /^gemini-[a-z0-9.-]+$/i;
+  app.post("/api/gemini/proxy", async (req, res) => {
+    const { model, contents, config } = req.body || {};
+    if (!contents) return res.status(400).json({ error: "Contenu manquant" });
+    const chosen = typeof model === 'string' && ALLOWED_MODELS.test(model) ? model : 'gemini-3-flash-preview';
+    try {
+      const ai = getAI();
+      const response = await ai.models.generateContent({ model: chosen, contents, config });
+      res.json({
+        text: response.text ?? '',
+        candidates: response.candidates ?? [],
+        usageMetadata: response.usageMetadata ?? null,
+      });
+    } catch (error: unknown) {
+      console.error("Gemini proxy error:", error);
+      const errorMessage = error instanceof Error ? error.message : "Échec de la génération";
+      res.status(500).json({ error: errorMessage });
+    }
   });
 
   // Lazy Gemini API Client helper

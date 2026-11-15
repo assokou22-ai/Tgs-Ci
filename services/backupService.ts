@@ -1,3 +1,4 @@
+import { jsonToBlob } from '../utils/jsonBlob.ts';
 
 import { BackupData, EntityType, SerializedAppSettings } from '../types.ts';
 import { 
@@ -88,8 +89,7 @@ export const backupData = async (type: 'FULL' | 'FINANCE' | 'TECH' = 'FULL') => 
         const fullStructuredData = await compileFullBackupData();
         const fileName = generateSortableFileName(type);
         
-        const dataStr = JSON.stringify(fullStructuredData, null, 2); 
-        const blob = new Blob([dataStr], { type: 'application/json' });
+        const blob = jsonToBlob(fullStructuredData);
         const url = URL.createObjectURL(blob);
         
         const link = document.createElement('a');
@@ -285,8 +285,8 @@ export const checkAndTriggerAutoDailyBackup = async (closingHour = 18): Promise<
         const docRef = doc(db, 'dailyBackups', todayStr);
 
         const docSnap = await getDoc(docRef);
-        localStorage.setItem('tgs_last_auto_backup_checked', todayStr);
         if (docSnap.exists()) {
+            localStorage.setItem('tgs_last_auto_backup_checked', todayStr);
             console.log(`Auto Backup already exists in Firestore for today ${todayStr}.`);
             return false;
         }
@@ -294,12 +294,22 @@ export const checkAndTriggerAutoDailyBackup = async (closingHour = 18): Promise<
         console.log(`Executing automatic closing-hour daily backup for: ${todayStr}`);
         const fullBackupPayload = await compileFullBackupData();
 
+        // Les photos sont déjà stockées à part (collection media) : la sauvegarde ne contient que des références.
+        // Le contenu complet est découpé en morceaux pour ne jamais dépasser la limite de 1 Mo par document.
+        const { dehydrateForCloud, storeLargeText } = await import('./cloudMedia.ts');
+        const lightPayload = await dehydrateForCloud(fullBackupPayload);
+        const serialized = JSON.stringify(lightPayload);
+        const payloadRef = await storeLargeText(serialized);
+
         await setDoc(docRef, {
             id: todayStr,
             date: todayStr,
             createdAt: now.toISOString(),
-            payload: JSON.stringify(fullBackupPayload)
+            format: 'tgs-backup-v2',
+            size: serialized.length,
+            payloadRef,
         });
+        localStorage.setItem('tgs_last_auto_backup_checked', todayStr);
 
         console.log(`Successfully completed daily auto-backup for ${todayStr}.`);
         return true;

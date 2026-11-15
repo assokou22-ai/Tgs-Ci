@@ -5,6 +5,7 @@ import 'jspdf-autotable';
 import html2canvas from 'html2canvas';
 import * as XLSX from 'xlsx';
 import { getTicketFinancialSummary } from '../utils/ticketHelpers.ts';
+import { ACTIVITY_LABELS, ACTIVITY_ORDER, PART_SOURCE_SHORT_LABELS, PortfolioProfitabilityReport, WorkshopTreasurySnapshot } from '../utils/profitability.ts';
 
 /**
  * Capture un élément HTML et génère un PDF A4 avec une qualité maximale.
@@ -21,7 +22,8 @@ export const exportElementToPdf = async (element: HTMLElement, fileName: string)
 
     // Paramètres de capture ultra-haute fidélité pour une lecture et impression impeccables
     const canvas = await html2canvas(element, { 
-        scale: 2.5, // Netteté texte ultra-précise sur papier A4
+        // Netteté A4 ; réduite sur téléphone pour ne pas dépasser la mémoire graphique
+        scale: (typeof window !== 'undefined' && (window.AndroidBridge || window.innerWidth < 768)) ? 1.75 : 2.5,
         useCORS: true,
         logging: false,
         backgroundColor: '#ffffff',
@@ -224,7 +226,9 @@ export const exportTicketFinancialPointToExcel = (
     tickets: RepairTicket[],
     periodLabel: string,
     metrics: FinancialPointMetrics,
-    fileName?: string
+    fileName?: string,
+    profitability?: PortfolioProfitabilityReport,
+    treasury?: WorkshopTreasurySnapshot
 ) => {
     // 1. Synthèse générale en en-tête
     const summaryData = [
@@ -237,12 +241,28 @@ export const exportTicketFinancialPointToExcel = (
         { Paramètre: "TOTAL RESTANT DÛ (CRÉANCES)", Valeur: `${metrics.totalBalanceDue.toLocaleString('fr-FR')} F CFA` },
         { Paramètre: "TAUX D'ENCAISSEMENT", Valeur: `${metrics.collectionRate}%` },
         { Paramètre: "VOLUME TOTAL FICHES", Valeur: `${metrics.totalCount} (Facturables: ${metrics.facturablesCount}, Infacturables: ${metrics.infacturablesCount})` },
-        { Paramètre: "RÈGLE COMPTABLE APPLIQUÉE", Valeur: "Fiches annulées : 0 F au point financier (aucun fond intégrable)" }
+        { Paramètre: "RÈGLE COMPTABLE APPLIQUÉE", Valeur: "Fiches annulées : 0 F au point financier (aucun fond intégrable)" },
+        ...(profitability ? [
+            { Paramètre: "COÛT PIÈCES DÉDUIT (1x)", Valeur: `${profitability.totalPartCost.toLocaleString('fr-FR')} F CFA (En stock: ${profitability.enStockPartCostTotal.toLocaleString('fr-FR')} F | À cmd: ${profitability.aCommanderPartCostTotal.toLocaleString('fr-FR')} F)` },
+            { Paramètre: `PROVISION FISCALE PRÉV. / RÉELLE (${profitability.taxRate}%)`, Valeur: `${profitability.totalTaxProvision.toLocaleString('fr-FR')} F / ${profitability.totalRealTaxProvision.toLocaleString('fr-FR')} F CFA` },
+            { Paramètre: "MARGE NETTE PRÉVISIONNELLE (AVANT CHARGES FIXES)", Valeur: `${profitability.totalNetMarginBeforeFixed.toLocaleString('fr-FR')} F CFA (${profitability.marginRateBeforeFixed.toFixed(1)}%)` },
+            { Paramètre: "MARGE NETTE RÉELLE ENCAISSÉE (AVANT CHARGES FIXES)", Valeur: `${profitability.totalRealNetMarginBeforeFixed.toLocaleString('fr-FR')} F CFA (${profitability.realMarginRateBeforeFixed.toFixed(1)}%)` },
+            { Paramètre: `CHARGES FIXES SÉPARÉES (${profitability.fixedChargesPeriodFactorLabel})`, Valeur: `${profitability.fixedChargesTotal.toLocaleString('fr-FR')} F CFA` },
+            { Paramètre: "RÉSULTAT D'EXPLOITATION PRÉVISIONNEL", Valeur: `${profitability.operatingResultAfterFixed.toLocaleString('fr-FR')} F CFA` },
+            { Paramètre: "RÉSULTAT D'EXPLOITATION RÉEL", Valeur: `${profitability.realOperatingResultAfterFixed.toLocaleString('fr-FR')} F CFA` },
+        ] : []),
+        ...(treasury ? [
+            { Paramètre: "CAPITAL INITIAL / CAPITAL ACTUEL", Valeur: `${treasury.initialCapital.toLocaleString('fr-FR')} F / ${treasury.totalCurrentCapital.toLocaleString('fr-FR')} F CFA` },
+            { Paramètre: "TRÉSORERIE DISPONIBLE NETTE (SANS DOUBLE COMPTAGE)", Valeur: `${treasury.availableTreasury.toLocaleString('fr-FR')} F CFA (Caisse brute: ${treasury.grossCashBalance.toLocaleString('fr-FR')} F)` },
+            { Paramètre: "RÉSERVES DÉDIÉES (FISC + RÉINVEST. STOCK)", Valeur: `${treasury.totalReserves.toLocaleString('fr-FR')} F CFA` },
+            { Paramètre: "DÉPENSES À PAYER (PASSIF COURT TERME)", Valeur: `${treasury.totalPayables.toLocaleString('fr-FR')} F CFA` },
+        ] : [])
     ];
 
     // 2. Lignes détaillées de chaque fiche
     const rowsData = tickets.map((t, index) => {
         const fin = getTicketFinancialSummary(t);
+        const prof = profitability?.ticketResults.get(t.id);
         const dateCreation = t.createdAt ? new Date(t.createdAt).toLocaleDateString('fr-FR') : 'N/A';
         const dateMaj = t.updatedAt ? new Date(t.updatedAt).toLocaleDateString('fr-FR') : 'N/A';
 
@@ -273,6 +293,13 @@ export const exportTicketFinancialPointToExcel = (
             'TOTAL FACTURÉ (F CFA)': fin.isInfacturable ? 0 : fin.totalBilled,
             'ACOMPTE ENCAISSÉ (F CFA)': fin.isInfacturable ? 0 : fin.advanceReceived,
             'SOLDE RESTANT DÛ (F CFA)': fin.isInfacturable ? 0 : fin.balanceDue,
+            ...(profitability ? {
+                'ACTIVITÉ(S)': fin.isInfacturable ? 'INFACTURABLE' : (prof?.activitiesPresent.map(a => ACTIVITY_LABELS[a]).join(', ') || 'Réparation'),
+                'COÛT PIÈCES 1X (F CFA)': fin.isInfacturable ? 0 : (prof?.totalPartCost || 0),
+                'PROVISION FISCALE (F CFA)': fin.isInfacturable ? 0 : (prof?.totalTaxProvision || 0),
+                'MARGE PRÉVISIONNELLE (F CFA)': fin.isInfacturable ? 0 : (prof?.netMargin || 0),
+                'MARGE RÉELLE ENCAISSÉE (F CFA)': fin.isInfacturable ? 0 : (prof?.realNetMargin || 0),
+            } : {}),
             'ÉTAT RÈGLEMENT': statutPaiement,
             'OBSERVATION COMPTABLE': fin.isInfacturable
                 ? (fin.rawAdvanceReceived > 0 
@@ -299,6 +326,13 @@ export const exportTicketFinancialPointToExcel = (
         'TOTAL FACTURÉ (F CFA)': metrics.totalBilled,
         'ACOMPTE ENCAISSÉ (F CFA)': metrics.totalAdvance,
         'SOLDE RESTANT DÛ (F CFA)': metrics.totalBalanceDue,
+        ...(profitability ? {
+            'ACTIVITÉ(S)': 'TOUTES ACTIVITÉS',
+            'COÛT PIÈCES 1X (F CFA)': profitability.totalPartCost,
+            'PROVISION FISCALE (F CFA)': profitability.totalTaxProvision,
+            'MARGE PRÉVISIONNELLE (F CFA)': profitability.totalNetMarginBeforeFixed,
+            'MARGE RÉELLE ENCAISSÉE (F CFA)': profitability.totalRealNetMarginBeforeFixed,
+        } : {}),
         'ÉTAT RÈGLEMENT': `Taux d'encaissement : ${metrics.collectionRate}%`,
         'OBSERVATION COMPTABLE': `${metrics.paidCount} soldée(s), ${metrics.withBalanceCount} avec solde dû, ${metrics.infacturablesCount} infacturable(s)`
     };
@@ -313,9 +347,125 @@ export const exportTicketFinancialPointToExcel = (
 
     // Feuille 2: Détail par fiche
     const rowsSheet = XLSX.utils.json_to_sheet(rowsData);
-    XLSX.utils.book_append_sheet(workbook, rowsSheet, 'Détail Ligne par Ligne');
+    XLSX.utils.book_append_sheet(workbook, rowsSheet, 'Détail Dossiers');
+
+    if (profitability) {
+        // Feuille 3: Rentabilité par Activité (Prévisionnelle vs Réelle)
+        const activityRows = ACTIVITY_ORDER.map(act => {
+            const b = profitability.byActivity[act];
+            return {
+                'ACTIVITÉ': b.label,
+                'DOSSIERS CONCERNÉS': b.ticketCount,
+                'LIGNES': b.lineCount,
+                'CA FACTURÉ (F CFA)': b.ca,
+                'CA ENCAISSÉ RÉEL (F CFA)': b.realCA,
+                'COÛT PIÈCES 1X (F CFA)': b.partCost,
+                [`PROVISION FISCALE ${profitability.taxRate}% (F CFA)`]: b.taxProvision,
+                'MARGE PRÉVISIONNELLE (F CFA)': b.netMargin,
+                'TAUX PRÉV. (%)': `${b.marginRate.toFixed(1)}%`,
+                'MARGE RÉELLE ENCAISSÉE (F CFA)': b.realNetMargin,
+                'TAUX RÉEL (%)': `${b.realMarginRate.toFixed(1)}%`
+            };
+        });
+        activityRows.push({
+            'ACTIVITÉ': 'TOTAL ACTIVITÉS (AVANT CHARGES FIXES)',
+            'DOSSIERS CONCERNÉS': profitability.facturableTicketCount,
+            'LIGNES': ACTIVITY_ORDER.reduce((s, a) => s + profitability.byActivity[a].lineCount, 0),
+            'CA FACTURÉ (F CFA)': profitability.totalCA,
+            'CA ENCAISSÉ RÉEL (F CFA)': profitability.totalRealCA,
+            'COÛT PIÈCES 1X (F CFA)': profitability.totalPartCost,
+            [`PROVISION FISCALE ${profitability.taxRate}% (F CFA)`]: profitability.totalTaxProvision,
+            'MARGE PRÉVISIONNELLE (F CFA)': profitability.totalNetMarginBeforeFixed,
+            'TAUX PRÉV. (%)': `${profitability.marginRateBeforeFixed.toFixed(1)}%`,
+            'MARGE RÉELLE ENCAISSÉE (F CFA)': profitability.totalRealNetMarginBeforeFixed,
+            'TAUX RÉEL (%)': `${profitability.realMarginRateBeforeFixed.toFixed(1)}%`
+        });
+        const activitySheet = XLSX.utils.json_to_sheet(activityRows);
+        XLSX.utils.book_append_sheet(workbook, activitySheet, 'Rentabilité Activités');
+
+        // Feuille 4: Détail Ligne par Ligne
+        const lineRows: Array<Record<string, string | number>> = [];
+        tickets.forEach(t => {
+            const prof = profitability.ticketResults.get(t.id);
+            if (!prof || prof.isInfacturable) return;
+            prof.lines.forEach(line => {
+                lineRows.push({
+                    'N° FICHE': `#${t.id}`,
+                    'CLIENT': t.client?.name || 'Client',
+                    'DÉSIGNATION LIGNE': line.designation,
+                    'ACTIVITÉ': ACTIVITY_LABELS[line.activite],
+                    'ORIGINE PIÈCE': line.sourcePiece ? PART_SOURCE_SHORT_LABELS[line.sourcePiece] : 'Main d\'œuvre',
+                    'QTÉ': line.quantite,
+                    'CA FACTURÉ (F CFA)': line.ca,
+                    'CA ENCAISSÉ (F CFA)': line.realCA,
+                    'COÛT PIÈCES 1X (F CFA)': line.partCost,
+                    'PROVISION FISCALE (F CFA)': line.taxProvision,
+                    'MARGE PRÉVISIONNELLE (F CFA)': line.netMargin,
+                    'MARGE RÉELLE (F CFA)': line.realNetMargin,
+                    'TAUX MARGE PRÉV. (%)': `${line.marginRate.toFixed(1)}%`
+                });
+            });
+        });
+        if (lineRows.length > 0) {
+            const linesSheet = XLSX.utils.json_to_sheet(lineRows);
+            XLSX.utils.book_append_sheet(workbook, linesSheet, 'Détail Lignes');
+        }
+
+        // Feuille 5: Charges Fixes (séparées)
+        if (profitability.fixedChargesLines.length > 0) {
+            const chargeRows = profitability.fixedChargesLines.map(c => ({
+                'LIBELLÉ CHARGE FIXE': c.label,
+                'CATÉGORIE': c.category || 'Général',
+                'PÉRIODICITÉ': c.frequency.toUpperCase(),
+                'MONTANT DE BASE (F CFA)': c.baseAmount,
+                'MONTANT PRORATISÉ PÉRIODE (F CFA)': c.proratedAmount,
+                'STATUT': c.active ? 'ACTIVE' : 'INACTIVE'
+            }));
+            chargeRows.push({
+                'LIBELLÉ CHARGE FIXE': `TOTAL CHARGES FIXES (${profitability.fixedChargesPeriodFactorLabel})`,
+                'CATÉGORIE': '',
+                'PÉRIODICITÉ': '',
+                'MONTANT DE BASE (F CFA)': 0,
+                'MONTANT PRORATISÉ PÉRIODE (F CFA)': profitability.fixedChargesTotal,
+                'STATUT': ''
+            });
+            const chargesSheet = XLSX.utils.json_to_sheet(chargeRows);
+            XLSX.utils.book_append_sheet(workbook, chargesSheet, 'Charges Fixes');
+        }
+    }
+
+    if (treasury) {
+        // Feuille 6: Trésorerie, Réserves, Passif à Payer & Capital Atelier
+        const treasuryRows = [
+            { RUBRIQUE: 'CAPITAL & STOCK', INDICATEUR: 'Capital initial atelier', VALEUR_F_CFA: treasury.initialCapital },
+            { RUBRIQUE: 'CAPITAL & STOCK', INDICATEUR: `Stock actuel au coût d'achat (${treasury.stockQuantityTotal} unités)`, VALEUR_F_CFA: treasury.stockCostValue },
+            { RUBRIQUE: 'CAPITAL & STOCK', INDICATEUR: 'Valeur vente estimée du stock', VALEUR_F_CFA: treasury.stockSellingValue },
+            { RUBRIQUE: 'CAPITAL & STOCK', INDICATEUR: `Trésorerie de départ (${treasury.isOpeningCashAuto ? 'Auto = Capital - Stock' : 'Manuelle'})`, VALEUR_F_CFA: treasury.effectiveOpeningCash },
+            { RUBRIQUE: 'CAPITAL & STOCK', INDICATEUR: 'Capital actuel net (Stock + Cash Net)', VALEUR_F_CFA: treasury.totalCurrentCapital },
+            { RUBRIQUE: 'CAPITAL & STOCK', INDICATEUR: 'Évolution du capital depuis ouverture', VALEUR_F_CFA: treasury.capitalGrowth },
+            { RUBRIQUE: 'FLUX CAISSE (0 DOUBLE COMPTAGE)', INDICATEUR: 'Encaissements fiches atelier', VALEUR_F_CFA: treasury.ticketsCashIn },
+            { RUBRIQUE: 'FLUX CAISSE (0 DOUBLE COMPTAGE)', INDICATEUR: 'Encaissements factures autonomes', VALEUR_F_CFA: treasury.facturesCashIn },
+            { RUBRIQUE: 'FLUX CAISSE (0 DOUBLE COMPTAGE)', INDICATEUR: 'Encaissements commandes clients directes', VALEUR_F_CFA: treasury.clientOrdersCashIn },
+            { RUBRIQUE: 'FLUX CAISSE (0 DOUBLE COMPTAGE)', INDICATEUR: 'Commandes fournisseurs déjà payées', VALEUR_F_CFA: -treasury.supplierOrdersPaid },
+            { RUBRIQUE: 'FLUX CAISSE (0 DOUBLE COMPTAGE)', INDICATEUR: 'Achats hors-stock engagés (non liés commande)', VALEUR_F_CFA: -treasury.horsStockPartsPaid },
+            { RUBRIQUE: 'FLUX CAISSE (0 DOUBLE COMPTAGE)', INDICATEUR: 'Solde caisse brut', VALEUR_F_CFA: treasury.grossCashBalance },
+            { RUBRIQUE: 'RÉSERVES DÉDIÉES', INDICATEUR: 'Réserve fiscale restante', VALEUR_F_CFA: treasury.fiscalReserveRemaining },
+            { RUBRIQUE: 'RÉSERVES DÉDIÉES', INDICATEUR: `Réserve réinvestissement stock (${treasury.reinvestmentRate}%) restante`, VALEUR_F_CFA: treasury.reinvestmentReserveRemaining },
+            { RUBRIQUE: 'RÉSERVES DÉDIÉES', INDICATEUR: 'Total réserves dédiées', VALEUR_F_CFA: treasury.totalReserves },
+            { RUBRIQUE: 'DÉPENSES À PAYER (PASSIF)', INDICATEUR: `Commandes fournisseurs à solder (${treasury.supplierOrdersPayableCount})`, VALEUR_F_CFA: treasury.supplierOrdersPayable },
+            { RUBRIQUE: 'DÉPENSES À PAYER (PASSIF)', INDICATEUR: `Pièces marquées À commander prévues (${treasury.plannedPartsToOrderCount})`, VALEUR_F_CFA: treasury.plannedPartsToOrderCost },
+            { RUBRIQUE: 'DÉPENSES À PAYER (PASSIF)', INDICATEUR: 'Charges fixes mensuelles de référence', VALEUR_F_CFA: treasury.monthlyFixedCharges },
+            { RUBRIQUE: 'DÉPENSES À PAYER (PASSIF)', INDICATEUR: 'Total dépenses à payer', VALEUR_F_CFA: treasury.totalPayables },
+            { RUBRIQUE: 'DISPONIBILITÉ', INDICATEUR: 'Trésorerie après réserves', VALEUR_F_CFA: treasury.treasuryAfterReserves },
+            { RUBRIQUE: 'DISPONIBILITÉ', INDICATEUR: 'Trésorerie disponible nette (libre)', VALEUR_F_CFA: treasury.availableTreasury },
+            { RUBRIQUE: 'CRÉANCES', INDICATEUR: 'Solde client restant à encaisser', VALEUR_F_CFA: treasury.clientReceivables },
+        ];
+        const treasurySheet = XLSX.utils.json_to_sheet(treasuryRows);
+        XLSX.utils.book_append_sheet(workbook, treasurySheet, 'Trésorerie & Capital');
+    }
 
     const cleanFileName = fileName || `POINT_FINANCIER_TGS_${new Date().toISOString().slice(0, 10)}.xlsx`;
     XLSX.writeFile(workbook, cleanFileName);
 };
+
 

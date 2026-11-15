@@ -1,6 +1,7 @@
 
 import React, { useState, useEffect } from 'react';
-import { GoogleGenAI, GenerateContentResponse } from "@google/genai";
+import { GenerateContentResponse } from "@google/genai";
+import { createAI } from '../services/aiClient.ts';
 import { knowledgeBase } from '../services/knowledgeBase.ts';
 import { dbGetStoredDocuments } from '../services/dbService.ts';
 import { StoredDocument } from '../types.ts';
@@ -95,7 +96,7 @@ const InternalDocSearch: React.FC = () => {
                 QUESTION: ${query}
             `;
             
-            const ai = new GoogleGenAI({apiKey: process.env.API_KEY});
+            const ai = createAI();
             const response: GenerateContentResponse = await ai.models.generateContent({
                 model: 'gemini-1.5-flash',
                 contents: [{ role: 'user', parts: [{ text: prompt }] }],

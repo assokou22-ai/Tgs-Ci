@@ -1,0 +1,10 @@
+{
+  "appId": "ci.tgs.repair.gestionnaire",
+  "appName": "RM TGS CI Repair",
+  "webDir": "dist",
+  "android": { "allowMixedContent": false },
+  "server": { "androidScheme": "https" },
+  "plugins": {
+    "SocialLogin": { "google": true, "facebook": false, "apple": false, "twitter": false }
+  }
+}

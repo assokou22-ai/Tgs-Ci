@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from 'react';
-import { GoogleGenAI } from "@google/genai";
+
+import { createAI } from '../services/aiClient.ts';
 import { RepairTicket, RepairStatus } from '../types.ts';
 import { ArrowLeftIcon } from './icons.tsx';
 
@@ -74,7 +75,7 @@ const AnalyticsReport: React.FC<AnalyticsReportProps> = ({ tickets, onBack }) =>
         `;
 
         try {
-            const ai = new GoogleGenAI({apiKey: process.env.API_KEY});
+            const ai = createAI();
             const response = await ai.models.generateContent({
                 model: 'gemini-1.5-flash',
                 contents: [{ role: 'user', parts: [{ text: prompt }] }],

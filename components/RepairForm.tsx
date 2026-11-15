@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { RepairTicket, RepairStatus, Role, Attachment, PowerOnStatus, Commande } from '../types.ts';
 import { mergeUpdates } from '../utils/merge.ts';
 import SignaturePad from './SignaturePad.tsx';
@@ -18,8 +18,7 @@ import DeclaredSymptomsManager from './DeclaredSymptomsManager.tsx';
 import useCommandes from '../hooks/useCommandes.ts';
 import useAppointments from '../hooks/useAppointments.ts';
 import { calculateFutureDate } from '../utils/dateCalculator.ts';
-import { compressImageBase64 } from '../utils/imageCompression.ts';
-import { generateNextTicketSequence, isFallbackTicketId } from '../utils/idGenerator.ts';
+import { generateNextTicketSequence, isFallbackTicketId, fetchLatestCloudSequence } from '../utils/idGenerator.ts';
 import { 
   findMatchingRecurrentClients, 
   checkIsSameMac, 
@@ -27,6 +26,7 @@ import {
 } from '../utils/clientRecurrenceHelper.ts';
 import { ReceptionModeField } from './ReceptionModeField.tsx';
 import { useDeviceProfile } from '../context/DeviceProfileContext.tsx';
+import { compressImage } from '../utils/fileHelpers.ts';
 
 
 interface RepairFormProps {
@@ -123,6 +123,21 @@ const RepairForm: React.FC<RepairFormProps> = ({ tickets, ticketToEdit, onSave, 
         ticketToEdit.id || '',
         ticketToEdit.macModel || ''
       );
+    } else if (ticketToEdit && (Number(ticketToEdit.costs?.repair) || 0) > 0 && (!ticketToEdit.services || ticketToEdit.services.length === 0) && (!ticketToEdit.ligneVentes || ticketToEdit.ligneVentes.length === 0)) {
+      // Reconstitution automatique d'une ligne de prestation si seul costs.repair était renseigné
+      const fallbackService: RepairServiceItem = {
+        id: `srv-repair-${ticketToEdit.id || Date.now()}`,
+        updatedAt: new Date().toISOString(),
+        name: 'RÉPARATION DE L\'APPAREIL / INTERVENTION TECHNIQUE',
+        price: Number(ticketToEdit.costs?.repair) || 0,
+        category: 'prestation'
+      };
+      base.services = [fallbackService];
+      base.ligneVentes = decompileServicesToLignesVente(
+        [fallbackService],
+        ticketToEdit.id || '',
+        ticketToEdit.macModel || ''
+      );
     }
         
     return base;
@@ -148,6 +163,8 @@ const RepairForm: React.FC<RepairFormProps> = ({ tickets, ticketToEdit, onSave, 
     return generateNextTicketSequence(tickets, false);
   });
   const [isManualEdit, setIsManualEdit] = useState(false);
+  const [isCheckingCloudSequence, setIsCheckingCloudSequence] = useState(false);
+  const [cloudSequenceVerified, setCloudSequenceVerified] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
   const signaturePadRef = useRef<{ getSignature: () => string; clear: () => void }>(null);
@@ -353,22 +370,19 @@ const RepairForm: React.FC<RepairFormProps> = ({ tickets, ticketToEdit, onSave, 
 
     for (const file of filesToProcess) {
       try {
-        const rawBase64 = await new Promise<string>((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = (e) => resolve(e.target?.result as string);
-          reader.onerror = reject;
-          reader.readAsDataURL(file);
-        });
-
-        // Compression performante 1200x1200px @ 0.72 : qualité visuelle nette pour les inscriptions tout en restant ~60-80KB
-        const compressed = await compressImageBase64(rawBase64, 1200, 1200, 0.72);
-        newCompressed.push(compressed);
+        const compressed = await compressImage(file, 1200, 1200, 0.72);
+        if (compressed) {
+          newCompressed.push(compressed);
+        }
       } catch (err) {
         console.error("Erreur lecture photo:", err);
       }
     }
 
-    if (newCompressed.length === 0) return;
+    if (newCompressed.length === 0) {
+      showToast("Impossible de charger la photo sélectionnée. Veuillez réessayer.", "warning");
+      return;
+    }
 
     const updated = [...currentImages, ...newCompressed].slice(0, 6);
     setTicket(prev => ({
@@ -580,15 +594,55 @@ const RepairForm: React.FC<RepairFormProps> = ({ tickets, ticketToEdit, onSave, 
     return Array.from(techsMap.entries()).map(([name, phone]) => ({ name, phone }));
   }, [tickets]);
 
+  const ticketsRef = useRef(tickets);
+  ticketsRef.current = tickets;
+
+  // Signal pour indiquer que l'utilisateur est activement sur le formulaire
+  // (permet à l'auto-synchronisation lourde de se mettre en pause pour préserver 100% de fluidité et réactivité)
+  useEffect(() => {
+    (window as unknown as { __TGS_FORM_EDITING_ACTIVE__?: boolean }).__TGS_FORM_EDITING_ACTIVE__ = true;
+    return () => {
+      (window as unknown as { __TGS_FORM_EDITING_ACTIVE__?: boolean }).__TGS_FORM_EDITING_ACTIVE__ = false;
+      window.dispatchEvent(new CustomEvent('tgs-form-editing-closed'));
+    };
+  }, []);
+
+  const syncSequenceWithCloud = useCallback(async (userInitiated = false) => {
+    if (ticketToEdit || isManualEdit) return;
+    setIsCheckingCloudSequence(true);
+    try {
+      const targetYear = manualDate ? new Date(manualDate).getFullYear() : undefined;
+      const res = await fetchLatestCloudSequence(ticketsRef.current, false, targetYear, 4000);
+      const latestId = res.nextId;
+      setFullTicketId(latestId);
+      if (res.isFromCloud) {
+        setCloudSequenceVerified(true);
+      }
+      if (userInitiated) {
+        showToast(`Numéro Cloud vérifié : ${latestId}`, "success");
+      }
+    } catch (e) {
+      console.warn("Échec sync sequence cloud:", e);
+    } finally {
+      setIsCheckingCloudSequence(false);
+    }
+  }, [ticketToEdit, isManualEdit, manualDate, showToast]);
+
+  useEffect(() => {
+    if (!ticketToEdit && !isManualEdit) {
+      syncSequenceWithCloud(false);
+    }
+  }, [ticketToEdit, isManualEdit, manualDate, syncSequenceWithCloud]);
+
   useEffect(() => {
     if (ticketToEdit) {
       setFullTicketId(ticketToEdit.id);
-    } else if (!isManualEdit) {
+    } else if (!isManualEdit && !fullTicketId) {
       const targetYear = manualDate ? new Date(manualDate).getFullYear() : undefined;
-      const nextSeq = generateNextTicketSequence(tickets, false, targetYear);
+      const nextSeq = generateNextTicketSequence(ticketsRef.current, false, targetYear);
       setFullTicketId(nextSeq);
     }
-  }, [ticketToEdit, tickets, isManualEdit, manualDate]);
+  }, [ticketToEdit, isManualEdit, manualDate, fullTicketId]);
 
   const isDuplicateId = useMemo(() => {
       const cleanInput = (fullTicketId || '').trim().toUpperCase();
@@ -725,9 +779,10 @@ const RepairForm: React.FC<RepairFormProps> = ({ tickets, ticketToEdit, onSave, 
       setIsSaving(true);
       try {
           const signature = signaturePadRef.current?.getSignature() || ticket.clientSignature;
+          const existingRepairCost = Number(ticket.costs?.repair) || (Number(ticketToEdit?.costs?.repair) || 0);
           const servicesSum = (ticket.services && ticket.services.length > 0)
               ? ticket.services.reduce((sum, s) => sum + (Number(s.price) || 0), 0)
-              : (Number(ticket.costs?.repair) || 0);
+              : (existingRepairCost > 0 ? existingRepairCost : 0);
 
           // Assurer un identifiant officiel valide et non vide
           let cleanTicketId = fullTicketId.trim().toUpperCase();
@@ -755,9 +810,20 @@ const RepairForm: React.FC<RepairFormProps> = ({ tickets, ticketToEdit, onSave, 
               } catch { /* keep current */ }
           }
 
+          const finalServices = (ticket.services && ticket.services.length > 0)
+              ? ticket.services
+              : (servicesSum > 0 ? [{
+                  id: `srv-repair-${cleanTicketId}`,
+                  updatedAt: new Date().toISOString(),
+                  name: 'RÉPARATION DE L\'APPAREIL / INTERVENTION TECHNIQUE',
+                  price: servicesSum,
+                  category: 'prestation'
+              }] : []);
+
           const finalTicket = {
               ...ticket,
               id: cleanTicketId,
+              services: finalServices,
               costs: {
                   ...(ticket.costs || { diagnostic: 5000, repair: 0, advance: 0 }),
                   repair: servicesSum
@@ -954,17 +1020,16 @@ const RepairForm: React.FC<RepairFormProps> = ({ tickets, ticketToEdit, onSave, 
                             <button
                                 type="button"
                                 onClick={() => {
-                                    const targetYear = manualDate ? new Date(manualDate).getFullYear() : undefined;
-                                    const nextId = generateNextTicketSequence(tickets, ticket.client?.isEnterprise || false, targetYear);
-                                    setFullTicketId(nextId);
                                     setIsManualEdit(false);
                                     playTone(880, 50);
-                                    showToast(`Numéro automatique régénéré : ${nextId}`, "info");
+                                    syncSequenceWithCloud(true);
                                 }}
-                                className="text-[9px] font-bold text-slate-400 hover:text-apple-blue flex items-center gap-1 transition-colors"
-                                title="Calculer le prochain numéro séquentiel disponible"
+                                disabled={isCheckingCloudSequence}
+                                className="text-[9px] font-bold text-slate-400 hover:text-apple-blue flex items-center gap-1 transition-colors disabled:opacity-50"
+                                title="Calculer le prochain numéro séquentiel disponible (vérifié en direct avec le Cloud)"
                             >
-                                <ArrowPathIcon className="w-3 h-3" /> N° auto
+                                <ArrowPathIcon className={`w-3 h-3 ${isCheckingCloudSequence ? 'animate-spin text-apple-blue' : ''}`} />
+                                <span>{isCheckingCloudSequence ? 'Vérif Cloud...' : 'N° auto'}</span>
                             </button>
                         </div>
                         <div className={`flex items-center bg-black/40 border rounded-xl px-4 py-2.5 transition-all ${isDuplicateId ? 'border-red-500' : 'border-white/10 focus-within:border-apple-blue'}`}>
@@ -976,6 +1041,17 @@ const RepairForm: React.FC<RepairFormProps> = ({ tickets, ticketToEdit, onSave, 
                                 className="bg-transparent border-none outline-none font-mono font-black text-white text-lg w-full" 
                             />
                             {isDuplicateId && <span className="ml-2 text-[9px] font-black text-red-500 uppercase animate-pulse">Doublon</span>}
+                            {cloudSequenceVerified && !isManualEdit && !isDuplicateId && (
+                                <span className="ml-2 text-[8px] font-black text-emerald-400 uppercase bg-emerald-500/10 px-1.5 py-0.5 rounded border border-emerald-500/30 whitespace-nowrap flex items-center gap-1" title="Vérifié en direct avec le Cloud">
+                                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                                    Cloud OK
+                                </span>
+                            )}
+                            {isCheckingCloudSequence && !isDuplicateId && !cloudSequenceVerified && (
+                                <span className="ml-2 text-[8px] font-black text-apple-blue uppercase bg-apple-blue/10 px-1.5 py-0.5 rounded border border-apple-blue/30 whitespace-nowrap animate-pulse">
+                                    Sync...
+                                </span>
+                            )}
                             {isFallbackTicketId(fullTicketId) && !isDuplicateId && (
                                 <span className="ml-2 text-[8px] font-black text-amber-400 uppercase bg-amber-500/10 px-1.5 py-0.5 rounded border border-amber-500/30 whitespace-nowrap">
                                     Provisoire
@@ -1002,13 +1078,21 @@ const RepairForm: React.FC<RepairFormProps> = ({ tickets, ticketToEdit, onSave, 
                                 checked={ticket.isReIntervention} 
                                 onChange={e => {
                                     const checked = e.target.checked;
-                                    setTicket(prev => ({
-                                        ...prev,
-                                        isReIntervention: checked,
-                                        reInterventionReceiptDate: checked && !prev.reInterventionReceiptDate
-                                            ? new Date().toISOString().split('T')[0]
-                                            : prev.reInterventionReceiptDate
-                                    }));
+                                    setTicket(prev => {
+                                        const isClosedStatus = prev.status === RepairStatus.RENDU || prev.status === RepairStatus.TERMINE;
+                                        const nextStatus = (checked && isClosedStatus) ? RepairStatus.REPARATION_EN_COURS : prev.status;
+                                        if (checked && isClosedStatus) {
+                                            showToast("Fiche ré-ouverte en atelier (Statut : Réparation en cours / SAV).", "info");
+                                        }
+                                        return {
+                                            ...prev,
+                                            status: nextStatus,
+                                            isReIntervention: checked,
+                                            reInterventionReceiptDate: checked && !prev.reInterventionReceiptDate
+                                                ? new Date().toISOString().split('T')[0]
+                                                : prev.reInterventionReceiptDate
+                                        };
+                                    });
                                 }}
                                 className="w-5 h-5 accent-red-600"
                             />
@@ -1477,9 +1561,9 @@ const RepairForm: React.FC<RepairFormProps> = ({ tickets, ticketToEdit, onSave, 
                                 <input 
                                     type="file" 
                                     accept="image/*" 
-                                    capture="environment" 
+                                    capture={isTouch ? "environment" : undefined} 
                                     ref={cameraInputRef} 
-                                    onChange={e => { handleAddIntakeImages(e.target.files); e.target.value = ''; }} 
+                                    onChange={e => handleAddIntakeImages(e.target.files)} 
                                     className="hidden" 
                                 />
                                 <input 
@@ -1487,7 +1571,7 @@ const RepairForm: React.FC<RepairFormProps> = ({ tickets, ticketToEdit, onSave, 
                                     accept="image/*" 
                                     multiple 
                                     ref={galleryInputRef} 
-                                    onChange={e => { handleAddIntakeImages(e.target.files); e.target.value = ''; }} 
+                                    onChange={e => handleAddIntakeImages(e.target.files)} 
                                     className="hidden" 
                                 />
 
@@ -1495,7 +1579,10 @@ const RepairForm: React.FC<RepairFormProps> = ({ tickets, ticketToEdit, onSave, 
                                 <div className="flex flex-wrap items-center gap-2">
                                     <button
                                         type="button"
-                                        onClick={() => cameraInputRef.current?.click()}
+                                        onClick={() => {
+                                            if (cameraInputRef.current) cameraInputRef.current.value = '';
+                                            cameraInputRef.current?.click();
+                                        }}
                                         disabled={(ticket.intakeImages?.length || 0) >= 6}
                                         className="flex-1 min-w-[130px] px-3 py-2.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white rounded-xl text-[10px] font-black uppercase tracking-wider flex items-center justify-center gap-2 transition-all shadow-lg shadow-blue-900/30"
                                         title="Ouvre directement la caméra sur tablette iPad, Android ou smartphone"
@@ -1506,7 +1593,10 @@ const RepairForm: React.FC<RepairFormProps> = ({ tickets, ticketToEdit, onSave, 
 
                                     <button
                                         type="button"
-                                        onClick={() => galleryInputRef.current?.click()}
+                                        onClick={() => {
+                                            if (galleryInputRef.current) galleryInputRef.current.value = '';
+                                            galleryInputRef.current?.click();
+                                        }}
                                         disabled={(ticket.intakeImages?.length || 0) >= 6}
                                         className="flex-1 min-w-[130px] px-3 py-2.5 bg-white/5 hover:bg-white/10 disabled:opacity-40 text-slate-200 border border-white/10 rounded-xl text-[10px] font-black uppercase tracking-wider flex items-center justify-center gap-2 transition-all"
                                         title="Importer depuis la galerie photos ou les fichiers"
@@ -2167,9 +2257,13 @@ const RepairForm: React.FC<RepairFormProps> = ({ tickets, ticketToEdit, onSave, 
                                                     <option value="30 jours">30 Jours</option>
                                                 </optgroup>
                                                 <optgroup label="Commande (5 jours sur 7 - Ouvrables uniquement)">
+                                                    <option value="Immédiat">Immédiat (Stock disponible)</option>
+                                                    <option value="5 jours ouvrables">5 Jours ouvrables</option>
+                                                    <option value="10 jours ouvrables">10 Jours ouvrables</option>
                                                     <option value="15 jours ouvrables">15 Jours ouvrables</option>
                                                     <option value="20 jours ouvrables">20 Jours ouvrables</option>
                                                     <option value="25 jours ouvrables">25 Jours ouvrables</option>
+                                                    <option value="30 jours ouvrables">30 Jours ouvrables</option>
                                                 </optgroup>
                                             </select>
                                         </div>

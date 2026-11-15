@@ -1,6 +1,7 @@
 
 import React, { useState } from 'react';
-import { GoogleGenAI, GenerateContentResponse } from "@google/genai";
+import { GenerateContentResponse } from "@google/genai";
+import { createAI } from '../services/aiClient.ts';
 import { SparklesIcon } from './icons.tsx';
 
 interface AiCorrectionButtonProps {
@@ -30,7 +31,7 @@ const AiCorrectionButton: React.FC<AiCorrectionButtonProps> = ({ text, onCorrect
 
     try {
         // Fix: Follow initialization guidelines strictly.
-        const ai = new GoogleGenAI({apiKey: process.env.API_KEY});
+        const ai = createAI();
         const response: GenerateContentResponse = await ai.models.generateContent({
             model: 'gemini-1.5-flash',
             contents: prompt,

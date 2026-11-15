@@ -73,8 +73,9 @@ const useCommandes = () => {
           history: initialHistory,
         };
         await dbAddCommande(newCommande);
-        fetchCommandes();
+        await fetchCommandes();
         window.dispatchEvent(new CustomEvent('requestsync'));
+        return newCommande;
     } catch (error) {
         console.error("Failed to add commande:", error);
         showToast("L'ajout a échoué.", "error");

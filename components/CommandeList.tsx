@@ -9,6 +9,7 @@ import PreviewModal from './PreviewModal.tsx';
 import { playTone } from '../utils/audio.ts';
 import ConfirmationModal from './ConfirmationModal.tsx';
 import { findMacByModel } from '../utils/macModelsData.ts';
+import { calculateFutureDate } from '../utils/dateCalculator.ts';
 
 interface CommandeFormProps {
     onSave: (data: Omit<Commande, 'id' | 'numero' | 'date' | 'updatedAt'> | Commande, action: 'save' | 'print') => Promise<void>;
@@ -124,7 +125,24 @@ const CommandeForm: React.FC<CommandeFormProps> = ({ onSave, onCancel, commandeT
         return [];
     }, [formData.macModel]);
 
-    const total = useMemo(() => formData.items.reduce((sum, item) => sum + item.totalPrice, 0), [formData.items]);
+    const total = useMemo(() => formData.items.reduce((sum, item) => sum + (Number(item.totalPrice) || 0), 0), [formData.items]);
+    const effectiveAdvance = useMemo(() => {
+        if (formData.status === 'Payé') return total;
+        return Math.max(0, Number(formData.advance) || 0);
+    }, [formData.status, formData.advance, total]);
+    const remainingBalance = useMemo(() => {
+        if (formData.status === 'Payé') return 0;
+        return Math.max(0, total - effectiveAdvance);
+    }, [formData.status, total, effectiveAdvance]);
+
+    const estimatedDeliveryDate = useMemo(() => {
+        if (!formData.deliveryDelay) return null;
+        try {
+            return calculateFutureDate(new Date(), formData.deliveryDelay);
+        } catch {
+            return null;
+        }
+    }, [formData.deliveryDelay]);
 
     const updateWithSmartDescription = (newData: Omit<Commande, 'id' | 'numero' | 'date' | 'updatedAt'>, forceReset = false) => {
         if (!isDescManual || forceReset) {
@@ -154,9 +172,13 @@ const CommandeForm: React.FC<CommandeFormProps> = ({ onSave, onCancel, commandeT
                 updated.purchaseType = value as PurchaseType;
                 updated.macDetails = (value === 'MacBook Pro' || value === 'MacBook Air') ? { condition: 'Occasion', hasBox: 'Non' } : undefined;
                 updated.partDetails = (value === 'Écran' || value === 'Batterie' || value === 'Clavier' || value === 'Carte Mère') ? { condition: 'Occasion' } : undefined;
-            } else if (name === 'status' && value === 'Payé') {
-                updated.status = value;
-                updated.advance = total;
+            } else if (name === 'status') {
+                updated.status = value as Commande['status'];
+                if (value === 'Payé') {
+                    updated.advance = total;
+                }
+            } else if (name === 'advance') {
+                updated.advance = Math.max(0, Number(newValue) || 0);
             } else {
                 updated = { ...updated, [name]: newValue };
             }
@@ -176,15 +198,30 @@ const CommandeForm: React.FC<CommandeFormProps> = ({ onSave, onCancel, commandeT
 
     const handleItemChange = (index: number, field: keyof DocumentItem, value: string | number) => {
         const newItems = [...formData.items];
-        const item = { ...newItems[index], [field]: value };
+        let sanitizedValue: string | number = value;
+        if (field === 'quantity') {
+            sanitizedValue = Math.max(0, Number(value) || 0);
+        } else if (field === 'unitPrice') {
+            sanitizedValue = Math.max(0, Number(value) || 0);
+        }
+        const item = { ...newItems[index], [field]: sanitizedValue };
         if (field === 'quantity' || field === 'unitPrice') {
-            item.totalPrice = item.quantity * item.unitPrice;
+            const qty = Number(item.quantity) || 0;
+            const price = Number(item.unitPrice) || 0;
+            item.totalPrice = qty * price;
         }
         if (index === 0 && field === 'description') {
             setIsDescManual(true);
         }
         newItems[index] = item;
-        setFormData(prev => ({ ...prev, items: newItems }));
+        setFormData(prev => {
+            const updated = { ...prev, items: newItems };
+            if (prev.status === 'Payé') {
+                const newTotal = newItems.reduce((sum, it) => sum + (Number(it.totalPrice) || 0), 0);
+                updated.advance = newTotal;
+            }
+            return updated;
+        });
     };
 
     const addItem = () => setFormData(prev => ({ ...prev, items: [...prev.items, { description: '', quantity: 1, unitPrice: 0, totalPrice: 0 }] }));
@@ -466,6 +503,14 @@ const CommandeForm: React.FC<CommandeFormProps> = ({ onSave, onCancel, commandeT
                         <select name="deliveryDelay" value={formData.deliveryDelay} onChange={handleMainChange} className={inputStyle}>
                             {['5 jours ouvrables', '10 jours ouvrables', '15 jours ouvrables', '20 jours ouvrables', '25 jours ouvrables', '30 jours ouvrables', 'Immédiat'].map(o => <option key={o} value={o}>{o}</option>)}
                         </select>
+                        {estimatedDeliveryDate && (
+                            <div className="mt-2 flex items-center gap-1.5 text-[9.5px] font-bold text-indigo-400 bg-indigo-500/10 px-3 py-1.5 rounded-xl border border-indigo-500/20">
+                                <CalendarDaysIcon className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+                                <span>
+                                    Arrivée estimée : <strong className="text-white">{estimatedDeliveryDate.toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })}</strong> (jours ouvrés CI)
+                                </span>
+                            </div>
+                        )}
                     </div>
                     <div>
                         <label className={labelStyle}>Garantie Proposée</label>
@@ -525,25 +570,38 @@ const CommandeForm: React.FC<CommandeFormProps> = ({ onSave, onCancel, commandeT
 
             <div className="border-t border-white/5 pt-6 grid grid-cols-1 md:grid-cols-2 gap-8 items-end">
                 <div className="bg-emerald-500/5 p-6 rounded-3xl border border-emerald-500/10">
-                    <label className={labelStyle}>Avance Versée (F CFA)</label>
+                    <div className="flex justify-between items-center mb-1">
+                        <label className={labelStyle}>Avance Versée (F CFA)</label>
+                        {formData.status === 'Payé' && (
+                            <span className="text-[9px] font-black uppercase text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">
+                                Statut Payé (Soldé 100%)
+                            </span>
+                        )}
+                    </div>
                     <input 
                         type="number" 
                         name="advance" 
-                        value={formData.advance} 
+                        value={formData.status === 'Payé' ? total : (formData.advance ?? 0)} 
                         onChange={handleMainChange} 
-                        className="w-full p-4 bg-black/40 border border-emerald-500/30 rounded-2xl text-emerald-400 font-mono font-black text-2xl outline-none" 
+                        disabled={formData.status === 'Payé'}
+                        className="w-full p-4 bg-black/40 border border-emerald-500/30 rounded-2xl text-emerald-400 font-mono font-black text-2xl outline-none disabled:opacity-75" 
                         placeholder="Acompte"
                     />
                 </div>
                 <div className="flex flex-col items-end">
                     <div className="text-[10px] font-black text-slate-500 uppercase tracking-widest flex items-center gap-4 mb-2">
-                        <span>Total: {total.toLocaleString()} F</span>
-                        <span>Avance: - {formData.advance.toLocaleString()} F</span>
+                        <span>Total: {total.toLocaleString('fr-FR')} F</span>
+                        <span>Avance: - {effectiveAdvance.toLocaleString('fr-FR')} F</span>
                     </div>
                     <p className="text-slate-400 text-[9px] font-black uppercase tracking-[0.2em] mb-1">RESTE À RÉGLER (SOLDE)</p>
-                    <p className={`text-5xl font-black tracking-tighter ${total - (formData.advance || 0) <= 0 ? 'text-emerald-500' : 'text-blue-500'}`}>
-                        {(total - (formData.advance || 0)).toLocaleString()} <span className="text-xl">F CFA</span>
+                    <p className={`text-5xl font-black tracking-tighter ${remainingBalance <= 0 ? 'text-emerald-500' : 'text-blue-500'}`}>
+                        {remainingBalance.toLocaleString('fr-FR')} <span className="text-xl">F CFA</span>
                     </p>
+                    {formData.status === 'Payé' ? (
+                        <p className="text-[9px] font-black text-emerald-400 uppercase tracking-wider mt-1">✓ Commande soldée sans reliquat</p>
+                    ) : remainingBalance <= 0 && total > 0 ? (
+                        <p className="text-[9px] font-black text-emerald-400 uppercase tracking-wider mt-1">✓ Acompte complet (Totalement financé)</p>
+                    ) : null}
                 </div>
             </div>
 
@@ -602,10 +660,18 @@ const CommandeList: React.FC<CommandeListProps> = ({ onBack, initialEditId }) =>
         // Exclude Cancelled (Annulé) orders for proper accounting
         const activeCmds = filteredCommandes.filter(c => c.status !== 'Annulé');
         
-        const totalBilled = activeCmds.reduce((sum, c) => sum + (c.total || 0), 0);
+        const totalBilled = activeCmds.reduce((sum, c) => sum + (Number(c.total) || 0), 0);
         // If status is 'Payé', they are fully paid, so amount paid is considered equal to c.total
-        const totalPaid = activeCmds.reduce((sum, c) => sum + (c.status === 'Payé' ? (c.total || 0) : (c.advance || 0)), 0);
-        const remainingBalance = activeCmds.reduce((sum, c) => sum + (c.status === 'Payé' ? 0 : Math.max(0, (c.total || 0) - (c.advance || 0))), 0);
+        const totalPaid = activeCmds.reduce((sum, c) => {
+            const cmdTotal = Number(c.total) || 0;
+            const cmdAdvance = Number(c.advance) || 0;
+            return sum + (c.status === 'Payé' ? cmdTotal : Math.min(cmdTotal, Math.max(0, cmdAdvance)));
+        }, 0);
+        const remainingBalance = activeCmds.reduce((sum, c) => {
+            const cmdTotal = Number(c.total) || 0;
+            const cmdAdvance = Number(c.advance) || 0;
+            return sum + (c.status === 'Payé' ? 0 : Math.max(0, cmdTotal - cmdAdvance));
+        }, 0);
 
         return {
             items: activeCmds,
@@ -801,8 +867,9 @@ const CommandeList: React.FC<CommandeListProps> = ({ onBack, initialEditId }) =>
                                 </thead>
                                 <tbody className="divide-y divide-white/5 text-slate-300 font-semibold font-mono">
                                     {reportData.items.map((it) => {
-                                        const dueAmount = it.status === 'Payé' ? 0 : Math.max(0, it.total - (it.advance || 0));
-                                        const paidAmount = it.status === 'Payé' ? it.total : (it.advance || 0);
+                                        const cmdTotal = Number(it.total) || 0;
+                                        const dueAmount = it.status === 'Payé' ? 0 : Math.max(0, cmdTotal - (Number(it.advance) || 0));
+                                        const paidAmount = it.status === 'Payé' ? cmdTotal : Math.min(cmdTotal, Math.max(0, Number(it.advance) || 0));
                                         return (
                                             <tr key={it.id} className="hover:bg-white/5 transition-colors">
                                                 <td className="py-3 px-3 text-indigo-400 font-bold">{it.numero}</td>
@@ -813,10 +880,10 @@ const CommandeList: React.FC<CommandeListProps> = ({ onBack, initialEditId }) =>
                                                         {it.macModel || 'PIÈCE / AUTRE'}
                                                     </span>
                                                 </td>
-                                                <td className="py-3 px-3 text-right text-white font-bold">{it.total.toLocaleString()} F</td>
-                                                <td className="py-3 px-3 text-right text-emerald-400">{paidAmount.toLocaleString()} F</td>
+                                                <td className="py-3 px-3 text-right text-white font-bold">{cmdTotal.toLocaleString('fr-FR')} F</td>
+                                                <td className="py-3 px-3 text-right text-emerald-400">{paidAmount.toLocaleString('fr-FR')} F</td>
                                                 <td className={`py-3 px-3 text-right font-black ${dueAmount > 0 ? 'text-amber-400' : 'text-slate-500'}`}>
-                                                    {dueAmount.toLocaleString()} F
+                                                    {dueAmount.toLocaleString('fr-FR')} F
                                                 </td>
                                                 <td className="py-3 px-3 text-center">
                                                     <span className={`px-2 py-0.5 font-sans font-bold text-[8.5px] rounded border uppercase tracking-wider ${
@@ -876,8 +943,9 @@ const CommandeList: React.FC<CommandeListProps> = ({ onBack, initialEditId }) =>
                     </thead>
                     <tbody className="divide-y divide-white/5 text-slate-300 font-medium">
                         {filteredCommandes.map(c => {
-                                                           const balance = c.status === 'Payé' ? 0 : c.total - (c.advance || 0);
-                                                           return (
+                            const cmdTotal = Number(c.total) || 0;
+                            const balance = c.status === 'Payé' ? 0 : Math.max(0, cmdTotal - (Number(c.advance) || 0));
+                            return (
                                 <tr key={c.id} className="hover:bg-white/5 transition-colors group">
                                     <td className="px-6 py-4">
                                         <div className="flex justify-center gap-2">
@@ -941,8 +1009,8 @@ const CommandeList: React.FC<CommandeListProps> = ({ onBack, initialEditId }) =>
                                         <p className="text-[9px] text-slate-500 uppercase font-black">{c.deliveryDelay}</p>
                                     </td>
                                     <td className="px-6 py-4">
-                                        <p className="font-mono font-black text-white text-xs">{c.total.toLocaleString()} F</p>
-                                        {balance > 0 && <p className="text-[9px] text-orange-400 font-bold">Dû: {balance.toLocaleString()} F</p>}
+                                        <p className="font-mono font-black text-white text-xs">{cmdTotal.toLocaleString('fr-FR')} F</p>
+                                        {balance > 0 && <p className="text-[9px] text-orange-400 font-bold">Dû: {balance.toLocaleString('fr-FR')} F</p>}
                                     </td>
                                     <td className="px-6 py-4">
                                         <span className={`px-3 py-1 text-[10px] font-black rounded-lg border uppercase tracking-widest ${getStatusStyles(c.status)}`}>
@@ -1071,16 +1139,18 @@ const CommandeList: React.FC<CommandeListProps> = ({ onBack, initialEditId }) =>
                             </thead>
                             <tbody>
                                 {reportData.items.map((it) => {
-                                    const dueAmount = Math.max(0, it.total - (it.advance || 0));
+                                    const cmdTotal = Number(it.total) || 0;
+                                    const dueAmount = it.status === 'Payé' ? 0 : Math.max(0, cmdTotal - (Number(it.advance) || 0));
+                                    const paidAmount = it.status === 'Payé' ? cmdTotal : Math.min(cmdTotal, Math.max(0, Number(it.advance) || 0));
                                     return (
                                         <tr key={it.id} style={{ borderBottom: '0.5pt solid #eee' }}>
                                             <td style={{ padding: '6px 4px', fontFamily: 'monospace', fontWeight: 'bold' }}>{it.numero}</td>
                                             <td style={{ padding: '6px 4px', textTransform: 'uppercase' }}>{it.clientName || 'STOCK INTERNE'}</td>
                                             <td style={{ padding: '6px 4px' }}>{it.clientPhone || 'Aucun'}</td>
                                             <td style={{ padding: '6px 4px', textTransform: 'uppercase', fontStyle: 'italic' }}>{it.macModel || 'PI&Egrave;CE / AUTRE'}</td>
-                                            <td style={{ padding: '6px 4px', textAlign: 'right', fontFamily: 'monospace' }}>{it.total.toLocaleString()}</td>
-                                            <td style={{ padding: '6px 4px', textAlign: 'right', fontFamily: 'monospace', color: '#2b5a2b' }}>{it.advance.toLocaleString()}</td>
-                                            <td style={{ padding: '6px 4px', textAlign: 'right', fontFamily: 'monospace', fontWeight: 'bold', color: dueAmount > 0 ? '#b27b00' : '#444' }}>{dueAmount.toLocaleString()}</td>
+                                            <td style={{ padding: '6px 4px', textAlign: 'right', fontFamily: 'monospace' }}>{cmdTotal.toLocaleString('fr-FR')}</td>
+                                            <td style={{ padding: '6px 4px', textAlign: 'right', fontFamily: 'monospace', color: '#2b5a2b' }}>{paidAmount.toLocaleString('fr-FR')}</td>
+                                            <td style={{ padding: '6px 4px', textAlign: 'right', fontFamily: 'monospace', fontWeight: 'bold', color: dueAmount > 0 ? '#b27b00' : '#444' }}>{dueAmount.toLocaleString('fr-FR')}</td>
                                             <td style={{ padding: '6px 4px', textAlign: 'center', fontSize: '6.5pt', textTransform: 'uppercase' }}>{it.status}</td>
                                         </tr>
                                     );

@@ -136,8 +136,8 @@ export function addWorkingDays(startDate: Date, daysToAdd: number): Date {
  * Parses duration and calculates exact future Date.
  * Supports minutes, hours, days, and working days.
  */
-export function calculateFutureDate(startDate: Date, durationOption: string): Date {
-  const lowerStr = durationOption.toLowerCase().trim();
+export function calculateFutureDate(startDate: Date, durationOption: string | number): Date {
+  const lowerStr = (durationOption !== undefined && durationOption !== null ? String(durationOption) : '').toLowerCase().trim();
   const resultDate = new Date(startDate);
 
   // 1. Working days for orders (e.g. "15 jours ouvrables", "20 jours ouvrables", "25 jours ouvrables")

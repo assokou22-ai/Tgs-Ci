@@ -161,7 +161,9 @@ export const sanitizeStock = (stockItems: unknown[]): StockItem[] => {
             ? item.compatibleModels 
             : (typeof item.compatibleModels === 'string' ? item.compatibleModels.split(',').map((s: string) => s.trim()).filter(Boolean) : []),
         condition: ['Neuf', 'Occasion', 'Reconditionné'].includes(item.condition) ? item.condition : 'Neuf',
-        alertThreshold: Number(item.alertThreshold) || 1,
+        alertThreshold: item.alertThreshold !== undefined && item.alertThreshold !== null && item.alertThreshold !== ''
+            ? Math.max(0, Number(item.alertThreshold) || 0)
+            : 0,
         supplier: item.supplier || '',
         location: item.location || '',
         entryDate: item.entryDate || new Date().toISOString().split('T')[0],

@@ -185,4 +185,111 @@ export const findChronologicalGapForTicket = (
   return null;
 };
 
+const cloudSequenceCache = new Map<string, { maxSeq: number; fetchedAt: number }>();
+const CLOUD_SEQUENCE_CACHE_TTL_MS = 45_000;
 
+/**
+ * Interroge de façon asynchrone, légère et non-bloquante Firestore pour trouver la numérotation officielle
+ * la plus élevée enregistrée dans le Cloud (lecture bornée au compteur + 15 derniers dossiers de la série).
+ */
+export const fetchLatestCloudSequence = async (
+  localTickets: RepairTicket[] = [],
+  isEnterprise = false,
+  targetYear?: number | string,
+  timeoutMs = 2500
+): Promise<{ nextId: string; updatedTickets?: RepairTicket[]; isFromCloud: boolean; newTicketsCount: number }> => {
+  const fallbackId = generateNextTicketSequence(localTickets, isEnterprise, targetYear);
+  if (typeof window === 'undefined' || !navigator.onLine) {
+    return { nextId: fallbackId, isFromCloud: false, newTicketsCount: 0 };
+  }
+
+  const yy = (targetYear ? String(targetYear) : String(new Date().getFullYear())).slice(-2);
+  const typeTag = isEnterprise ? 'ENT' : 'RM';
+  const prefix = `${yy}-${typeTag}-`;
+  const counterKey = `${yy}-${typeTag}`;
+
+  const computeFromFloor = (cloudMax: number) => {
+    let localMax = 0;
+    const localIds = new Set<string>();
+    for (const lt of localTickets || []) {
+      if (!lt || !lt.id) continue;
+      localIds.add(lt.id);
+      const num = extractTicketSequenceNumber(lt.id, isEnterprise, targetYear);
+      if (num !== null && num > localMax) localMax = num;
+    }
+    const maxSeq = Math.max(localMax, cloudMax);
+    let nextSeq = maxSeq > 0 ? maxSeq + 1 : 1;
+    while (localIds.has(`${prefix}${String(nextSeq).padStart(4, '0')}`)) {
+      nextSeq++;
+    }
+    return `${prefix}${String(nextSeq).padStart(4, '0')}`;
+  };
+
+  try {
+    const { collection, doc, getDoc, getDocs, query, where, orderBy, limit, documentId } = await import('firebase/firestore');
+    const { db, auth, isQuotaCooldownActive } = await import('../services/firebase.ts');
+
+    if (!auth.currentUser || isQuotaCooldownActive()) {
+      return { nextId: fallbackId, isFromCloud: false, newTicketsCount: 0 };
+    }
+
+    const cached = cloudSequenceCache.get(prefix);
+    if (cached && Date.now() - cached.fetchedAt < CLOUD_SEQUENCE_CACHE_TTL_MS) {
+      return {
+        nextId: computeFromFloor(cached.maxSeq),
+        updatedTickets: undefined,
+        isFromCloud: true,
+        newTicketsCount: 0,
+      };
+    }
+
+    // Lecture ultra-légère : 1 document compteur + au plus 15 derniers dossiers de la série
+    const fetchLight = async () => {
+      const counterPromise = getDoc(doc(db, 'counters', counterKey)).catch(() => null);
+      const q = query(
+        collection(db, 'tickets'),
+        where(documentId(), '>=', prefix),
+        where(documentId(), '<', prefix + '\uf8ff'),
+        orderBy(documentId(), 'desc'),
+        limit(15)
+      );
+      const snapPromise = getDocs(q);
+      const [counterSnap, snap] = await Promise.all([counterPromise, snapPromise]);
+      return { counterSnap, snap };
+    };
+
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error('Cloud sequence timeout')), timeoutMs);
+    });
+
+    const { counterSnap, snap } = await Promise.race([fetchLight(), timeoutPromise]);
+
+    let cloudMax = counterSnap && counterSnap.exists() ? Number(counterSnap.get('last') || 0) : 0;
+    const localIds = new Set((localTickets || []).map(t => t?.id).filter(Boolean));
+    let newCount = 0;
+
+    snap.forEach(docSnap => {
+      const id = docSnap.id;
+      if (!localIds.has(id)) newCount++;
+      const seq = extractTicketSequenceNumber(id, isEnterprise, targetYear);
+      if (seq !== null && seq > cloudMax) cloudMax = seq;
+    });
+
+    cloudSequenceCache.set(prefix, { maxSeq: cloudMax, fetchedAt: Date.now() });
+
+    return {
+      nextId: computeFromFloor(cloudMax),
+      updatedTickets: undefined,
+      isFromCloud: true,
+      newTicketsCount: newCount,
+    };
+  } catch (err) {
+    const { isQuotaExceededError, reportQuotaExceeded } = await import('../services/firebase.ts');
+    if (isQuotaExceededError(err)) {
+      reportQuotaExceeded(err);
+    } else {
+      console.warn("[idGenerator] Requête Cloud non bloquante, utilisation de la séquence locale :", err);
+    }
+    return { nextId: fallbackId, isFromCloud: false, newTicketsCount: 0 };
+  }
+};

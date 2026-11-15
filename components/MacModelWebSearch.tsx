@@ -1,6 +1,7 @@
 
 import React, { useState } from 'react';
-import { GoogleGenAI, GenerateContentResponse } from "@google/genai";
+import { GenerateContentResponse } from "@google/genai";
+import { createAI } from '../services/aiClient.ts';
 import { GlobeAltIcon, XCircleIcon, SparklesIcon, MacbookIcon } from './icons.tsx';
 
 const MacModelWebSearch: React.FC = () => {
@@ -31,7 +32,7 @@ const MacModelWebSearch: React.FC = () => {
         setSources([]);
 
         try {
-            const ai = new GoogleGenAI({apiKey: process.env.API_KEY});
+            const ai = createAI();
             const response: GenerateContentResponse = await ai.models.generateContent({
                 model: 'gemini-2.0-flash-exp',
                 contents: [{

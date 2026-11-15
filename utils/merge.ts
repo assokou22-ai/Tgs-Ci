@@ -1,5 +1,6 @@
 
 import { EntityType, RepairTicket, HistoryEntry, SuggestionRecord } from '../types.ts';
+import { fieldMerge, hasFieldStamps } from './fieldMerge.ts';
 
 // Helper pour fusionner et dédoublonner des tableaux d'objets par une clé unique (ex: timestamp ou id)
 const mergeArrayByKey = <T extends Record<string, unknown>>(a: T[], b: T[], key: keyof T): T[] => {
@@ -107,6 +108,36 @@ const mergeRepairTicket = (local: RepairTicket, remote: RepairTicket): RepairTic
         ? newest.intakeImages
         : (oldest.intakeImages && oldest.intakeImages.length > 0 ? oldest.intakeImages : []);
 
+    // Services / Prestations chiffrées : On protège contre l'effacement accidentel lors de sauvegardes partielles ou clics d'options
+    const mergedServices = (Array.isArray(newest.services) && newest.services.length > 0)
+        ? newest.services
+        : (Array.isArray(oldest.services) && oldest.services.length > 0 ? oldest.services : (newest.services || oldest.services || []));
+
+    const mergedLigneVentes = (Array.isArray(newest.ligneVentes) && newest.ligneVentes.length > 0)
+        ? newest.ligneVentes
+        : (Array.isArray(oldest.ligneVentes) && oldest.ligneVentes.length > 0 ? oldest.ligneVentes : (newest.ligneVentes || oldest.ligneVentes || []));
+
+    // Fusion sécurisée des coûts financiers
+    const newestRepairCost = Number(newest.costs?.repair) || 0;
+    const oldestRepairCost = Number(oldest.costs?.repair) || 0;
+    const servicesSum = (Array.isArray(mergedServices) && mergedServices.length > 0)
+        ? mergedServices.reduce((acc, s) => acc + (Number(s.price) || 0), 0)
+        : 0;
+
+    const resolvedRepairCost = newestRepairCost > 0
+        ? newestRepairCost
+        : (servicesSum > 0 ? servicesSum : oldestRepairCost);
+
+    const mergedCosts = {
+        ...(oldest.costs || {}),
+        ...(newest.costs || {}),
+        diagnostic: newest.costs?.diagnostic !== undefined ? Number(newest.costs.diagnostic) : (Number(oldest.costs?.diagnostic) || 5000),
+        repair: resolvedRepairCost,
+        advance: (newest.costs?.advance !== undefined && Number(newest.costs.advance) > 0)
+            ? Number(newest.costs.advance)
+            : (Number(oldest.costs?.advance) || 0)
+    };
+
     const merged: RepairTicket = {
         ...newest,
         history: combinedHistory,
@@ -120,7 +151,9 @@ const mergeRepairTicket = (local: RepairTicket, remote: RepairTicket): RepairTic
         attachments: mergeArrayByKey(local.attachments || [], remote.attachments || [], 'id'),
         paymentsList: mergeArrayByKey(local.paymentsList || [], remote.paymentsList || [], 'id'),
         payments: mergeArrayByKey(local.payments || [], remote.payments || [], 'id'),
-        ligneVentes: (newest.ligneVentes && newest.ligneVentes.length > 0) ? newest.ligneVentes : (oldest.ligneVentes || []),
+        services: mergedServices,
+        ligneVentes: mergedLigneVentes,
+        costs: mergedCosts,
         isReopenedAfterCancellation: newest.isReopenedAfterCancellation !== undefined ? newest.isReopenedAfterCancellation : oldest.isReopenedAfterCancellation,
         cancellationReturnDate: newest.cancellationReturnDate || oldest.cancellationReturnDate,
         cancellationReturnNotes: newest.cancellationReturnNotes || oldest.cancellationReturnNotes,
@@ -156,6 +189,11 @@ const mergeRepairTicket = (local: RepairTicket, remote: RepairTicket): RepairTic
 export const mergeUpdates = (entity: EntityType, local: unknown, remote: unknown): unknown => {
     if (!local) return remote; 
     if (!remote) return local; 
+
+    // Nouvelles données horodatées champ par champ : fusion précise et symétrique
+    if (entity !== 'suggestions' && (hasFieldStamps(local) || hasFieldStamps(remote))) {
+        return fieldMerge(local, remote);
+    }
 
     if (entity === 'ticket') {
         return mergeRepairTicket(local as RepairTicket, remote as RepairTicket);

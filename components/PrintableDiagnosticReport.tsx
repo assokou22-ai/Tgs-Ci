@@ -16,10 +16,13 @@ const PrintableDiagnosticReport: React.FC<PrintableDiagnosticReportProps> = ({ t
     });
   };
 
-  const hasLongFormDiagnostic = !!(ticket.customFields?.diagnostic || ticket.customFields?.constatsParticuliers);
-  const constatsLen = (ticket.customFields?.constatsParticuliers || '').trim().length;
-  const diagLen = (ticket.customFields?.diagnostic || '').trim().length;
-  const notesLen = (ticket.technicianNotes || '').trim().length;
+  const legacy = ticket as unknown as { diagnosis?: string; diagnostic?: string; initialDiagnosis?: string; techNotes?: string; photos?: string[]; inspectionPhotos?: string[] };
+  const legacyDiag = legacy.diagnosis || legacy.diagnostic || legacy.initialDiagnosis || ticket.customFields?.diagnostic || ticket.customFields?.technicalVerdict || '';
+  const constatsText = ticket.customFields?.constatsParticuliers || ticket.customFields?.constats || ticket.customFields?.symptomes || '';
+  const hasLongFormDiagnostic = !!(legacyDiag || constatsText);
+  const constatsLen = constatsText.trim().length;
+  const diagLen = legacyDiag.trim().length;
+  const notesLen = (ticket.technicianNotes || legacy.techNotes || '').trim().length;
   const totalTextLen = constatsLen + diagLen + notesLen;
 
   // Détection intelligente du volume d'information
@@ -124,20 +127,20 @@ const PrintableDiagnosticReport: React.FC<PrintableDiagnosticReportProps> = ({ t
             <div style={{ marginBottom: cfg.sectionMarginBottom }}>
               <h2 style={{ fontSize: cfg.sectionTitleSize, fontWeight: '900', textTransform: 'uppercase', borderBottom: '1pt solid #000', paddingBottom: '0.8mm', marginBottom: '1.5mm' }}>Synthèse de l'Expertise Technique</h2>
               
-              {ticket.customFields?.constatsParticuliers && (
+              {constatsText && (
                   <div style={{ marginBottom: '1.5mm' }}>
                       <div style={{ fontSize: cfg.sectionTitleSize, fontWeight: 'bold', color: '#64748B', textTransform: 'uppercase', marginBottom: '0.5mm' }}>🔍 CONSTATS PARTICULIERS :</div>
                       <div style={{ fontSize: cfg.sectionTextSize, backgroundColor: '#F8FAFC', padding: cfg.sectionPadding, border: '0.5pt solid #CBD5E1', borderRadius: '1mm', whiteSpace: 'pre-wrap', lineHeight: '1.3' }}>
-                          {ticket.customFields.constatsParticuliers}
+                          {constatsText}
                       </div>
                   </div>
               )}
 
-              {ticket.customFields?.diagnostic && (
+              {legacyDiag && (
                   <div style={{ marginBottom: '1.5mm' }}>
                       <div style={{ fontSize: cfg.sectionTitleSize, fontWeight: 'bold', color: '#64748B', textTransform: 'uppercase', marginBottom: '0.5mm' }}>🧪 RÉSUMÉ DU DIAGNOSTIC :</div>
                       <div style={{ fontSize: cfg.sectionTextSize, backgroundColor: '#F0F7FF', padding: cfg.sectionPadding, border: '0.5pt solid #BED4EB', borderRadius: '1mm', whiteSpace: 'pre-wrap', fontWeight: '500', lineHeight: '1.3' }}>
-                          {ticket.customFields.diagnostic}
+                          {legacyDiag}
                       </div>
                   </div>
               )}
@@ -235,11 +238,15 @@ const PrintableDiagnosticReport: React.FC<PrintableDiagnosticReportProps> = ({ t
           </table>
         </>
 
-        {/* CLICHÉS PHOTOGRAPHIQUES DU RAPPORT DE DIAGNOSTIC */}
-        {((ticket.diagnosticImages && ticket.diagnosticImages.length > 0) || (ticket.intakeImages && ticket.intakeImages.length > 0)) && (() => {
-          const imgs = (ticket.diagnosticImages && ticket.diagnosticImages.length > 0) 
-            ? ticket.diagnosticImages 
-            : (ticket.intakeImages || []);
+        {/* CLICHÉS PHOTOGRAPHIQUES DU RAPPORT DE DIAGNOSTIC (Strictement réservé aux photos techniques de diagnostic) */}
+        {(() => {
+          const imgs: string[] = Array.from(new Set([
+            ...(Array.isArray(ticket.diagnosticImages) ? ticket.diagnosticImages : []),
+            ...(Array.isArray(ticket.diagnosticSheetB?.images) ? ticket.diagnosticSheetB.images : [])
+          ])).filter(Boolean);
+
+          if (imgs.length === 0) return null;
+
           return (
             <div style={{ marginBottom: cfg.sectionMarginBottom }}>
               <div style={{ fontSize: cfg.sectionTitleSize, fontWeight: '900', textTransform: 'uppercase', borderBottom: '1pt solid #000', paddingBottom: '0.6mm', marginBottom: '1.2mm', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
