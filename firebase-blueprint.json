@@ -152,9 +152,88 @@
         "id": { "type": "string" },
         "date": { "type": "string" },
         "createdAt": { "type": "string" },
-        "payload": { "type": "string" }
+        "payload": { "type": "string" },
+        "payloadRef": { "type": "string" }
       },
-      "required": ["id", "date", "createdAt", "payload"]
+      "required": ["id", "date", "createdAt"]
+    },
+    "engagementSav": {
+      "title": "SAV Engagement",
+      "description": "After-sales warranty commitment",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "numeroFicheOrigine": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id"]
+    },
+    "mouvementStock": {
+      "title": "Stock Movement",
+      "description": "Detailed stock reservation and exit movement",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "article_stock_id": { "type": "string" },
+        "type_mouvement": { "type": "string" },
+        "quantite": { "type": "number" },
+        "date_mouvement": { "type": "string" }
+      },
+      "required": ["id", "article_stock_id", "type_mouvement"]
+    },
+    "deviceSession": {
+      "title": "Device Session",
+      "description": "Device connection audit and clock calibration",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "email": { "type": "string" },
+        "timestamp": { "type": "string" }
+      },
+      "required": ["id"]
+    },
+    "member": {
+      "title": "Authorized Member",
+      "description": "Authorized team member account",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string" },
+        "role": { "type": "string" },
+        "active": { "type": "boolean" }
+      },
+      "required": ["email", "role", "active"]
+    },
+    "counter": {
+      "title": "Ticket Counter",
+      "description": "Sequential numbering counters and reservations",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "last": { "type": "number" },
+        "ticketId": { "type": "string" }
+      },
+      "required": ["id"]
+    },
+    "mediaChunk": {
+      "title": "Media Chunk",
+      "description": "Chunked images, audio, video or large backup payloads",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "chunks": { "type": "number" },
+        "d": { "type": "string" }
+      },
+      "required": ["id"]
+    },
+    "settings": {
+      "title": "Settings",
+      "description": "Application settings and API server discovery",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id"]
     }
   },
   "firestore": {
@@ -209,6 +288,34 @@
     "dailyBackups/{backupId}": {
       "schema": "dailyBackup",
       "description": "Automated closing-hour backups database"
+    },
+    "engagementsSav/{savId}": {
+      "schema": "engagementSav",
+      "description": "After-sales warranty commitments"
+    },
+    "mouvementsStock/{mouvementId}": {
+      "schema": "mouvementStock",
+      "description": "Stock reservation and usage movements"
+    },
+    "deviceSessions/{sessionId}": {
+      "schema": "deviceSession",
+      "description": "Device session history and clock calibration"
+    },
+    "members/{memberEmail}": {
+      "schema": "member",
+      "description": "Authorized team members by lowercase email"
+    },
+    "counters/{counterId}": {
+      "schema": "counter",
+      "description": "Sequential ticket counters and temporary reservations"
+    },
+    "media/{mediaId}": {
+      "schema": "mediaChunk",
+      "description": "Chunked media blobs outside ticket documents"
+    },
+    "settings/{settingsId}": {
+      "schema": "settings",
+      "description": "Global workshop settings and API origin registry"
     }
   }
 }

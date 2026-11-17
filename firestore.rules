@@ -12,9 +12,9 @@ service cloud.firestore {
       return request.auth != null;
     }
 
-    // Propriétaires de l'atelier (accès total, même sans fiche membre)
+    // Propriétaires de l'atelier (e-mail vérifié requis, accès total même sans fiche membre)
     function isOwner() {
-      return isSignedIn() && ('email' in request.auth.token) && (
+      return emailVerified() && (
         request.auth.token.email.lower() == "assokou22@gmail.com" ||
         request.auth.token.email.lower() == "thegoodstore@gmail.com" ||
         request.auth.token.email.lower() == "thegoodstoreci@gmail.com"
@@ -243,21 +243,23 @@ service cloud.firestore {
 
     // Équipe autorisée (une fiche par adresse e-mail en minuscules)
     match /members/{memberEmail} {
-      allow get: if isSignedIn() && (isVerifiedUser() || ('email' in request.auth.token && request.auth.token.email.lower() == memberEmail));
+      allow get: if isVerifiedUser() || (emailVerified() && request.auth.token.email.lower() == memberEmail);
       allow list: if isVerifiedUser();
       allow create, update, delete: if isAdmin() && isValidId(memberEmail);
     }
 
     // Compteurs de numéros de dossier et réservations
     match /counters/{counterId} {
-      allow get, list: if isVerifiedUser();
+      allow get: if isVerifiedUser() && isValidId(counterId);
+      allow list: if isVerifiedUser();
       allow create, update: if isVerifiedUser() && isValidId(counterId);
       allow delete: if isAdmin();
     }
 
     // Photos et fichiers lourds (découpés en morceaux < 1 Mo)
     match /media/{mediaId} {
-      allow get, list: if isVerifiedUser();
+      allow get: if isVerifiedUser() && isValidId(mediaId);
+      allow list: if isVerifiedUser();
       allow create, update: if isVerifiedUser() && isValidId(mediaId);
       allow delete: if isAdmin();
     }

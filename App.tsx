@@ -12,13 +12,19 @@ import CustomStyleInjector from './components/CustomStyleInjector.tsx';
 import useRepairTickets from './hooks/useRepairTickets.ts';
 import useAppointments from './hooks/useAppointments.ts';
 import { useTheme } from './hooks/useTheme.ts';
-import { initializeSyncService, processSyncQueue } from './services/syncService.ts';
+import {
+    initializeSyncService,
+    processSyncQueue,
+    verifyLocalVsCloudTickets,
+    triggerAutoCatchUpPush,
+} from './services/syncService.ts';
 import { initializeRealtimeSync } from './services/realtimeService.ts';
 import { dbAddDeviceSession } from './services/dbService.ts';
 import LoginScreen from './components/LoginScreen.tsx';
 import { checkAndTriggerAutoDailyBackup } from './services/backupService.ts';
 import { parseUserAgent, fetchConnectionDetails } from './utils/connectionHelper.ts';
 import { auth } from './services/firebase.ts';
+import { onAuthStateChanged } from 'firebase/auth';
 import { useGoogleDriveAutoSync } from './hooks/useGoogleDriveAutoSync.ts';
 import { DeviceProfileProvider } from './context/DeviceProfileContext.tsx';
 
@@ -156,9 +162,32 @@ const AppContent: React.FC = () => {
             };
             recordSession().catch(console.error);
 
+            const unsubscribeAuth = onAuthStateChanged(auth, (fbUser) => {
+                if (fbUser) {
+                    initializeSyncService()
+                        .then(() => {
+                            if (navigator.onLine) {
+                                triggerAutoCatchUpPush('auth-ready').catch(console.error);
+                            }
+                        })
+                        .catch(console.error);
+                } else {
+                    verifyLocalVsCloudTickets().catch(console.error);
+                }
+            });
+
+            // Vérification honnête locale vs Cloud toutes les 5 minutes (nettoyée au démontage)
+            const integrityInterval = window.setInterval(() => {
+                verifyLocalVsCloudTickets().catch(console.error);
+            }, 5 * 60 * 1000);
+
             const handleSyncRequest = () => processSyncQueue().catch(console.error);
             window.addEventListener('requestsync', handleSyncRequest);
-            return () => window.removeEventListener('requestsync', handleSyncRequest);
+            return () => {
+                window.removeEventListener('requestsync', handleSyncRequest);
+                window.clearInterval(integrityInterval);
+                unsubscribeAuth();
+            };
         }
     }, [storeId]);
 

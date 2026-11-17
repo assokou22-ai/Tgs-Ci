@@ -2,11 +2,13 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { useFirebase } from '../context/FirebaseContext.tsx';
 import { 
     backupData, 
+    backupUniqueMasterArchive,
     compileFullBackupData, 
     restoreFullDatabase, 
     mergeDatabaseFromFile, 
     getDatabaseSummary 
 } from '../services/backupService.ts';
+import BackupPeriodRestoreModal from './BackupPeriodRestoreModal.tsx';
 import { 
     uploadBackupToDrive, 
     listBackupsFromDrive, 
@@ -15,6 +17,8 @@ import {
     DriveBackupFile 
 } from '../services/googleWorkspaceService.ts';
 import useDeviceHistory from '../hooks/useDeviceHistory.ts';
+import { useSyncStatus } from '../hooks/useSyncStatus.ts';
+import { pushMissingLocalTicketsToCloud } from '../services/syncService.ts';
 import { useToastContext } from '../context/ToastContext.tsx';
 import { 
     addSyncLog, 
@@ -64,13 +68,25 @@ const GoogleSyncManager: React.FC = () => {
         toggleAutoSync 
     } = useFirebase();
     const { sessions, loading: loadingSessions } = useDeviceHistory();
+    const {
+        pendingChanges: cloudPendingChanges,
+        pendingTickets: cloudPendingTickets,
+        unsyncedTickets: cloudUnsyncedTickets,
+        lastPushSucceeded: cloudLastPushSucceeded,
+        lastError: cloudLastError,
+        isQuotaExceeded: cloudQuotaExceeded,
+    } = useSyncStatus();
+    const cloudUnsentCount = Math.max(cloudPendingTickets, cloudUnsyncedTickets.length, cloudPendingChanges);
+    const hasUnsentCloudTickets = cloudUnsyncedTickets.length > 0 || cloudPendingChanges > 0;
+    const hasHardCloudError = Boolean(cloudLastError) || Boolean(cloudQuotaExceeded) || (!cloudLastPushSucceeded && !hasUnsentCloudTickets);
+    const hasCloudPendingOrError = hasUnsentCloudTickets || hasHardCloudError;
 
     const [activeTab, setActiveTab] = useState<'sync' | 'security' | 'logs'>('sync');
     const { settings, updateSettings } = useAppSettings();
     const emailsList = settings.syncEmails || ['contact@tgs-ci.com'];
 
     const [syncLogs, setSyncLogs] = useState<SyncLogEntry[]>([]);
-    const [localStats, setLocalStats] = useState({ tickets: 0, stock: 0, finance: 0, documents: 0 });
+    const [localStats, setLocalStats] = useState<{ tickets: number; stock: number; finance: number; documents: number; coverageLabel?: string }>({ tickets: 0, stock: 0, finance: 0, documents: 0 });
     const [backupEmail, setBackupEmail] = useState('');
     const [driveBackups, setDriveBackups] = useState<DriveBackupFile[]>([]);
     
@@ -91,6 +107,7 @@ const GoogleSyncManager: React.FC = () => {
     // Modal Confirmation Trackers
     const [restoreTargetFile, setRestoreTargetFile] = useState<DriveBackupFile | null>(null);
     const [restoreMode, setRestoreMode] = useState<'merge' | 'overwrite' | null>(null);
+    const [periodModalArchive, setPeriodModalArchive] = useState<{ name: string; data: unknown } | null>(null);
 
     // Application Backup Identifier (ex: INVESTISSEMENT)
     const [appIdentifier, setAppIdentifier] = useState<string>(() => getBackupAppIdentifier());
@@ -384,7 +401,34 @@ const GoogleSyncManager: React.FC = () => {
         }
     };
 
-    // 4. Offline Restore Upload
+    const handleDownloadUniqueMasterFile = async () => {
+        setIsLocalDownloading(true);
+        try {
+            const res = await backupUniqueMasterArchive();
+            showToast(`Backup Unique créé (${res.coverage.coverageLabel} · ${res.coverage.totalTickets} fiches) !`, "success");
+            addSyncLog(
+                'Offline JSON',
+                'Fichier Local',
+                'success',
+                user?.email || 'Administrateur',
+                `Backup Unique généré (${res.coverage.coverageLabel}): "${res.fileName}"`
+            );
+        } catch (e: unknown) {
+            const errMsg = e instanceof Error ? e.message : String(e);
+            showToast("Échec de la création du Backup Unique.", "error");
+            addSyncLog(
+                'Offline JSON',
+                'Fichier Local',
+                'error',
+                user?.email || 'Administrateur',
+                `Échec Backup Unique : ${errMsg}`
+            );
+        } finally {
+            setIsLocalDownloading(false);
+        }
+    };
+
+    // 4. Offline Restore Upload -> ouvre la fenêtre de sélection de période (2/3/4/5 mois ou tout + recherche client)
     const handleLocalRestoreUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
         const file = event.target.files?.[0];
         if (!file) return;
@@ -393,41 +437,11 @@ const GoogleSyncManager: React.FC = () => {
         reader.onload = async (e) => {
             try {
                 const rawParsed = JSON.parse(e.target?.result as string);
-                
-                // Confirm with user
-                const go = window.confirm(`Fusionner l'archive sélectionnée "${file.name}" avec votre base locale actuelle ? (Recommandé : Fusion Delta)`);
-                if (!go) return;
-
-                setIsProcessingRestore(true);
-                setActionProgressMsg("Intégration et fusion des fiches...");
-                await mergeDatabaseFromFile(rawParsed, (status) => setActionProgressMsg(status));
-                showToast("Base de données fusionnée avec succès à partir du fichier local !", "success");
-                
-                addSyncLog(
-                    'Offline JSON',
-                    'Restauration (Import)',
-                    'success',
-                    user?.email || 'Administrateur',
-                    `Base restaurée/fusionnée à partir de l'archive locale: "${file.name}"`
-                );
-
-                refreshLocalStats();
-                setTimeout(() => window.location.reload(), 1000);
-            } catch (err: unknown) {
-                const errMsg = err instanceof Error ? err.message : String(err);
+                setPeriodModalArchive({ name: file.name, data: rawParsed });
+            } catch {
                 showToast("Fichier invalide ou corrompu.", "error");
-                
-                addSyncLog(
-                    'Offline JSON',
-                    'Restauration (Import)',
-                    'error',
-                    user?.email || 'Administrateur',
-                    `Échec d'importation d'archive locale "${file.name}": ${errMsg}`
-                );
-                window.dispatchEvent(new CustomEvent('syncerror', { detail: { message: `Échec Restauration locale: ${errMsg}` } }));
             } finally {
-                setIsProcessingRestore(false);
-                setActionProgressMsg('');
+                event.target.value = '';
             }
         };
         reader.readAsText(file);
@@ -437,6 +451,22 @@ const GoogleSyncManager: React.FC = () => {
     const triggerDriveRestore = (file: DriveBackupFile, mode: 'merge' | 'overwrite') => {
         setRestoreTargetFile(file);
         setRestoreMode(mode);
+    };
+
+    const handleOpenDriveWithPeriodSelector = async (file: DriveBackupFile) => {
+        if (!googleAccessToken) return;
+        setIsProcessingRestore(true);
+        setActionProgressMsg(`Téléchargement de "${file.name}" pour choix de période...`);
+        try {
+            const data = await downloadBackupFromDrive(googleAccessToken, file.id);
+            setPeriodModalArchive({ name: file.name, data });
+        } catch (e: unknown) {
+            const errMsg = e instanceof Error ? e.message : String(e);
+            showToast(`Impossible d'ouvrir l'archive Drive : ${errMsg}`, "error");
+        } finally {
+            setIsProcessingRestore(false);
+            setActionProgressMsg('');
+        }
     };
 
     const handleConfirmDriveRestore = async () => {
@@ -680,31 +710,73 @@ const GoogleSyncManager: React.FC = () => {
                                     <Cloud className="w-4 h-4 text-blue-500" /> Paramètres Google Drive
                                 </h3>
                                 {/* Discrete Status Indicator */}
-                                {driveSyncStatus === 'synced' && (
-                                    <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-400 bg-emerald-500/10 border border-emerald-500/30 px-2.5 py-0.5 rounded-full flex items-center gap-1.5">
-                                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
-                                        Synchronisé
+                                {hasCloudPendingOrError ? (
+                                    <span
+                                        className={`text-[10px] font-bold uppercase tracking-wider px-2.5 py-0.5 rounded-full flex items-center gap-1.5 border ${
+                                            hasHardCloudError
+                                                ? 'text-red-400 bg-red-500/10 border-red-500/30'
+                                                : 'text-orange-400 bg-orange-500/10 border-orange-500/30'
+                                        }`}
+                                        title={cloudLastError || ''}
+                                    >
+                                        <span className={`w-1.5 h-1.5 rounded-full animate-pulse ${hasHardCloudError ? 'bg-red-400' : 'bg-orange-400'}`}></span>
+                                        {hasUnsentCloudTickets
+                                            ? `${cloudUnsentCount} fiche(s) non envoyée(s)`
+                                            : 'Erreur sync Cloud'}
                                     </span>
-                                )}
-                                {driveSyncStatus === 'syncing' && (
-                                    <span className="text-[10px] font-bold uppercase tracking-wider text-blue-400 bg-blue-500/10 border border-blue-500/30 px-2.5 py-0.5 rounded-full flex items-center gap-1.5">
-                                        <RefreshCw className="w-3 h-3 animate-spin text-blue-400" />
-                                        Sync en cours
-                                    </span>
-                                )}
-                                {driveSyncStatus === 'offline_pending' && (
-                                    <span className="text-[10px] font-bold uppercase tracking-wider text-amber-400 bg-amber-500/10 border border-amber-500/30 px-2.5 py-0.5 rounded-full flex items-center gap-1.5">
-                                        <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse"></span>
-                                        En attente hors ligne ({driveMetadata.pendingCount || 1})
-                                    </span>
-                                )}
-                                {driveSyncStatus === 'action_required' && (
-                                    <span className="text-[10px] font-bold uppercase tracking-wider text-orange-400 bg-orange-500/10 border border-orange-500/30 px-2.5 py-0.5 rounded-full flex items-center gap-1.5">
-                                        <span className="w-1.5 h-1.5 rounded-full bg-orange-400"></span>
-                                        Action requise
-                                    </span>
+                                ) : (
+                                    <>
+                                        {driveSyncStatus === 'synced' && (
+                                            <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-400 bg-emerald-500/10 border border-emerald-500/30 px-2.5 py-0.5 rounded-full flex items-center gap-1.5">
+                                                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+                                                Synchronisé
+                                            </span>
+                                        )}
+                                        {driveSyncStatus === 'syncing' && (
+                                            <span className="text-[10px] font-bold uppercase tracking-wider text-blue-400 bg-blue-500/10 border border-blue-500/30 px-2.5 py-0.5 rounded-full flex items-center gap-1.5">
+                                                <RefreshCw className="w-3 h-3 animate-spin text-blue-400" />
+                                                Sync en cours
+                                            </span>
+                                        )}
+                                        {driveSyncStatus === 'offline_pending' && (
+                                            <span className="text-[10px] font-bold uppercase tracking-wider text-amber-400 bg-amber-500/10 border border-amber-500/30 px-2.5 py-0.5 rounded-full flex items-center gap-1.5">
+                                                <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse"></span>
+                                                En attente hors ligne ({driveMetadata.pendingCount || 1})
+                                            </span>
+                                        )}
+                                        {driveSyncStatus === 'action_required' && (
+                                            <span className="text-[10px] font-bold uppercase tracking-wider text-orange-400 bg-orange-500/10 border border-orange-500/30 px-2.5 py-0.5 rounded-full flex items-center gap-1.5">
+                                                <span className="w-1.5 h-1.5 rounded-full bg-orange-400"></span>
+                                                Action requise
+                                            </span>
+                                        )}
+                                    </>
                                 )}
                             </div>
+
+                            {cloudUnsyncedTickets.length > 0 && (
+                                <div className="p-3 bg-orange-950/25 border border-orange-500/30 rounded-xl space-y-2">
+                                    <div className="flex items-center justify-between gap-2">
+                                        <span className="text-[10px] font-black uppercase tracking-wider text-orange-300">
+                                            {cloudUnsentCount} fiche(s) non envoyée(s)
+                                        </span>
+                                        <button
+                                            type="button"
+                                            onClick={() => pushMissingLocalTicketsToCloud().catch(console.error)}
+                                            className="px-2.5 py-1 rounded-lg bg-orange-500 hover:bg-orange-400 text-black font-black text-[9px] uppercase tracking-wider"
+                                        >
+                                            Envoyer
+                                        </button>
+                                    </div>
+                                    <ul className="space-y-1 max-h-28 overflow-y-auto pr-1 text-[10px] text-orange-200 font-mono">
+                                        {cloudUnsyncedTickets.map((t) => (
+                                            <li key={t.id} className="truncate">
+                                                <strong>{t.id}</strong> — {t.clientName} ({t.macModel}){t.isProvisional ? ' [Provisoire]' : ''}
+                                            </li>
+                                        ))}
+                                    </ul>
+                                </div>
+                            )}
 
                             {user || driveMetadata.driveConnected ? (
                                 <div className="space-y-4">
@@ -744,9 +816,9 @@ const GoogleSyncManager: React.FC = () => {
                                                 }
                                             </span>
                                         </div>
-                                        {driveMetadata.lastError && (
-                                            <p className="text-[10px] text-amber-400/90 leading-tight pt-1 border-t border-white/5">
-                                                Note : {driveMetadata.lastError}
+                                        {(cloudLastError || driveMetadata.lastError) && (
+                                            <p className="text-[10px] text-red-400 leading-tight pt-1 border-t border-white/5 font-semibold">
+                                                Incident Cloud : {cloudLastError || driveMetadata.lastError}
                                             </p>
                                         )}
                                     </div>
@@ -1074,7 +1146,14 @@ const GoogleSyncManager: React.FC = () => {
                                                                 )}
                                                             </div>
                                                         </div>
-                                                        <div className="flex gap-2 self-end sm:self-auto shrink-0">
+                                                        <div className="flex flex-wrap gap-2 self-end sm:self-auto shrink-0">
+                                                            <button
+                                                                onClick={() => handleOpenDriveWithPeriodSelector(file)}
+                                                                className="px-3 py-1.5 bg-emerald-600/20 hover:bg-emerald-600 text-emerald-300 hover:text-white rounded-lg text-xs font-bold uppercase transition-all"
+                                                                title="Choisir la période (2, 3, 4, 5 mois ou tout) ou rechercher un client ancien"
+                                                            >
+                                                                Choisir Période
+                                                            </button>
                                                             <button
                                                                 onClick={() => triggerDriveRestore(file, 'merge')}
                                                                 className="px-3 py-1.5 bg-blue-600/20 hover:bg-blue-600 text-blue-400 hover:text-white rounded-lg text-xs font-bold uppercase transition-all"
@@ -1116,9 +1195,14 @@ const GoogleSyncManager: React.FC = () => {
                                 <p className="text-xs text-gray-400 mt-1">
                                     Archive locale actuelle : <strong className="text-blue-400">{localStats.tickets}</strong> fiches, <strong className="text-emerald-400">{localStats.stock}</strong> articles, <strong className="text-amber-400">{localStats.finance}</strong> écritures comptables, <strong className="text-purple-400">{localStats.documents}</strong> documents générés.
                                 </p>
+                                {localStats.coverageLabel && (
+                                    <p className="text-xs font-semibold text-emerald-400 mt-1">
+                                        Couverture : {localStats.coverageLabel}
+                                    </p>
+                                )}
                             </div>
 
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                                 <button
                                     onClick={handleDownloadLocalFile}
                                     disabled={isLocalDownloading}
@@ -1133,12 +1217,26 @@ const GoogleSyncManager: React.FC = () => {
                                     <p className="text-[11px] text-gray-400 font-medium">Génère instantanément un fichier <code className="text-emerald-300 font-mono text-[10px]">{appIdentifier}_...json</code> dans vos téléchargements.</p>
                                 </button>
 
+                                <button
+                                    onClick={handleDownloadUniqueMasterFile}
+                                    disabled={isLocalDownloading}
+                                    className="p-4 bg-emerald-950/30 hover:bg-emerald-950/50 disabled:opacity-50 border border-emerald-500/30 rounded-xl text-left space-y-1.5 group transition-all"
+                                >
+                                    <div className="flex items-center gap-2">
+                                        <Download className={`w-4 h-4 text-emerald-400 ${isLocalDownloading ? 'animate-bounce' : 'group-hover:scale-110'} transition-transform`} />
+                                        <span className="text-xs font-bold text-emerald-300 uppercase tracking-wider">
+                                            Backup Unique (Complet)
+                                        </span>
+                                    </div>
+                                    <p className="text-[11px] text-gray-400 font-medium">Archive complète datée du plus ancien dossier jusqu&apos;à aujourd&apos;hui.</p>
+                                </button>
+
                                 <label className="p-4 bg-gray-900/30 hover:bg-gray-900/60 border border-gray-700 rounded-xl text-left space-y-1.5 group cursor-pointer transition-all">
                                     <div className="flex items-center gap-2">
-                                        <Upload className="w-4 h-4 text-emerald-400 group-hover:scale-110 transition-transform" />
-                                        <span className="text-xs font-bold text-white uppercase tracking-wider font-mono">Restaurer fichier .json</span>
+                                        <Upload className="w-4 h-4 text-purple-400 group-hover:scale-110 transition-transform" />
+                                        <span className="text-xs font-bold text-white uppercase tracking-wider font-mono">Restaurer / Période .json</span>
                                     </div>
-                                    <p className="text-[11px] text-gray-400">Sélectionnez un fichier .json local sur votre machine pour fusionner les fiches de dépôt.</p>
+                                    <p className="text-[11px] text-gray-400">Ouvrir un fichier .json et restaurer 2, 3, 4, 5 mois, tout ou un dossier précis.</p>
                                     <input 
                                         type="file" 
                                         accept=".json" 
@@ -1330,6 +1428,25 @@ const GoogleSyncManager: React.FC = () => {
                     : `ATTENTION : Vous vous apprêtez à remplacer l'intégralité de la base de données locale par celle contenue dans "${restoreTargetFile?.name}". Toute modification locale non sauvegardée avant la restauration sera définitivement perdue.`
                 }
                 confirmText={restoreMode === 'merge' ? "Oui, Synchroniser et Fusionner" : "Oui, Écraser tout"}
+            />
+
+            <BackupPeriodRestoreModal
+                isOpen={!!periodModalArchive}
+                fileName={periodModalArchive?.name || ''}
+                rawBackupData={periodModalArchive?.data || null}
+                onClose={() => setPeriodModalArchive(null)}
+                onCompleted={(_, summary) => {
+                    addSyncLog(
+                        'Offline JSON',
+                        'Restauration (Import)',
+                        'success',
+                        user?.email || 'Administrateur',
+                        `Restauration sélective depuis "${periodModalArchive?.name || 'archive'}": ${summary}`
+                    );
+                    setPeriodModalArchive(null);
+                    refreshLocalStats();
+                    setTimeout(() => window.location.reload(), 1000);
+                }}
             />
         </div>
     );

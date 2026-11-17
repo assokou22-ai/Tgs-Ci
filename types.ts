@@ -745,6 +745,7 @@ export interface BackupData {
     externalPurchases?: ExternalPurchase[];
     appSettings?: SerializedAppSettings;
     engagementsSav?: EngagementSav[];
+    mouvementsStock?: MouvementStock[];
 }
 
 export type EntityType = 

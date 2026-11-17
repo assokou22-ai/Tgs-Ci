@@ -122,7 +122,8 @@ export const resolveIncrementalSince = (
         const hadPriorSync =
             typeof localStorage !== 'undefined' &&
             Boolean(localStorage.getItem('tgs_requeue_recent_v1'));
-        if (!hadPriorSync || localItems.length < 30) {
+        const minItemsToSeed = collectionName === 'tickets' ? 10 : 1;
+        if (!hadPriorSync || localItems.length < minItemsToSeed) {
             return null;
         }
         let maxLocalMs = 0;

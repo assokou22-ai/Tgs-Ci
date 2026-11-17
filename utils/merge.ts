@@ -86,9 +86,10 @@ const mergeRepairTicket = (local: RepairTicket, remote: RepairTicket): RepairTic
             diagnosticPoints: (newest.diagnosticSheetB.diagnosticPoints && newest.diagnosticSheetB.diagnosticPoints.some(p => p.notes))
                 ? newest.diagnosticSheetB.diagnosticPoints
                 : (oldest.diagnosticSheetB.diagnosticPoints || newest.diagnosticSheetB.diagnosticPoints || []),
-            images: (newest.diagnosticSheetB.images && newest.diagnosticSheetB.images.length > 0)
-                ? newest.diagnosticSheetB.images
-                : (oldest.diagnosticSheetB.images || [])
+            images: Array.from(new Set([
+                ...(Array.isArray(newest.diagnosticSheetB.images) ? newest.diagnosticSheetB.images : []),
+                ...(Array.isArray(oldest.diagnosticSheetB.images) ? oldest.diagnosticSheetB.images : []),
+            ].filter(Boolean)))
         };
     } else if (!mergedSheetB) {
         mergedSheetB = oldest.diagnosticSheetB;
@@ -99,14 +100,25 @@ const mergeRepairTicket = (local: RepairTicket, remote: RepairTicket): RepairTic
         ? newest.diagnosticReport
         : (oldest.diagnosticReport && oldest.diagnosticReport.length > 0 ? oldest.diagnosticReport : (newest.diagnosticReport || oldest.diagnosticReport || []));
 
-    // Images diagnostiques et images de réception : priorité à la version active qui contient des photos
-    const mergedDiagnosticImages = (newest.diagnosticImages && newest.diagnosticImages.length > 0)
-        ? newest.diagnosticImages
-        : (oldest.diagnosticImages && oldest.diagnosticImages.length > 0 ? oldest.diagnosticImages : []);
+    // Union sans doublon des photos (réception, diagnostic, restitution) pour ne jamais perdre de clichés
+    const unionImages = (a?: string[], b?: string[]): string[] => {
+        const out: string[] = [];
+        const seen = new Set<string>();
+        for (const list of [a, b]) {
+            if (!Array.isArray(list)) continue;
+            for (const item of list) {
+                if (typeof item === 'string' && item && !seen.has(item)) {
+                    seen.add(item);
+                    out.push(item);
+                }
+            }
+        }
+        return out;
+    };
 
-    const mergedIntakeImages = (newest.intakeImages && newest.intakeImages.length > 0)
-        ? newest.intakeImages
-        : (oldest.intakeImages && oldest.intakeImages.length > 0 ? oldest.intakeImages : []);
+    const mergedDiagnosticImages = unionImages(newest.diagnosticImages, oldest.diagnosticImages);
+    const mergedIntakeImages = unionImages(newest.intakeImages, oldest.intakeImages);
+    const mergedRestitutionPhotos = unionImages(newest.restitutionPhotos, oldest.restitutionPhotos);
 
     // Services / Prestations chiffrées : On protège contre l'effacement accidentel lors de sauvegardes partielles ou clics d'options
     const mergedServices = (Array.isArray(newest.services) && newest.services.length > 0)
@@ -145,6 +157,7 @@ const mergeRepairTicket = (local: RepairTicket, remote: RepairTicket): RepairTic
         diagnosticReport: mergedDiagnosticReport,
         diagnosticImages: mergedDiagnosticImages,
         intakeImages: mergedIntakeImages,
+        ...(mergedRestitutionPhotos.length > 0 ? { restitutionPhotos: mergedRestitutionPhotos } : {}),
         printDiagnosticIntegrated: newest.printDiagnosticIntegrated || oldest.printDiagnosticIntegrated || Boolean(mergedDiagnosticReport.length > 0 || mergedDiagnosticImages.length > 0),
         showExpertiseB: newest.showExpertiseB || oldest.showExpertiseB || Boolean(mergedSheetB),
         clientSignature: newest.clientSignature || oldest.clientSignature,

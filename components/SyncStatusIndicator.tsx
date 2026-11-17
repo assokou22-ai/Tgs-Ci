@@ -6,7 +6,7 @@ import { useOnlineStatus } from '../hooks/useOnlineStatus.ts';
 import { useToastContext } from '../context/ToastContext.tsx';
 import { HardDrive, Cloud, CloudOff } from 'lucide-react';
 import { dbGetSyncQueue, dbGetStorageEstimate } from '../services/dbService.ts';
-import { processSyncQueue, syncFromCloud } from '../services/syncService.ts';
+import { processSyncQueue, syncFromCloud, pushMissingLocalTicketsToCloud } from '../services/syncService.ts';
 import { SyncQueueItem, EntityType } from '../types.ts';
 import { useFirebase } from '../context/FirebaseContext.tsx';
 import { useDeviceProfile } from '../context/DeviceProfileContext.tsx';
@@ -37,7 +37,7 @@ const SyncStatusIndicator: React.FC<SyncStatusIndicatorProps> = ({ compact }) =>
     const { user, authReady, googleAccessToken, signInWithGoogle, driveSyncStatus, driveMetadata } = useFirebase();
     const isOnline = useOnlineStatus();
     const quality = useNetworkQuality();
-    const { isSyncing, pendingChanges, lastError, isQuotaExceeded } = useSyncStatus();
+    const { isSyncing, pendingChanges, pendingTickets, unsyncedTickets, lastPushSucceeded, lastError, isQuotaExceeded } = useSyncStatus();
     const [isForcingSync, setIsForcingSync] = useState(false);
     const [isOpen, setIsOpen] = useState(false);
     const [queueItems, setQueueItems] = useState<SyncQueueItem[]>([]);
@@ -209,6 +209,10 @@ const SyncStatusIndicator: React.FC<SyncStatusIndicatorProps> = ({ compact }) =>
             if (!pushRes.ok) {
                 throw new Error(pushRes.error || "Échec de l'envoi local vers le Cloud.");
             }
+            const catchUp = await pushMissingLocalTicketsToCloud();
+            if (catchUp.failed.length > 0) {
+                throw new Error(`${catchUp.failed.length} fiche(s) en échec (${catchUp.failed[0].reason}).`);
+            }
             await syncFromCloud(true);
             showToast("Synchronisation complète réussie !", "success");
         } catch (error) {
@@ -296,8 +300,28 @@ const SyncStatusIndicator: React.FC<SyncStatusIndicatorProps> = ({ compact }) =>
     const connectionInfo = getConnectionQualityLabel();
 
     const isAuthMissing = authReady && !user;
-    const isRed = !isOnline || quality <= 1 || Boolean(isQuotaExceeded);
-    const isOrange = isOnline && !isRed && (isAuthMissing || Boolean(lastError) || quality === 2 || quality === 3 || isSyncing || isForcingSync || pendingChanges > 0);
+    const queuedTicketIds = new Set(
+        queueItems.filter(q => q.entity === 'ticket').map(q => q.entityId.trim().toUpperCase()),
+    );
+    const unsyncedOnlyTickets = unsyncedTickets.filter(
+        u => !queuedTicketIds.has(u.id.trim().toUpperCase()),
+    );
+    const totalQueueAndUnsynced = queueItems.length + unsyncedOnlyTickets.length;
+    const unsentCount = Math.max(pendingTickets, unsyncedTickets.length, pendingChanges, totalQueueAndUnsynced);
+    const hasUnsentTickets = unsentCount > 0;
+    const hasUnsentOrError = hasUnsentTickets || !lastPushSucceeded || Boolean(lastError) || Boolean(isQuotaExceeded);
+    const isActivelySending = isSyncing || isForcingSync;
+    const isStorageWarning = storageEstimate?.percent ? storageEstimate.percent > 80 : false;
+    const isRed =
+        !isOnline ||
+        quality <= 1 ||
+        Boolean(isQuotaExceeded) ||
+        Boolean(lastError) ||
+        (!isActivelySending && !lastPushSucceeded && !hasUnsentTickets);
+    const isOrange =
+        isOnline &&
+        !isRed &&
+        (hasUnsentTickets || isAuthMissing || quality === 2 || quality === 3 || isActivelySending);
 
     const renderBars = () => {
         if (!isOnline) {
@@ -320,7 +344,6 @@ const SyncStatusIndicator: React.FC<SyncStatusIndicatorProps> = ({ compact }) =>
         );
     };
 
-    const isStorageWarning = storageEstimate?.percent ? storageEstimate.percent > 80 : false;
     const finalIsRed = isRed || isStorageWarning;
     const finalIsOrange = isOrange && !finalIsRed;
 
@@ -375,10 +398,12 @@ const SyncStatusIndicator: React.FC<SyncStatusIndicatorProps> = ({ compact }) =>
                     }`}
                     title={
                         finalIsRed
-                        ? "Connexion interrompue ou signal trop faible (Rouge). Cliquez pour inspecter."
+                        ? (pendingChanges > 0
+                            ? `${unsentCount} fiche(s) non envoyée(s)${lastError ? ` — ${lastError}` : ''}. Cliquez pour inspecter.`
+                            : (lastError || "Incident réseau / synchronisation Cloud (Rouge). Cliquez pour inspecter."))
                         : finalIsOrange
-                        ? `${pendingChanges} modifications en attente ou signal instable/sync active (Orange). Cliquez pour inspecter.`
-                        : "Connexion sécurisée, signal stable, entièrement synchronisé (Vert). Cliquez pour ouvrir."
+                        ? `${pendingChanges} modification(s) en cours de transfert / signal moyen (Orange). Cliquez pour inspecter.`
+                        : "Connexion sécurisée, file vide et dernier envoi confirmé (Vert). Cliquez pour ouvrir."
                     }
                 >
                     {/* Visual state dots/spinners */}
@@ -396,17 +421,17 @@ const SyncStatusIndicator: React.FC<SyncStatusIndicatorProps> = ({ compact }) =>
 
                     <span className="font-mono hidden sm:inline">
                         {finalIsRed && !isOnline
-                            ? 'HORS LIGNE'
+                            ? (hasUnsentTickets ? `HORS LIGNE (${unsentCount} NON ENVOYÉE(S))` : 'HORS LIGNE')
                             : isQuotaExceeded
                             ? 'QUOTA CLOUD'
                             : isAuthMissing
                             ? 'GOOGLE REQUIS'
                             : isSyncing || isForcingSync
                             ? 'SYNC EN COURS'
-                            : lastError
+                            : hasUnsentTickets
+                            ? `${unsentCount} FICHE(S) NON ENVOYÉE(S)`
+                            : (!lastPushSucceeded || lastError)
                             ? 'ERREUR SYNC'
-                            : pendingChanges > 0
-                            ? `ATTENTE (${pendingChanges})`
                             : 'SYNC CLOUD OK'
                         }
                     </span>
@@ -493,15 +518,29 @@ const SyncStatusIndicator: React.FC<SyncStatusIndicatorProps> = ({ compact }) =>
                                                 Connecter Google &amp; Synchroniser
                                             </button>
                                         </div>
-                                    ) : (isQuotaExceeded || lastError) ? (
-                                        <div className="p-3 bg-red-950/30 rounded-xl border border-red-500/30 flex gap-2.5">
-                                            <ExclamationTriangleIcon className="w-5 h-5 text-red-400 shrink-0 mt-0.5" />
+                                    ) : (isQuotaExceeded || lastError || !lastPushSucceeded || hasUnsentTickets) ? (
+                                        <div className={`p-3 rounded-xl border flex gap-2.5 ${
+                                            (isQuotaExceeded || lastError || !isOnline)
+                                                ? 'bg-red-950/30 border-red-500/30'
+                                                : 'bg-orange-950/30 border-orange-500/30'
+                                        }`}>
+                                            <ExclamationTriangleIcon className={`w-5 h-5 shrink-0 mt-0.5 ${
+                                                (isQuotaExceeded || lastError || !isOnline) ? 'text-red-400' : 'text-orange-400'
+                                            }`} />
                                             <div className="space-y-1">
-                                                <h4 className="text-[10px] font-bold text-red-300 uppercase tracking-wide">
-                                                    {isQuotaExceeded ? 'Quota Journalier Cloud Atteint' : 'Incident de Synchronisation'}
+                                                <h4 className={`text-[10px] font-bold uppercase tracking-wide ${
+                                                    (isQuotaExceeded || lastError || !isOnline) ? 'text-red-300' : 'text-orange-300'
+                                                }`}>
+                                                    {isQuotaExceeded
+                                                        ? 'Quota Journalier Cloud Atteint'
+                                                        : hasUnsentTickets
+                                                        ? `${unsentCount} fiche(s) non envoyée(s)`
+                                                        : 'Incident de Synchronisation'}
                                                 </h4>
-                                                <p className="text-[10px] text-zinc-300 leading-relaxed">
-                                                    {lastError || 'Quota Cloud temporairement dépassé.'}
+                                                <p className="text-[10px] text-zinc-200 leading-relaxed font-medium">
+                                                    {lastError || (hasUnsentTickets
+                                                        ? 'Des fiches locales ou provisoires attendent la confirmation d\'enregistrement sur Firestore.'
+                                                        : 'Le dernier envoi vers Firestore n\'a pas été confirmé.')}
                                                 </p>
                                             </div>
                                         </div>
@@ -562,7 +601,16 @@ const SyncStatusIndicator: React.FC<SyncStatusIndicatorProps> = ({ compact }) =>
                                 <div className="bg-zinc-900/60 rounded-2xl border border-white/5 p-4 space-y-3.5">
                                     <div className="flex items-center justify-between">
                                         <span className="text-[10px] font-black uppercase text-zinc-500 tracking-widest">Archivage Cloud Google Drive</span>
-                                        {driveSyncStatus === 'synced' && (
+                                        {hasUnsentOrError ? (
+                                            <span className={`text-[9px] font-black uppercase px-2 py-0.5 rounded-full border flex items-center gap-1 ${
+                                                (isQuotaExceeded || lastError)
+                                                    ? 'border-red-500/30 bg-red-500/10 text-red-400'
+                                                    : 'border-orange-500/30 bg-orange-500/10 text-orange-400'
+                                            }`}>
+                                                <span className={`w-1.5 h-1.5 rounded-full animate-pulse ${(isQuotaExceeded || lastError) ? 'bg-red-400' : 'bg-orange-400'}`}></span>
+                                                {hasUnsentTickets ? `${unsentCount} non envoyée(s)` : 'Erreur Cloud'}
+                                            </span>
+                                        ) : driveSyncStatus === 'synced' && (
                                             <span className="text-[9px] font-black uppercase px-2 py-0.5 rounded-full border border-emerald-500/20 bg-emerald-500/10 text-emerald-400 flex items-center gap-1">
                                                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
                                                 Synchronisé
@@ -678,29 +726,66 @@ const SyncStatusIndicator: React.FC<SyncStatusIndicatorProps> = ({ compact }) =>
                                 <div className="space-y-2.5">
                                     <div className="flex items-center justify-between">
                                         <span className="text-[10px] font-black uppercase text-zinc-500 tracking-widest">
-                                            File d&apos;attente ({queueItems.length} en attente)
+                                            File d&apos;attente ({unsentCount} en attente)
                                         </span>
-                                        {queueItems.length > 0 && (
+                                        {(totalQueueAndUnsynced > 0) && (
                                             <span className="text-[9px] text-zinc-500 font-mono italic">
                                                 IDB → FIRESTORE CLOUD
                                             </span>
                                         )}
                                     </div>
 
-                                    {queueItems.length === 0 ? (
-                                        // Green Success State
-                                        <div className="bg-emerald-950/20 border border-emerald-500/20 rounded-2xl p-6 text-center space-y-3">
-                                            <div className="w-10 h-10 bg-emerald-500/10 rounded-full flex items-center justify-center mx-auto border border-emerald-500/20">
-                                                <CheckCircleIcon className="w-5 h-5 text-emerald-400" />
+                                    {unsyncedTickets.length > 0 && (
+                                        <div className="bg-orange-950/25 border border-orange-500/30 rounded-2xl p-3.5 space-y-2">
+                                            <div className="flex items-center justify-between">
+                                                <span className="text-[10px] font-black uppercase tracking-wider text-orange-300">
+                                                    {unsyncedTickets.length} fiche(s) non envoyée(s)
+                                                </span>
+                                                <span className="text-[9px] font-mono text-orange-300/80">
+                                                    {unsyncedTickets.some(t => t.isProvisional) ? 'Provisoires / Manquantes' : 'Absentes Cloud'}
+                                                </span>
                                             </div>
-                                            <div>
-                                                <h4 className="text-xs font-bold text-zinc-200">Base locale à jour</h4>
-                                                <p className="text-[10px] text-zinc-500 mt-1 max-w-xs mx-auto leading-relaxed">
-                                                    Zéro modification en attente. Toutes vos modifications ont été transférées et stockées avec succès sur l&apos;infrastructure Cloud TGS.
-                                                </p>
+                                            <div className="space-y-1.5 max-h-40 overflow-y-auto pr-1">
+                                                {unsyncedTickets.map((t) => (
+                                                    <div key={t.id} className="p-2 rounded-xl bg-black/40 border border-orange-500/20 flex items-center justify-between gap-2 text-[10px]">
+                                                        <div className="min-w-0">
+                                                            <p className="font-mono font-bold text-orange-200 truncate">
+                                                                {t.id} — {t.clientName}
+                                                            </p>
+                                                            <p className="text-zinc-400 truncate">{t.macModel}</p>
+                                                        </div>
+                                                        <span className="text-[8px] font-black uppercase px-1.5 py-0.5 rounded bg-orange-500/20 text-orange-300 shrink-0">
+                                                            {t.isProvisional ? 'Provisoire' : 'À envoyer'}
+                                                        </span>
+                                                    </div>
+                                                ))}
                                             </div>
                                         </div>
-                                    ) : (
+                                    )}
+
+                                    {queueItems.length === 0 && unsyncedTickets.length === 0 ? (
+                                        (!lastPushSucceeded || lastError || isQuotaExceeded || pendingChanges > 0) ? (
+                                            <div className="bg-red-950/25 border border-red-500/30 rounded-2xl p-6 text-center space-y-2.5">
+                                                <ExclamationTriangleIcon className="w-6 h-6 text-red-400 mx-auto" />
+                                                <h4 className="text-xs font-bold text-red-300 uppercase">Dernier envoi Cloud non confirmé</h4>
+                                                <p className="text-[10px] text-zinc-300 max-w-xs mx-auto leading-relaxed">
+                                                    {lastError || 'Ouvrez la Console de Diagnostic Cloud pour vérifier les fiches locales par rapport au serveur.'}
+                                                </p>
+                                            </div>
+                                        ) : (
+                                            <div className="bg-emerald-950/20 border border-emerald-500/20 rounded-2xl p-6 text-center space-y-3">
+                                                <div className="w-10 h-10 bg-emerald-500/10 rounded-full flex items-center justify-center mx-auto border border-emerald-500/20">
+                                                    <CheckCircleIcon className="w-5 h-5 text-emerald-400" />
+                                                </div>
+                                                <div>
+                                                    <h4 className="text-xs font-bold text-zinc-200">Base locale à jour</h4>
+                                                    <p className="text-[10px] text-zinc-500 mt-1 max-w-xs mx-auto leading-relaxed">
+                                                        Zéro modification en attente. Toutes vos modifications ont été transférées et stockées avec succès sur l&apos;infrastructure Cloud TGS.
+                                                    </p>
+                                                </div>
+                                            </div>
+                                        )
+                                    ) : queueItems.length === 0 ? null : (
                                         // Interactive Queue List
                                         <div className="space-y-2">
                                             {queueItems.map((item) => {
@@ -783,7 +868,7 @@ const SyncStatusIndicator: React.FC<SyncStatusIndicatorProps> = ({ compact }) =>
 
                             {/* Drawer action footer */}
                             <div className="border-t border-white/10 pt-4 mt-4 space-y-2 shrink-0">
-                                {queueItems.length > 0 && (
+                                {(totalQueueAndUnsynced > 0 || hasUnsentTickets) && (
                                     <button
                                         id="force-sync-drawer-btn"
                                         onClick={handleManualSync}
@@ -803,7 +888,7 @@ const SyncStatusIndicator: React.FC<SyncStatusIndicatorProps> = ({ compact }) =>
                                         ) : (
                                             <>
                                                 <ArrowPathIcon className="w-4 h-4" />
-                                                <span>Forcer la synchronisation (${queueItems.length})</span>
+                                                <span>Envoyer les fiches en attente ({unsentCount})</span>
                                             </>
                                         )}
                                     </button>

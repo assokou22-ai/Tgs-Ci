@@ -6,7 +6,7 @@
 // (découpée en morceaux si besoin) et la fiche ne contient plus qu'une référence
 // légère "tgsmedia:<empreinte>". Résultat : fiches légères, plus de limite de 1 Mo,
 // plus de photos dégradées, synchronisation instantanée.
-import { doc, getDoc, getDocFromServer, setDoc } from 'firebase/firestore';
+import { doc, getDoc, setDoc } from 'firebase/firestore';
 import { openDB, IDBPDatabase } from 'idb';
 import { db, auth, isQuotaCooldownActive, isQuotaExceededError, reportQuotaExceeded } from './firebase.ts';
 
@@ -194,10 +194,7 @@ const fetchMedia = async (hash: string): Promise<string> => {
     if (isQuotaCooldownActive()) {
         throw new Error('Quota Cloud temporairement atteint');
     }
-    let meta = await getDoc(doc(db, MEDIA_COLLECTION, hash));
-    if (!meta.exists() && !isQuotaCooldownActive()) {
-        meta = await getDocFromServer(doc(db, MEDIA_COLLECTION, hash));
-    }
+    const meta = await getDoc(doc(db, MEDIA_COLLECTION, hash));
     if (!meta.exists() || meta.get('complete') !== true) {
         missingMediaUntil.set(hash, Date.now() + MISSING_MEDIA_TTL_MS);
         throw new Error(`Média ${hash} introuvable dans le Cloud`);

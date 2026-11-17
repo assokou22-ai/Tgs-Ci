@@ -17,34 +17,109 @@ import {
     dbGetExternalPurchases,
     dbGetEngagementsSav,
     dbGetMouvementsStock,
+    dbQueuePut,
     getDB
 } from './dbService.ts';
 import { SyncQueueItem, EntityType, RepairTicket } from '../types.ts';
-import { pushEntityToCloud } from './cloudWrite.ts';
+import { pushEntityToCloudDetailed } from './cloudWrite.ts';
 import { optimizeTicketForFirestore } from '../utils/imageCompression.ts';
 import { dehydrateForCloud, hydrateFromCloudBestEffort, mergeUnresolvedMediaFallback, hasMediaRefs, warmMediaCacheFromRecord } from './cloudMedia.ts';
 import { resolveIncrementalSince, advanceCollectionWatermark } from './syncWatermark.ts';
+import firebaseConfig from '../firebase-applet-config.json';
+import {
+    computeUnsyncedTickets,
+    isSameTicket,
+    resolveProvisionalAgainstCloud,
+    type UnsyncedTicketSummary,
+} from '../utils/ticketSyncLogic.ts';
+
+export {
+    computeUnsyncedTickets,
+    isSameTicket,
+    resolveProvisionalAgainstCloud,
+    type UnsyncedTicketSummary,
+};
 
 // --- State Management ---
 // A simple event emitter to notify UI components of state changes.
 const emitter = new EventTarget();
 
-interface SyncState {
+export interface SyncState {
     pendingChanges: number;
+    pendingTickets: number;
+    unsyncedTickets: UnsyncedTicketSummary[];
+    lastIntegrityCheckAt: Date | null;
     isSyncing: boolean;
     lastSync: Date | null;
+    lastPushSucceeded: boolean;
     needsAnotherRun?: boolean;
     lastError?: string | null;
     isQuotaExceeded?: boolean;
 }
 
+const LAST_PUSH_STATUS_KEY = 'tgs_last_push_status_v1';
+const PENDING_IMPORT_DIFF_KEY = 'tgs_pending_cloud_diff_ticket_ids';
+
+const readPersistedPushFailure = (): { lastPushSucceeded: boolean; lastError: string | null } => {
+    if (typeof localStorage === 'undefined') return { lastPushSucceeded: true, lastError: null };
+    try {
+        const raw = localStorage.getItem(LAST_PUSH_STATUS_KEY);
+        if (!raw) return { lastPushSucceeded: true, lastError: null };
+        const parsed = JSON.parse(raw) as { ok?: boolean; error?: string | null };
+        return {
+            lastPushSucceeded: parsed.ok !== false,
+            lastError: parsed.error || null,
+        };
+    } catch {
+        return { lastPushSucceeded: true, lastError: null };
+    }
+};
+
+const persistPushStatus = (ok: boolean, error: string | null) => {
+    if (typeof localStorage === 'undefined') return;
+    try {
+        if (ok) {
+            localStorage.removeItem(LAST_PUSH_STATUS_KEY);
+        } else {
+            localStorage.setItem(LAST_PUSH_STATUS_KEY, JSON.stringify({ ok: false, error }));
+        }
+    } catch { /* ignore */ }
+};
+
+const initialPushStatus = readPersistedPushFailure();
+
 let syncState: SyncState = {
     pendingChanges: 0,
+    pendingTickets: 0,
+    unsyncedTickets: [],
+    lastIntegrityCheckAt: null,
     isSyncing: false,
     lastSync: null,
+    lastPushSucceeded: initialPushStatus.lastPushSucceeded,
     needsAnotherRun: false,
-    lastError: null,
+    lastError: initialPushStatus.lastError,
     isQuotaExceeded: false,
+};
+
+let lastKnownCloudIds: Set<string> | null = null;
+
+const computeCombinedPendingCounts = (
+    queueItems: SyncQueueItem[],
+    unsyncedTickets: UnsyncedTicketSummary[],
+) => {
+    const queuedTicketKeys = new Set(
+        queueItems
+            .filter(q => q.entity === 'ticket' && q.entityId)
+            .map(q => q.entityId.trim().toUpperCase()),
+    );
+    const extraUnsynced = unsyncedTickets.filter(
+        u => !queuedTicketKeys.has(u.id.trim().toUpperCase()),
+    );
+    const queueTicketCount = queueItems.filter(q => q.entity === 'ticket').length;
+    return {
+        pendingChanges: queueItems.length + extraUnsynced.length,
+        pendingTickets: queueTicketCount + extraUnsynced.length,
+    };
 };
 
 // Update the shared state and notify listeners
@@ -157,25 +232,38 @@ export const getEntityPriority = (entity: EntityType): number => {
 
 interface SyncBatchResult {
     syncedIds: number[];
+    renumberedPairs: Array<{ oldId: string; newId: string }>;
     quotaHit: boolean;
     errorMessage: string | null;
 }
 
 const NON_CRITICAL_ENTITIES = new Set<EntityType>(['deviceSession', 'suggestions']);
 
+const formatFirestoreErrorDetail = (error: unknown, collectionName: string): string => {
+    const raw = error instanceof Error ? error.message : String(error);
+    const lower = raw.toLowerCase();
+    if (lower.includes('permission') || lower.includes('insufficient')) {
+        if (lower.includes('counters')) return `permission refusée sur counters (${raw})`;
+        return `permission refusée sur ${collectionName} (${raw})`;
+    }
+    return raw;
+};
+
 /**
  * Sends a batch of changes to Firestore.
- * Protects business records in queue (never silently discards tickets/invoices/orders on quota or permission errors).
+ * Protects ALL business records in queue (never discards tickets/invoices/orders/stock on quota, permission, or network errors).
  */
 const syncWithCloud = async (items: SyncQueueItem[]): Promise<SyncBatchResult> => {
     console.log('SYNCING WITH CLOUD (Firestore):', items);
     const successfullySyncedIds: number[] = [];
+    const renumberedPairs: Array<{ oldId: string; newId: string }> = [];
     let quotaHit = false;
     let errorMessage: string | null = null;
 
     if (isQuotaCooldownActive()) {
         return {
             syncedIds: [],
+            renumberedPairs: [],
             quotaHit: true,
             errorMessage: getQuotaStatus().message || 'Quota journalier Cloud Firestore temporairement atteint.'
         };
@@ -193,33 +281,59 @@ const syncWithCloud = async (items: SyncQueueItem[]): Promise<SyncBatchResult> =
 
         try {
             if (item.operation === 'put') {
-                await pushEntityToCloud(item.entity, collectionName, item.entityId, item.payload);
+                const res = await pushEntityToCloudDetailed(item.entity, collectionName, item.entityId, item.payload);
+                if (item.entity === 'ticket' && lastKnownCloudIds) {
+                    lastKnownCloudIds.add(res.finalId.trim().toUpperCase());
+                }
+                if (res.renumberedFrom && res.finalId !== res.renumberedFrom) {
+                    renumberedPairs.push({ oldId: res.renumberedFrom, newId: res.finalId });
+                }
             } else if (item.operation === 'delete') {
                 await deleteDoc(docRef);
+                if (item.entity === 'ticket' && lastKnownCloudIds) {
+                    lastKnownCloudIds.delete(item.entityId.trim().toUpperCase());
+                }
             }
             successfullySyncedIds.push(item.id);
         } catch (error) {
             console.error(`Error syncing item ${item.id} of entity ${item.entity}:`, error);
 
+            const detailedErr = formatFirestoreErrorDetail(error, collectionName);
+
             if (!navigator.onLine) {
                 errorMessage = 'Connexion Internet interrompue.';
+                item.lastError = errorMessage;
+                await dbPutSyncQueueItem(item);
+                addSyncLog(
+                    'Cloud Realtime',
+                    'Flux Temps Réel',
+                    'error',
+                    auth.currentUser?.email || 'Opérateur Local',
+                    `Envoi #${item.entityId} (${item.entity}) en attente : ${errorMessage}`
+                );
                 break;
             }
-
-            const errMsg = error instanceof Error ? error.message : String(error);
 
             // 1) Quota Firestore dépassé : ne JAMAIS supprimer de la file, arrêter immédiatement la vague
             if (isQuotaExceededError(error)) {
                 reportQuotaExceeded(error);
                 quotaHit = true;
-                errorMessage = "Quota journalier Cloud Firestore atteint (lectures). Envoi mis en pause automatiquement sans perte de données.";
+                errorMessage = `Quota journalier Cloud Firestore atteint sur ${collectionName} (${detailedErr}). Envoi mis en pause sans perte de données.`;
+                item.retries = (item.retries || 0) + 1;
                 item.lastError = errorMessage;
                 await dbPutSyncQueueItem(item);
+                addSyncLog(
+                    'Cloud Realtime',
+                    'Flux Temps Réel',
+                    'error',
+                    auth.currentUser?.email || 'Opérateur Local',
+                    `Envoi #${item.entityId} (${item.entity}) suspendu : ${errorMessage}`
+                );
                 break;
             }
 
             // 2) Erreur de permission : garder les données métier intactes en file d'attente
-            if (errMsg.toLowerCase().includes('permission') || errMsg.toLowerCase().includes('insufficient')) {
+            if (detailedErr.toLowerCase().includes('permission') || detailedErr.toLowerCase().includes('insufficient')) {
                 if (!auth.currentUser) {
                     errorMessage = 'Connexion Google requise pour synchroniser.';
                     break;
@@ -232,21 +346,21 @@ const syncWithCloud = async (items: SyncQueueItem[]): Promise<SyncBatchResult> =
                 }
 
                 item.retries = retries;
-                item.lastError = errMsg;
+                item.lastError = detailedErr;
                 await dbPutSyncQueueItem(item);
-                errorMessage = `Permission refusée par Firestore pour ${auth.currentUser.email || 'ce compte'}.`;
+                errorMessage = detailedErr;
 
                 addSyncLog(
                     'Cloud Realtime',
                     'Flux Temps Réel',
                     'error',
                     auth.currentUser?.email || 'Opérateur Local',
-                    `Envoi #${item.entityId} (${item.entity}) en attente : permission Firestore refusée (${errMsg}).`
+                    `Échec envoi #${item.entityId} (${item.entity}) : ${detailedErr}`
                 );
                 break;
             }
 
-            // 3) Autres erreurs (réseau, timeout, format) : uniquement purger les logs non critiques, JAMAIS les fiches/factures/stocks
+            // 3) Autres erreurs (réseau, timeout, format) : JAMAIS supprimer les données métier
             const retries = (item.retries || 0) + 1;
             if (NON_CRITICAL_ENTITIES.has(item.entity) && retries >= 15) {
                 successfullySyncedIds.push(item.id);
@@ -254,14 +368,22 @@ const syncWithCloud = async (items: SyncQueueItem[]): Promise<SyncBatchResult> =
             }
 
             item.retries = retries;
-            item.lastError = errMsg;
+            item.lastError = detailedErr;
             await dbPutSyncQueueItem(item);
-            errorMessage = errMsg;
+            errorMessage = `#${item.entityId} : ${detailedErr}`;
+
+            addSyncLog(
+                'Cloud Realtime',
+                'Flux Temps Réel',
+                'error',
+                auth.currentUser?.email || 'Opérateur Local',
+                `Échec envoi #${item.entityId} (${item.entity}) — tentative ${retries} : ${detailedErr}`
+            );
             // On continue pour ne pas bloquer les autres fiches valides derrière une fiche en erreur isolée
         }
     }
 
-    return { syncedIds: successfullySyncedIds, quotaHit, errorMessage };
+    return { syncedIds: successfullySyncedIds, renumberedPairs, quotaHit, errorMessage };
 };
 
 /**
@@ -328,7 +450,10 @@ export const requeueRecentLocalRecords = async (sinceHours = 48): Promise<number
 
     if (requeued > 0) {
         const updatedQueue = await dbGetSyncQueue();
-        updateState({ pendingChanges: updatedQueue.length });
+        updateState({
+            pendingChanges: updatedQueue.length,
+            pendingTickets: updatedQueue.filter(q => q.entity === 'ticket').length,
+        });
         if (typeof window !== 'undefined') {
             window.dispatchEvent(new CustomEvent('datachanged'));
         }
@@ -483,9 +608,10 @@ export const syncFromCloud = async (manual = false, fullRescan = false) => {
         return;
     }
 
+    const preservePushError = syncState.pendingChanges > 0 || syncState.unsyncedTickets.length > 0 || !syncState.lastPushSucceeded;
     updateState({
         lastSync: new Date(),
-        lastError: null,
+        lastError: preservePushError ? syncState.lastError : null,
         isQuotaExceeded: false,
     });
 };
@@ -498,9 +624,100 @@ export interface ProcessQueueResult {
     error?: string;
 }
 
+const BACKOFF_DELAYS_MS = [10_000, 20_000, 40_000, 80_000, 160_000, 300_000];
+let retryAttemptCount = 0;
+let backoffRetryTimer: ReturnType<typeof setTimeout> | null = null;
+let onlineRetryRegistered = false;
+
+const clearScheduledRetry = () => {
+    if (backoffRetryTimer) {
+        clearTimeout(backoffRetryTimer);
+        backoffRetryTimer = null;
+    }
+};
+
+const scheduleRetryWithBackoff = () => {
+    clearScheduledRetry();
+    if (typeof window === 'undefined' || !navigator.onLine || !auth.currentUser || isQuotaCooldownActive()) {
+        return;
+    }
+    const idx = Math.min(retryAttemptCount, BACKOFF_DELAYS_MS.length - 1);
+    const delayMs = BACKOFF_DELAYS_MS[idx];
+    retryAttemptCount = Math.min(retryAttemptCount + 1, BACKOFF_DELAYS_MS.length);
+    console.log(`[SyncBackoff] Nouvelle tentative planifiée dans ${Math.round(delayMs / 1000)}s (palier ${idx + 1}).`);
+    backoffRetryTimer = setTimeout(() => {
+        backoffRetryTimer = null;
+        if (navigator.onLine && auth.currentUser && !isQuotaCooldownActive()) {
+            processSyncQueue(false).catch(console.error);
+        }
+    }, delayMs);
+};
+
+/**
+ * Résout la liste éventuelle des IDs de fiches importées depuis un JSON hors ligne
+ * en mettant en file d'attente uniquement celles absentes du Cloud.
+ */
+export const resolvePendingImportedTicketChecks = async (): Promise<number> => {
+    if (typeof localStorage === 'undefined' || !navigator.onLine || !auth.currentUser || isQuotaCooldownActive()) {
+        return 0;
+    }
+    let pendingIds: string[] = [];
+    try {
+        const raw = localStorage.getItem(PENDING_IMPORT_DIFF_KEY);
+        if (!raw) return 0;
+        pendingIds = JSON.parse(raw) as string[];
+        if (!Array.isArray(pendingIds) || pendingIds.length === 0) {
+            localStorage.removeItem(PENDING_IMPORT_DIFF_KEY);
+            return 0;
+        }
+    } catch {
+        return 0;
+    }
+
+    try {
+        const [localTickets, cloudIds, currentQueue] = await Promise.all([
+            dbGetTickets(),
+            fetchCloudTicketIdsMinimal(),
+            dbGetSyncQueue(),
+        ]);
+        lastKnownCloudIds = cloudIds;
+        const queuedTicketIds = new Set(
+            currentQueue.filter(q => q.entity === 'ticket').map(q => q.entityId.trim().toUpperCase())
+        );
+        const pendingSet = new Set(pendingIds.map(id => String(id).trim().toUpperCase()));
+
+        let added = 0;
+        for (const t of localTickets) {
+            if (!t?.id) continue;
+            const norm = t.id.trim().toUpperCase();
+            if (!pendingSet.has(norm)) continue;
+            const isProvisional = Boolean((t as unknown as Record<string, unknown>)._provisionalNumber);
+            if ((!cloudIds.has(norm) || isProvisional) && !queuedTicketIds.has(norm)) {
+                await dbQueuePut('ticket', t.id, t);
+                queuedTicketIds.add(norm);
+                added++;
+            }
+        }
+        localStorage.removeItem(PENDING_IMPORT_DIFF_KEY);
+        const nextUnsynced = computeUnsyncedTickets(localTickets, cloudIds);
+        const q = added > 0 ? await dbGetSyncQueue() : currentQueue;
+        const counts = computeCombinedPendingCounts(q, nextUnsynced);
+        updateState({
+            unsyncedTickets: nextUnsynced,
+            lastIntegrityCheckAt: new Date(),
+            pendingChanges: counts.pendingChanges,
+            pendingTickets: counts.pendingTickets,
+        });
+        return added;
+    } catch (err) {
+        console.warn('[ImportDiff] Vérification différée des fiches importées impossible :', err);
+        return 0;
+    }
+};
+
 /**
  * Processes the entire sync queue. It fetches pending items, sends them to the cloud,
- * and upon success, removes them from the local queue.
+ * and upon server confirmation only, removes them from the local queue.
  */
 export const processSyncQueue = async (manual = false): Promise<ProcessQueueResult> => {
     if (syncState.isSyncing) {
@@ -509,19 +726,32 @@ export const processSyncQueue = async (manual = false): Promise<ProcessQueueResu
         return { ok: true, processed: 0, pending: syncState.pendingChanges };
     }
 
+    if (manual) {
+        clearScheduledRetry();
+        retryAttemptCount = 0;
+    }
+
     if (!navigator.onLine) {
         console.log('Cannot sync, app is offline.');
         const pendingItems = await dbGetSyncQueue();
-        updateState({ pendingChanges: pendingItems.length });
+        updateState({
+            pendingChanges: pendingItems.length,
+            pendingTickets: pendingItems.filter(q => q.entity === 'ticket').length,
+        });
         return { ok: false, processed: 0, pending: pendingItems.length, error: 'Appareil hors ligne.' };
     }
 
     if (!auth.currentUser) {
         console.log('Cannot sync, user is not authenticated in Firebase.');
         const pendingItems = await dbGetSyncQueue();
-        updateState({ pendingChanges: pendingItems.length });
+        updateState({
+            pendingChanges: pendingItems.length,
+            pendingTickets: pendingItems.filter(q => q.entity === 'ticket').length,
+        });
         return { ok: false, processed: 0, pending: pendingItems.length, error: 'Connexion Google requise.' };
     }
+
+    await resolvePendingImportedTicketChecks().catch(() => 0);
 
     if (manual) {
         clearQuotaCooldown();
@@ -529,7 +759,13 @@ export const processSyncQueue = async (manual = false): Promise<ProcessQueueResu
     } else if (isQuotaCooldownActive()) {
         const pendingItems = await dbGetSyncQueue();
         const quotaMsg = getQuotaStatus().message || 'Quota journalier Cloud Firestore atteint.';
-        updateState({ pendingChanges: pendingItems.length, isQuotaExceeded: true, lastError: quotaMsg });
+        updateState({
+            pendingChanges: pendingItems.length,
+            pendingTickets: pendingItems.filter(q => q.entity === 'ticket').length,
+            isQuotaExceeded: true,
+            lastPushSucceeded: pendingItems.length === 0 ? syncState.lastPushSucceeded : false,
+            lastError: quotaMsg,
+        });
         return { ok: false, processed: 0, pending: pendingItems.length, quotaExceeded: true, error: quotaMsg };
     }
 
@@ -566,15 +802,26 @@ export const processSyncQueue = async (manual = false): Promise<ProcessQueueResu
                 return a.id - b.id;
             });
 
-            const itemsToSync = sortedItems.slice(0, 25);
+            const itemsToSync = sortedItems.slice(0, 15);
 
             console.log(`Processing sync queue batch of size: ${itemsToSync.length} (total remaining: ${allItems.length})`);
             const batchResult = await syncWithCloud(itemsToSync);
             totalProcessed += batchResult.syncedIds.length;
 
             if (batchResult.syncedIds.length > 0) {
-                await dbDeleteSyncQueueItems(batchResult.syncedIds);
-                console.log(`Successfully removed ${batchResult.syncedIds.length} synced items from the queue.`);
+                const idsToDelete = new Set(batchResult.syncedIds);
+                // Si une fiche provisoire a été confirmée et renumérotée, nettoyer d'éventuels doublons obsolètes de son ancien ID provisoire
+                if (batchResult.renumberedPairs.length > 0) {
+                    const renumberedOldIds = new Set(batchResult.renumberedPairs.map(p => p.oldId));
+                    const currentAll = await dbGetSyncQueue();
+                    for (const q of currentAll) {
+                        if (q.entity === 'ticket' && renumberedOldIds.has(q.entityId) && q.operation === 'put') {
+                            idsToDelete.add(q.id);
+                        }
+                    }
+                }
+                await dbDeleteSyncQueueItems(Array.from(idsToDelete));
+                console.log(`Successfully removed ${idsToDelete.size} synced items from the queue.`);
             }
 
             if (batchResult.quotaHit) {
@@ -592,17 +839,41 @@ export const processSyncQueue = async (manual = false): Promise<ProcessQueueResu
                     hasMore = false;
                 } else if (!navigator.onLine) {
                     hasMore = false;
+                } else {
+                    await new Promise((r) => setTimeout(r, 150));
                 }
             }
         }
 
-        const finalPending = await dbGetSyncQueue();
+        const [finalPending, localTicketsAfter] = await Promise.all([
+            dbGetSyncQueue(),
+            dbGetTickets().catch(() => [] as RepairTicket[]),
+        ]);
+        const nextUnsynced = lastKnownCloudIds
+            ? computeUnsyncedTickets(localTicketsAfter, lastKnownCloudIds)
+            : computeUnsyncedTickets(
+                localTicketsAfter,
+                new Set(localTicketsAfter.filter(t => t?.id && !(t as unknown as Record<string, unknown>)._provisionalNumber).map(t => t.id.trim().toUpperCase())),
+            );
+        const counts = computeCombinedPendingCounts(finalPending, nextUnsynced);
+        const pushSucceeded = !hasError && !quotaHit && counts.pendingChanges === 0;
+        if (pushSucceeded) {
+            retryAttemptCount = 0;
+            clearScheduledRetry();
+            persistPushStatus(true, null);
+        } else if (hasError || quotaHit) {
+            persistPushStatus(false, lastErrorMsg || 'Envoi incomplet');
+        }
+
         runAgain = Boolean(syncState.needsAnotherRun && !hasError && !quotaHit);
         updateState({
-            pendingChanges: finalPending.length,
+            pendingChanges: counts.pendingChanges,
+            pendingTickets: counts.pendingTickets,
+            unsyncedTickets: nextUnsynced,
             isSyncing: false,
             lastSync: (!hasError && !quotaHit) ? new Date() : syncState.lastSync,
-            lastError: hasError ? lastErrorMsg : null,
+            lastPushSucceeded: hasError || quotaHit ? false : counts.pendingChanges === 0,
+            lastError: hasError ? lastErrorMsg : (counts.pendingChanges > 0 ? syncState.lastError : null),
             isQuotaExceeded: quotaHit,
             needsAnotherRun: false
         });
@@ -615,8 +886,8 @@ export const processSyncQueue = async (manual = false): Promise<ProcessQueueResu
                     'error',
                     auth.currentUser?.email || 'Opérateur Local',
                     totalProcessed > 0
-                        ? `Synchronisation partielle (${totalProcessed} envoyés). Problème: ${lastErrorMsg}`
-                        : `Synchronisation en pause : ${lastErrorMsg}`
+                        ? `Synchronisation partielle (${totalProcessed} envoyés). Erreur : ${lastErrorMsg}`
+                        : `Synchronisation en échec : ${lastErrorMsg}`
                 );
                 if (!quotaHit) {
                     window.dispatchEvent(new CustomEvent('syncerror', {
@@ -637,6 +908,10 @@ export const processSyncQueue = async (manual = false): Promise<ProcessQueueResu
             }
         }
 
+        if (finalPending.length > 0 && !quotaHit && !runAgain) {
+            scheduleRetryWithBackoff();
+        }
+
         return {
             ok: !hasError && !quotaHit,
             processed: totalProcessed,
@@ -649,6 +924,7 @@ export const processSyncQueue = async (manual = false): Promise<ProcessQueueResu
         const errMsg = error instanceof Error ? error.message : String(error);
         const isQuota = isQuotaExceededError(error);
         if (isQuota) reportQuotaExceeded(error);
+        persistPushStatus(false, errMsg);
 
         addSyncLog(
             'Cloud Realtime',
@@ -669,10 +945,16 @@ export const processSyncQueue = async (manual = false): Promise<ProcessQueueResu
         updateState({
             isSyncing: false,
             pendingChanges: pendingItems.length,
+            pendingTickets: pendingItems.filter(q => q.entity === 'ticket').length,
+            lastPushSucceeded: false,
             lastError: errMsg,
             isQuotaExceeded: isQuota,
             needsAnotherRun: false
         });
+
+        if (pendingItems.length > 0 && !isQuota) {
+            scheduleRetryWithBackoff();
+        }
 
         return {
             ok: false,
@@ -724,6 +1006,7 @@ export const synchronizeOnlineExport = async (onProgress?: (msg: string, percent
     updateState({ isSyncing: true });
     clearQuotaCooldown();
     try {
+        const initialQueueSnapshot = await dbGetSyncQueue();
         onProgress?.("Établissement du canal sécurisé...", 5);
         try {
             await getDocFromServer(doc(db, 'test', 'connection'));
@@ -946,12 +1229,13 @@ export const synchronizeOnlineExport = async (onProgress?: (msg: string, percent
             }
         }
 
-        const pendingQueue = await dbGetSyncQueue();
         if (failedCount === 0) {
             onProgress?.("Nettoyage des jetons et index de synchronisation...", 95);
-            if (pendingQueue.length > 0) {
-                await dbDeleteSyncQueueItems(pendingQueue.map(q => q.id));
+            if (initialQueueSnapshot.length > 0) {
+                await dbDeleteSyncQueueItems(initialQueueSnapshot.map(q => q.id));
             }
+            const remainingQueue = await dbGetSyncQueue();
+            persistPushStatus(true, null);
             addSyncLog(
                 'Cloud Realtime',
                 'Export Synchro Online',
@@ -961,26 +1245,36 @@ export const synchronizeOnlineExport = async (onProgress?: (msg: string, percent
             );
             onProgress?.("Exportation ONLINE terminée avec succès !", 100);
             updateState({
-                pendingChanges: 0,
+                pendingChanges: remainingQueue.length,
+                pendingTickets: remainingQueue.filter(q => q.entity === 'ticket').length,
                 isSyncing: false,
                 lastSync: new Date(),
+                lastPushSucceeded: remainingQueue.length === 0,
                 lastError: null,
                 isQuotaExceeded: false,
             });
         } else {
+            const pendingQueue = await dbGetSyncQueue();
+            const errSummary = firstExportError || `${failedCount} éléments n'ont pas pu être transférés.`;
+            persistPushStatus(false, errSummary);
             updateState({
                 pendingChanges: pendingQueue.length,
+                pendingTickets: pendingQueue.filter(q => q.entity === 'ticket').length,
                 isSyncing: false,
-                lastError: firstExportError || `${failedCount} éléments n'ont pas pu être transférés.`,
+                lastPushSucceeded: false,
+                lastError: errSummary,
             });
             throw new Error(`Exportation partielle : ${count} envoyés, ${failedCount} échecs (${firstExportError || 'Erreur inconnue'}). Les éléments non envoyés restent en file d'attente.`);
         }
     } catch (error) {
         const errMsg = error instanceof Error ? error.message : String(error);
         const pendingQueue = await dbGetSyncQueue().catch(() => []);
+        persistPushStatus(false, errMsg);
         updateState({
             isSyncing: false,
             pendingChanges: pendingQueue.length,
+            pendingTickets: pendingQueue.filter(q => q.entity === 'ticket').length,
+            lastPushSucceeded: false,
             lastError: errMsg,
             isQuotaExceeded: isQuotaExceededError(error) || syncState.isQuotaExceeded,
         });
@@ -1130,15 +1424,20 @@ export const synchronizeOnlineImport = async (onProgress?: (msg: string, percent
             `Importation réussie de ${itemsCount} dossiers à partir du Cloud.`
         );
 
-        onProgress?.("Importation ONLINE terminée avec succès !", 100);
+        onProgress?.("Envoi automatique des fiches locales manquantes...", 97);
         const pendingQueue = await dbGetSyncQueue().catch(() => []);
+        const preservePushErr = pendingQueue.length > 0 || syncState.unsyncedTickets.length > 0 || !syncState.lastPushSucceeded;
         updateState({
-            pendingChanges: pendingQueue.length,
+            pendingChanges: computeCombinedPendingCounts(pendingQueue, syncState.unsyncedTickets).pendingChanges,
+            pendingTickets: computeCombinedPendingCounts(pendingQueue, syncState.unsyncedTickets).pendingTickets,
             isSyncing: false,
             lastSync: new Date(),
-            lastError: null,
+            lastError: preservePushErr ? syncState.lastError : null,
             isQuotaExceeded: false,
         });
+
+        await triggerAutoCatchUpPush('import-online', (msg) => onProgress?.(msg, 98)).catch(console.error);
+        onProgress?.("Importation ONLINE terminée avec succès !", 100);
     } catch (error) {
         const errMsg = error instanceof Error ? error.message : String(error);
         updateState({
@@ -1150,20 +1449,500 @@ export const synchronizeOnlineImport = async (onProgress?: (msg: string, percent
     }
 };
 
-// --- Startup Initialization ---
-let initPromise: Promise<void> | null = null;
-let connectionTested = false;
+export interface CatchUpTicketsReport {
+    totalLocal: number;
+    totalCloud: number;
+    missingFound: number;
+    sent: string[];
+    renumbered: Array<{ oldId: string; newId: string }>;
+    failed: Array<{ id: string; reason: string }>;
+}
+
+let catchUpInFlightPromise: Promise<CatchUpTicketsReport> | null = null;
 
 /**
- * Initializes the sync service: recovers any recent unqueued local records once,
- * verifies Firestore connectivity once on boot, and flushes pending queue.
+ * Requête légère sur les identifiants seuls (`__name__`) des fiches présentes sur Firestore
+ * via l'API REST `runQuery` (sans télécharger les champs complets), avec repli automatique sur `getDocs`.
+ */
+export const fetchCloudTicketIdsMinimal = async (): Promise<Set<string>> => {
+    const currentUser = auth.currentUser;
+    if (!currentUser) {
+        throw new Error('Connexion Google requise pour interroger le Cloud.');
+    }
+
+    try {
+        if (typeof fetch === 'function' && typeof currentUser.getIdToken === 'function') {
+            const token = await currentUser.getIdToken();
+            const dbId = firebaseConfig.firestoreDatabaseId || '(default)';
+            const url = `https://firestore.googleapis.com/v1/projects/${firebaseConfig.projectId}/databases/${encodeURIComponent(dbId)}/documents:runQuery`;
+            const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+            const timeout = controller ? setTimeout(() => controller.abort(), 8000) : null;
+            try {
+                const resp = await fetch(url, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${token}`,
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        structuredQuery: {
+                            from: [{ collectionId: 'tickets' }],
+                            select: { fields: [{ fieldPath: '__name__' }] },
+                        },
+                    }),
+                    signal: controller?.signal,
+                });
+                if (resp.ok) {
+                    const rows = (await resp.json()) as Array<{ document?: { name?: string } }>;
+                    const ids = new Set<string>();
+                    if (Array.isArray(rows)) {
+                        for (const row of rows) {
+                            const fullName = row?.document?.name;
+                            if (typeof fullName === 'string' && fullName.includes('/')) {
+                                const docId = fullName.split('/').pop();
+                                if (docId) ids.add(decodeURIComponent(docId).trim().toUpperCase());
+                            }
+                        }
+                    }
+                    return ids;
+                }
+                if (resp.status === 429) {
+                    const quotaErr = new Error('Quota exceeded (429 Too Many Requests)');
+                    reportQuotaExceeded(quotaErr);
+                    throw quotaErr;
+                }
+            } finally {
+                if (timeout) clearTimeout(timeout);
+            }
+        }
+    } catch (restErr) {
+        if (isQuotaExceededError(restErr)) throw restErr;
+        console.warn('[IntegrityCheck] Requête REST minimale indisponible, repli SDK Firestore :', restErr);
+    }
+
+    const cloudSnap = await getDocs(collection(db, 'tickets'));
+    return new Set(cloudSnap.docs.map(d => d.id.trim().toUpperCase()));
+};
+
+/**
+ * Compare les identifiants locaux (IndexedDB) avec le Cloud (requête légère `__name__`)
+ * et met à jour l'état honnête (`unsyncedTickets`, `pendingChanges`, `lastPushSucceeded`).
+ */
+export const verifyLocalVsCloudTickets = async (): Promise<UnsyncedTicketSummary[]> => {
+    const [localTickets, existingQueue] = await Promise.all([
+        dbGetTickets().catch(() => [] as RepairTicket[]),
+        dbGetSyncQueue().catch(() => [] as SyncQueueItem[]),
+    ]);
+
+    if (typeof navigator !== 'undefined' && (!navigator.onLine || !auth.currentUser || isQuotaCooldownActive())) {
+        const provisionalOnly = lastKnownCloudIds
+            ? computeUnsyncedTickets(localTickets, lastKnownCloudIds)
+            : computeUnsyncedTickets(
+                localTickets,
+                new Set(localTickets.filter(t => t?.id && !(t as unknown as Record<string, unknown>)._provisionalNumber).map(t => t.id.trim().toUpperCase())),
+            );
+        const counts = computeCombinedPendingCounts(existingQueue, provisionalOnly);
+        updateState({
+            unsyncedTickets: provisionalOnly,
+            pendingChanges: counts.pendingChanges,
+            pendingTickets: counts.pendingTickets,
+            lastPushSucceeded: counts.pendingChanges === 0 ? syncState.lastPushSucceeded : false,
+        });
+        return provisionalOnly;
+    }
+
+    try {
+        const cloudIds = await fetchCloudTicketIdsMinimal();
+        lastKnownCloudIds = cloudIds;
+        const unsynced = computeUnsyncedTickets(localTickets, cloudIds);
+        const counts = computeCombinedPendingCounts(existingQueue, unsynced);
+
+        updateState({
+            unsyncedTickets: unsynced,
+            lastIntegrityCheckAt: new Date(),
+            pendingChanges: counts.pendingChanges,
+            pendingTickets: counts.pendingTickets,
+            lastPushSucceeded: counts.pendingChanges === 0 ? syncState.lastPushSucceeded : false,
+        });
+        return unsynced;
+    } catch (err) {
+        if (isQuotaExceededError(err)) {
+            reportQuotaExceeded(err);
+        } else {
+            console.warn('[IntegrityCheck] Comparaison locale vs Cloud impossible :', err);
+        }
+        return syncState.unsyncedTickets;
+    }
+};
+
+/**
+ * Bouton de rattrapage : compare toutes les fiches locales (y compris importées depuis JSON et `_provisionalNumber`)
+ * avec les identifiants présents sur Firestore, envoie une par une les fiches manquantes/provisoires
+ * selon le protocole anti-doublon (fusion si identique, renumérotation seulement si autre fiche),
+ * protégé par un verrou anti-concurrence.
+ */
+export const pushMissingLocalTicketsToCloud = async (
+    onProgress?: (msg: string) => void
+): Promise<CatchUpTicketsReport> => {
+    if (catchUpInFlightPromise) {
+        return catchUpInFlightPromise;
+    }
+
+    if (!navigator.onLine) {
+        throw new Error('Appareil hors ligne : connexion Internet requise pour envoyer les fiches en attente.');
+    }
+    if (!auth.currentUser) {
+        throw new Error('Connexion Google requise pour comparer et envoyer les fiches vers le Cloud.');
+    }
+
+    const runner = async (): Promise<CatchUpTicketsReport> => {
+        clearQuotaCooldown();
+        updateState({ isSyncing: true, isQuotaExceeded: false });
+
+        const sent: string[] = [];
+        const renumbered: Array<{ oldId: string; newId: string }> = [];
+        const failed: Array<{ id: string; reason: string }> = [];
+
+        try {
+            onProgress?.('Lecture de la base locale et comparaison avec le Cloud...');
+            const [localTickets, cloudIds, existingQueue] = await Promise.all([
+                dbGetTickets(),
+                fetchCloudTicketIdsMinimal(),
+                dbGetSyncQueue(),
+            ]);
+
+            lastKnownCloudIds = cloudIds;
+            const unsyncedSummaries = computeUnsyncedTickets(localTickets, cloudIds);
+            const ticketByNormId = new Map<string, RepairTicket>();
+            for (const t of localTickets) {
+                if (t?.id) ticketByNormId.set(t.id.trim().toUpperCase(), t);
+            }
+            const missingTickets = unsyncedSummaries
+                .map(s => ticketByNormId.get(s.id.trim().toUpperCase()))
+                .filter((t): t is RepairTicket => Boolean(t));
+
+            const report: CatchUpTicketsReport = {
+                totalLocal: localTickets.length,
+                totalCloud: cloudIds.size,
+                missingFound: missingTickets.length,
+                sent,
+                renumbered,
+                failed,
+            };
+
+            if (missingTickets.length === 0) {
+                const counts = computeCombinedPendingCounts(existingQueue, []);
+                updateState({
+                    isSyncing: false,
+                    unsyncedTickets: [],
+                    lastIntegrityCheckAt: new Date(),
+                    pendingChanges: counts.pendingChanges,
+                    pendingTickets: counts.pendingTickets,
+                    lastSync: new Date(),
+                    lastPushSucceeded: counts.pendingChanges === 0,
+                    lastError: counts.pendingChanges > 0 ? syncState.lastError : null,
+                });
+                return report;
+            }
+
+            const queueByTicketId = new Map<string, number[]>();
+            for (const q of existingQueue) {
+                if (q.entity === 'ticket') {
+                    const key = q.entityId.trim().toUpperCase();
+                    const list = queueByTicketId.get(key) || [];
+                    list.push(q.id);
+                    queueByTicketId.set(key, list);
+                }
+            }
+
+            for (let i = 0; i < missingTickets.length; i++) {
+                const ticket = missingTickets[i];
+                onProgress?.(`Envoi de la fiche #${ticket.id} (${i + 1}/${missingTickets.length})...`);
+                try {
+                    const res = await pushEntityToCloudDetailed('ticket', 'tickets', ticket.id, ticket);
+                    sent.push(res.finalId);
+                    cloudIds.add(res.finalId.trim().toUpperCase());
+                    if (res.renumberedFrom && res.finalId !== res.renumberedFrom) {
+                        renumbered.push({ oldId: res.renumberedFrom, newId: res.finalId });
+                    }
+
+                    // Supprimer uniquement les entrées syncQueue correspondantes une fois confirmé par le serveur
+                    const matchedQueueIds = [
+                        ...(queueByTicketId.get(ticket.id.trim().toUpperCase()) || []),
+                        ...(queueByTicketId.get(res.finalId.trim().toUpperCase()) || []),
+                    ];
+                    if (matchedQueueIds.length > 0) {
+                        await dbDeleteSyncQueueItems(matchedQueueIds);
+                    }
+                } catch (err) {
+                    const reason = formatFirestoreErrorDetail(err, 'tickets');
+                    failed.push({ id: ticket.id, reason });
+                    addSyncLog(
+                        'Cloud Realtime',
+                        'Flux Temps Réel',
+                        'error',
+                        auth.currentUser?.email || 'Opérateur Local',
+                        `Rattrapage fiche #${ticket.id} échoué : ${reason}`
+                    );
+                    if (!queueByTicketId.has(ticket.id.trim().toUpperCase())) {
+                        await dbQueuePut('ticket', ticket.id, { ...ticket, lastError: reason });
+                    }
+                    if (isQuotaExceededError(err)) {
+                        reportQuotaExceeded(err);
+                        break;
+                    }
+                }
+            }
+
+            const [remainingQueue, updatedLocalTickets] = await Promise.all([
+                dbGetSyncQueue(),
+                dbGetTickets().catch(() => localTickets),
+            ]);
+            const remainingUnsynced = computeUnsyncedTickets(updatedLocalTickets, cloudIds);
+            lastKnownCloudIds = cloudIds;
+            const counts = computeCombinedPendingCounts(remainingQueue, remainingUnsynced);
+
+            const ok = failed.length === 0 && counts.pendingChanges === 0;
+            const errMsg = failed.length > 0
+                ? `${failed.length} fiche(s) en échec (${failed[0].id} : ${failed[0].reason})`
+                : null;
+
+            if (ok) {
+                persistPushStatus(true, null);
+                addSyncLog(
+                    'Cloud Realtime',
+                    'Flux Temps Réel',
+                    'success',
+                    auth.currentUser?.email || 'Opérateur Local',
+                    `Rattrapage réussi : ${sent.length} fiche(s) envoyée(s)${renumbered.length > 0 ? `, ${renumbered.length} renumérotée(s)` : ''}.`
+                );
+            } else if (errMsg) {
+                persistPushStatus(false, errMsg);
+            }
+
+            updateState({
+                isSyncing: false,
+                unsyncedTickets: remainingUnsynced,
+                lastIntegrityCheckAt: new Date(),
+                pendingChanges: counts.pendingChanges,
+                pendingTickets: counts.pendingTickets,
+                lastSync: failed.length === 0 ? new Date() : syncState.lastSync,
+                lastPushSucceeded: ok,
+                lastError: errMsg ?? (counts.pendingChanges > 0 ? syncState.lastError : null),
+            });
+
+            if (typeof window !== 'undefined') {
+                window.dispatchEvent(new CustomEvent('datareceived'));
+                window.dispatchEvent(new CustomEvent('tickets-updated'));
+            }
+            return report;
+        } catch (err) {
+            const errMsg = formatFirestoreErrorDetail(err, 'tickets');
+            const [pendingQueue, localTicketsErr] = await Promise.all([
+                dbGetSyncQueue().catch(() => []),
+                dbGetTickets().catch(() => []),
+            ]);
+            const unsyncedErr = lastKnownCloudIds
+                ? computeUnsyncedTickets(localTicketsErr, lastKnownCloudIds)
+                : syncState.unsyncedTickets;
+            const counts = computeCombinedPendingCounts(pendingQueue, unsyncedErr);
+            persistPushStatus(false, errMsg);
+            updateState({
+                isSyncing: false,
+                unsyncedTickets: unsyncedErr,
+                pendingChanges: counts.pendingChanges,
+                pendingTickets: counts.pendingTickets,
+                lastPushSucceeded: false,
+                lastError: errMsg,
+                isQuotaExceeded: isQuotaExceededError(err) || syncState.isQuotaExceeded,
+            });
+            throw err;
+        }
+    };
+
+    catchUpInFlightPromise = runner().finally(() => {
+        catchUpInFlightPromise = null;
+    });
+    return catchUpInFlightPromise;
+};
+
+/**
+ * Déclencheur automatique du rattrapage Cloud (ouverture en ligne, reconnexion, import/fusion backup, synchro online).
+ * Protégé contre toute exécution concurrente et émet une notification discrète uniquement s'il y a eu un envoi/incident.
+ */
+export const triggerAutoCatchUpPush = async (
+    reason: 'startup' | 'online' | 'import-backup' | 'import-online' | 'auth-ready',
+    onProgress?: (msg: string) => void,
+): Promise<CatchUpTicketsReport | null> => {
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+        await verifyLocalVsCloudTickets().catch(() => []);
+        return null;
+    }
+    if (!auth.currentUser || isQuotaCooldownActive()) {
+        await verifyLocalVsCloudTickets().catch(() => []);
+        return null;
+    }
+
+    try {
+        const report = await pushMissingLocalTicketsToCloud(onProgress);
+        if (typeof window !== 'undefined') {
+            if (report.sent.length > 0 && report.failed.length === 0) {
+                window.dispatchEvent(new CustomEvent('syncsuccess', {
+                    detail: {
+                        reason,
+                        message: `Synchro auto : ${report.sent.length} fiche(s) envoyée(s) vers le Cloud${report.renumbered.length > 0 ? ` (${report.renumbered.length} renumérotée(s))` : ''}.`,
+                    },
+                }));
+            } else if (report.failed.length > 0) {
+                window.dispatchEvent(new CustomEvent('syncerror', {
+                    detail: {
+                        reason,
+                        message: `Synchro auto incomplète : ${report.sent.length} envoyée(s), ${report.failed.length} fiche(s) encore en attente (${report.failed[0].reason}).`,
+                    },
+                }));
+            }
+        }
+        return report;
+    } catch (err) {
+        console.warn(`[AutoCatchUp:${reason}] Échec non bloquant :`, err);
+        return null;
+    }
+};
+
+/**
+ * Après import/fusion d'une sauvegarde JSON locale, compare les fiches importées
+ * avec le Cloud, met automatiquement en file d'envoi celles qui n'y figurent pas encore
+ * (ou provisoires), puis déclenche l'envoi automatique avant de retourner.
+ */
+export const queueImportedTicketsMissingFromCloud = async (
+    importedTickets: RepairTicket[],
+    onProgress?: (msg: string) => void
+): Promise<{ queued: number; deferredToOnline: boolean; report?: CatchUpTicketsReport | null }> => {
+    if (!Array.isArray(importedTickets) || importedTickets.length === 0) {
+        return { queued: 0, deferredToOnline: false, report: null };
+    }
+
+    const validIds = importedTickets.map(t => t?.id).filter((id): id is string => Boolean(id));
+    if (validIds.length === 0) return { queued: 0, deferredToOnline: false, report: null };
+
+    if (!navigator.onLine || !auth.currentUser || isQuotaCooldownActive()) {
+        // Mémoriser les IDs importés pour vérification automatique dès le retour du réseau / connexion
+        if (typeof localStorage !== 'undefined') {
+            try {
+                const prevRaw = localStorage.getItem(PENDING_IMPORT_DIFF_KEY);
+                const prev = prevRaw ? (JSON.parse(prevRaw) as string[]) : [];
+                const merged = Array.from(new Set([...(Array.isArray(prev) ? prev : []), ...validIds]));
+                localStorage.setItem(PENDING_IMPORT_DIFF_KEY, JSON.stringify(merged));
+            } catch { /* ignore */ }
+        }
+        await verifyLocalVsCloudTickets().catch(() => []);
+        return { queued: 0, deferredToOnline: true, report: null };
+    }
+
+    try {
+        onProgress?.('Vérification des fiches importées absentes du Cloud...');
+        const [cloudIds, existingQueue] = await Promise.all([
+            fetchCloudTicketIdsMinimal(),
+            dbGetSyncQueue(),
+        ]);
+        lastKnownCloudIds = cloudIds;
+        const queuedKeys = new Set(
+            existingQueue.filter(q => q.entity === 'ticket').map(q => q.entityId.trim().toUpperCase())
+        );
+
+        let queued = 0;
+        for (const ticket of importedTickets) {
+            if (!ticket?.id) continue;
+            const norm = ticket.id.trim().toUpperCase();
+            const isProvisional = Boolean((ticket as unknown as Record<string, unknown>)._provisionalNumber);
+            if ((!cloudIds.has(norm) || isProvisional) && !queuedKeys.has(norm)) {
+                await dbQueuePut('ticket', ticket.id, ticket);
+                queuedKeys.add(norm);
+                queued++;
+            }
+        }
+
+        if (queued > 0) {
+            const updatedQueue = await dbGetSyncQueue();
+            const nextUnsynced = computeUnsyncedTickets(importedTickets, cloudIds);
+            const counts = computeCombinedPendingCounts(updatedQueue, nextUnsynced);
+            updateState({
+                pendingChanges: counts.pendingChanges,
+                pendingTickets: counts.pendingTickets,
+                unsyncedTickets: nextUnsynced,
+                lastPushSucceeded: false,
+            });
+            addSyncLog(
+                'Offline JSON',
+                'Restauration (Import)',
+                'success',
+                auth.currentUser?.email || 'Opérateur Local',
+                `${queued} fiche(s) importée(s) absente(s) du Cloud placée(s) automatiquement en file d'envoi.`
+            );
+        }
+
+        const report = await triggerAutoCatchUpPush('import-backup', onProgress);
+        return { queued, deferredToOnline: false, report };
+    } catch (err) {
+        console.warn('[ImportSync] Comparaison Cloud après import JSON impossible, report au prochain cycle :', err);
+        if (typeof localStorage !== 'undefined') {
+            try {
+                const prevRaw = localStorage.getItem(PENDING_IMPORT_DIFF_KEY);
+                const prev = prevRaw ? (JSON.parse(prevRaw) as string[]) : [];
+                const merged = Array.from(new Set([...(Array.isArray(prev) ? prev : []), ...validIds]));
+                localStorage.setItem(PENDING_IMPORT_DIFF_KEY, JSON.stringify(merged));
+            } catch { /* ignore */ }
+        }
+        return { queued: 0, deferredToOnline: true, report: null };
+    }
+};
+
+// --- Startup Initialization ---
+let initPromise: Promise<void> | null = null;
+let initializedForUid: string | null = null;
+
+/**
+ * Initializes the sync service: ensures pending queue is refreshed and flushed on every app open
+ * and on every network reconnection.
  */
 export const initializeSyncService = async (): Promise<void> => {
+    if (typeof window !== 'undefined' && !onlineRetryRegistered) {
+        onlineRetryRegistered = true;
+        window.addEventListener('online', () => {
+            retryAttemptCount = 0;
+            clearScheduledRetry();
+            if (auth.currentUser && !isQuotaCooldownActive()) {
+                processSyncQueue(false)
+                    .then(() => triggerAutoCatchUpPush('online'))
+                    .catch(console.error);
+            } else {
+                verifyLocalVsCloudTickets().catch(console.error);
+            }
+        });
+    }
+
+    const currentUid = auth.currentUser?.uid || '__anon__';
+    if (initializedForUid === currentUid && auth.currentUser) {
+        // Vérifier quand même la file en attente sans ré-exécuter le scan complet
+        const pendingNow = await dbGetSyncQueue().catch(() => []);
+        const counts = computeCombinedPendingCounts(pendingNow, syncState.unsyncedTickets);
+        updateState({
+            pendingChanges: counts.pendingChanges,
+            pendingTickets: counts.pendingTickets,
+        });
+        if (navigator.onLine && !isQuotaCooldownActive()) {
+            if (pendingNow.length > 0) {
+                await processSyncQueue(false).catch(console.error);
+            }
+            await triggerAutoCatchUpPush('auth-ready').catch(console.error);
+        }
+        return;
+    }
     if (initPromise) return initPromise;
 
     initPromise = (async () => {
         try {
-            // Récupération unique des fiches locales des dernières 72h dont l'entrée syncQueue aurait été perdue
+            // Récupération des fiches locales des dernières 72h dont l'entrée syncQueue aurait été perdue
             if (typeof localStorage !== 'undefined' && !localStorage.getItem('tgs_requeue_recent_v1')) {
                 try {
                     const recovered = await requeueRecentLocalRecords(72);
@@ -1177,37 +1956,39 @@ export const initializeSyncService = async (): Promise<void> => {
             }
 
             const pendingItems = await dbGetSyncQueue();
-            updateState({ pendingChanges: pendingItems.length });
+            const failedItem = pendingItems.find(q => Boolean(q.lastError));
+            const initialCounts = computeCombinedPendingCounts(pendingItems, syncState.unsyncedTickets);
+            updateState({
+                pendingChanges: initialCounts.pendingChanges,
+                pendingTickets: initialCounts.pendingTickets,
+                lastPushSucceeded: initialCounts.pendingChanges === 0 ? syncState.lastPushSucceeded : !failedItem,
+                lastError: failedItem?.lastError || syncState.lastError,
+            });
 
             if (!auth.currentUser) {
                 console.log("Firestore sync initialization deferred: User not authenticated.");
+                await verifyLocalVsCloudTickets().catch(() => []);
                 return;
             }
 
-            if (!connectionTested && !isQuotaCooldownActive()) {
-                connectionTested = true;
-                try {
-                    await getDocFromServer(doc(db, 'test', 'connection'));
-                } catch (error) {
-                    if (isQuotaExceededError(error)) {
-                        reportQuotaExceeded(error);
-                        updateState({
-                            isQuotaExceeded: true,
-                            lastError: getQuotaStatus().message,
-                        });
-                    } else {
-                        const errMsg = error instanceof Error ? error.message : String(error);
-                        if (errMsg.includes('the client is offline')) {
-                            console.log("Firestore connection status: Offline mode (Firebase is configured but client is offline).");
-                        } else {
-                            console.log(`Firestore connection status check details: ${errMsg}`);
-                        }
-                    }
-                }
+            initializedForUid = auth.currentUser.uid;
+
+            await resolvePendingImportedTicketChecks().catch(() => 0);
+            const afterDiffPending = await dbGetSyncQueue();
+            const afterCounts = computeCombinedPendingCounts(afterDiffPending, syncState.unsyncedTickets);
+            updateState({
+                pendingChanges: afterCounts.pendingChanges,
+                pendingTickets: afterCounts.pendingTickets,
+            });
+
+            if (afterDiffPending.length > 0 && navigator.onLine && !isQuotaCooldownActive()) {
+                await processSyncQueue();
             }
 
-            if (pendingItems.length > 0 && !isQuotaCooldownActive()) {
-                await processSyncQueue();
+            if (navigator.onLine && !isQuotaCooldownActive()) {
+                await triggerAutoCatchUpPush('startup');
+            } else {
+                await verifyLocalVsCloudTickets();
             }
         } finally {
             initPromise = null;
@@ -1219,12 +2000,13 @@ export const initializeSyncService = async (): Promise<void> => {
 
 /**
  * Reports real-time synchronization successes from other devices.
- * Updates the global lastSync time and registers a success audit log.
+ * Never wipes push errors or pending queue status when items remain unsent.
  */
 export const reportRealtimeSyncSuccess = (receivedCount: number) => {
+    const preservePushError = syncState.pendingChanges > 0 || syncState.unsyncedTickets.length > 0 || !syncState.lastPushSucceeded;
     updateState({
         lastSync: new Date(),
-        lastError: null,
+        lastError: preservePushError ? syncState.lastError : null,
         isQuotaExceeded: false,
     });
     addSyncLog(

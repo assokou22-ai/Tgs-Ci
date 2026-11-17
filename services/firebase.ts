@@ -102,12 +102,13 @@ export const clearQuotaCooldown = () => {
 export const reportQuotaExceeded = (error?: unknown, cooldownMs = 5 * 60_000) => {
   const now = Date.now();
   quotaCooldownUntil = Math.max(quotaCooldownUntil, now + cooldownMs);
+  const rawError = error instanceof Error ? error.message : String(error || '');
+  const shortDetail = rawError ? ` (${rawError.slice(0, 140)})` : '';
   lastQuotaErrorMessage =
-    "Quota journalier Cloud Firestore temporairement atteint (lectures). Vos fiches restent sauvegardées en local et seront envoyées automatiquement dès la réinitialisation du quota.";
+    `Limite Firestore atteinte ou rafale temporaire${shortDetail}. Vos fiches restent sauvegardées en local et seront synchronisées automatiquement.`;
 
   if (typeof window !== 'undefined' && now - lastQuotaEventAt > 30_000) {
     lastQuotaEventAt = now;
-    const rawError = error instanceof Error ? error.message : String(error || '');
     window.dispatchEvent(
       new CustomEvent('syncquotaexceeded', {
         detail: {

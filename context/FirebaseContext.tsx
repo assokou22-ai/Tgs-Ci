@@ -62,6 +62,10 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     const [googleAccessToken, setGoogleAccessToken] = useState<string | null>(null);
 
     const isCheckingSessionRef = useRef(false);
+    const driveMetadataRef = useRef(driveMetadata);
+    useEffect(() => {
+        driveMetadataRef.current = driveMetadata;
+    }, [driveMetadata]);
 
     // Initial cache restore from IndexedDB (non-blocking)
     useEffect(() => {
@@ -98,6 +102,7 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     const verifyGoogleSession = useCallback(async (token: string | null, currentUser: User | null) => {
         if (isCheckingSessionRef.current) return;
         isCheckingSessionRef.current = true;
+        const meta = driveMetadataRef.current;
 
         try {
             if (token) {
@@ -105,7 +110,7 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
                 if (isValid) {
                     await saveDriveMetadata({
                         driveConnected: true,
-                        connectedEmail: currentUser?.email || driveMetadata.connectedEmail,
+                        connectedEmail: currentUser?.email || meta.connectedEmail,
                         syncStatus: navigator.onLine ? 'synced' : 'offline_pending',
                         lastError: null,
                     });
@@ -118,7 +123,7 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
                         lastError: 'Session expirée (reconnexion requise)',
                     });
                 }
-            } else if (driveMetadata.driveConnected) {
+            } else if (meta.driveConnected) {
                 // Was connected before, but no active token in memory/session
                 await saveDriveMetadata({
                     syncStatus: 'action_required',
@@ -130,7 +135,7 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         } finally {
             isCheckingSessionRef.current = false;
         }
-    }, [driveMetadata.connectedEmail, driveMetadata.driveConnected]);
+    }, []);
 
     // Token lifetime management & periodic check
     useEffect(() => {
@@ -152,7 +157,7 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         return () => clearInterval(interval);
     }, [googleAccessToken]);
 
-    // Listen to Firebase Auth state
+    // Listen to Firebase Auth state (subscribed once per app mount)
     useEffect(() => {
         const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
             setUser(currentUser);

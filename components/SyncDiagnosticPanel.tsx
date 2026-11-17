@@ -14,7 +14,8 @@ import {
     dbGetFactures, 
     dbGetCommandes 
 } from '../services/dbService.ts';
-import { processSyncQueue, syncFromCloud, requeueRecentLocalRecords } from '../services/syncService.ts';
+import { processSyncQueue, syncFromCloud, requeueRecentLocalRecords, pushMissingLocalTicketsToCloud, CatchUpTicketsReport } from '../services/syncService.ts';
+import { runSyncIntegritySelfTests, SyncSelfTestSuiteResult } from '../utils/syncIntegrityRunner.ts';
 import { SyncQueueItem, EntityType } from '../types.ts';
 import { getSyncLogs, clearSyncLogs, SyncLogEntry } from '../utils/syncLogHelper.ts';
 import { 
@@ -36,7 +37,8 @@ import {
     Search,
     Trash2,
     Info,
-    LogIn
+    LogIn,
+    Upload
 } from 'lucide-react';
 
 export const SyncDiagnosticPanel: React.FC = () => {
@@ -44,7 +46,7 @@ export const SyncDiagnosticPanel: React.FC = () => {
     const { user, authReady, signInWithGoogle, isReconnectingGoogle } = useFirebase();
     const isOnline = useOnlineStatus();
     const networkQuality = useNetworkQuality();
-    const { pendingChanges, lastSync, lastError, isQuotaExceeded } = useSyncStatus();
+    const { pendingChanges, pendingTickets, unsyncedTickets, lastIntegrityCheckAt, lastSync, lastPushSucceeded, lastError, isQuotaExceeded } = useSyncStatus();
 
     // Local state for counts
     const [counts, setCounts] = useState({
@@ -61,6 +63,11 @@ export const SyncDiagnosticPanel: React.FC = () => {
     const [showQueueDetails, setShowQueueDetails] = useState(false);
     const [showSystemVolume, setShowSystemVolume] = useState(false);
     const [confirmClearQueue, setConfirmClearQueue] = useState(false);
+    const [isCatchingUp, setIsCatchingUp] = useState(false);
+    const [catchUpProgress, setCatchUpProgress] = useState('');
+    const [catchUpReport, setCatchUpReport] = useState<CatchUpTicketsReport | null>(null);
+    const [isRunningSelfTest, setIsRunningSelfTest] = useState(false);
+    const [selfTestSuite, setSelfTestSuite] = useState<SyncSelfTestSuiteResult | null>(null);
     
     // New States for Sync Logs
     const [showSyncLogs, setShowSyncLogs] = useState(false);
@@ -234,6 +241,65 @@ export const SyncDiagnosticPanel: React.FC = () => {
         }
     };
 
+    const handlePushMissingTickets = async () => {
+        if (!isOnline) {
+            showToast("Connexion Internet requise pour envoyer les fiches en attente.", "warning");
+            return;
+        }
+        if (!user) {
+            showToast("Veuillez d'abord connecter votre compte Google pour comparer avec le Cloud.", "warning");
+            await signInWithGoogle(false);
+            return;
+        }
+        if (isCatchingUp) return;
+
+        setIsCatchingUp(true);
+        setCatchUpProgress('Comparaison des fiches locales avec le Cloud...');
+        try {
+            const report = await pushMissingLocalTicketsToCloud((msg) => setCatchUpProgress(msg));
+            setCatchUpReport(report);
+            await loadLocalDatabaseCounts();
+
+            if (report.missingFound === 0) {
+                showToast("Toutes les fiches locales sont déjà présentes dans le Cloud.", "success");
+            } else if (report.failed.length === 0) {
+                showToast(
+                    `${report.sent.length} fiche(s) manquante(s) envoyée(s) vers le Cloud${report.renumbered.length > 0 ? ` (${report.renumbered.length} renumérotée(s))` : ''}.`,
+                    "success"
+                );
+            } else {
+                showToast(
+                    `Rattrapage partiel : ${report.sent.length} envoyée(s), ${report.failed.length} en échec.`,
+                    "error"
+                );
+            }
+        } catch (err) {
+            const errMsg = err instanceof Error ? err.message : String(err);
+            showToast(`Échec du rattrapage Cloud : ${errMsg}`, "error");
+        } finally {
+            setIsCatchingUp(false);
+            setCatchUpProgress('');
+        }
+    };
+
+    const handleRunSelfTest = async () => {
+        if (isRunningSelfTest) return;
+        setIsRunningSelfTest(true);
+        try {
+            const suite = await runSyncIntegritySelfTests();
+            setSelfTestSuite(suite);
+            if (suite.allPassed) {
+                showToast('Auto-test synchro : 4/4 scénarios validés en mémoire (0 écriture Cloud).', 'success');
+            } else {
+                showToast('Auto-test synchro : au moins un scénario a échoué.', 'error');
+            }
+        } catch (err) {
+            showToast(`Erreur auto-test : ${err instanceof Error ? err.message : String(err)}`, 'error');
+        } finally {
+            setIsRunningSelfTest(false);
+        }
+    };
+
     // Helper to format Date beautifully
     const formatSyncDate = (date: Date | null | string) => {
         if (!date) return 'Aucune enregistrée';
@@ -367,151 +433,395 @@ export const SyncDiagnosticPanel: React.FC = () => {
             </div>
 
             {/* Quick Diagnostic Status Cards */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                {/* CARD 1: Sync Health */}
-                <div className="bg-white/5 border border-white/5 p-5 rounded-2xl flex items-start gap-4">
-                    <div className="mt-1">
-                        {!isOnline || isQuotaExceeded ? (
-                            <div className="p-2.5 bg-red-500/10 rounded-xl border border-red-500/20">
-                                <ShieldAlert className="w-5 h-5 text-red-400" />
-                            </div>
-                        ) : (authReady && !user) || lastError || pendingChanges > 0 || (!lastSync && counts.tickets === 0) ? (
-                            <div className="p-2.5 bg-orange-500/10 rounded-xl border border-orange-500/20">
-                                <AlertTriangle className="w-5 h-5 text-orange-400 animate-pulse" />
-                            </div>
-                        ) : (
-                            <div className="p-2.5 bg-emerald-500/10 rounded-xl border border-emerald-500/20">
-                                <CheckCircle2 className="w-5 h-5 text-emerald-400" />
-                            </div>
-                        )}
-                    </div>
-                    <div className="flex-1 space-y-1">
-                        <span className="text-[9px] font-black uppercase tracking-widest text-apple-muted">État Global</span>
-                        <h4 className="text-sm font-black text-white uppercase tracking-tight">
-                            {!isOnline
-                                ? "Mode Hors Ligne Actif"
-                                : authReady && !user
-                                ? "Connexion Google Requise"
-                                : isQuotaExceeded
-                                ? "Quota Cloud Journalier Atteint"
-                                : lastError
-                                ? "Synchronisation Interrompue"
-                                : pendingChanges > 0
-                                ? `${pendingChanges} Modification(s) en attente`
-                                : !lastSync && counts.tickets === 0
-                                ? "Synchronisation Initiale Requise"
-                                : "Instance Parfaitement à Jour"}
-                        </h4>
-                        <p className="text-xs text-zinc-400 leading-relaxed">
-                            {!isOnline
-                                ? "Stockage autonome hors ligne actif. Reconnectez-vous pour synchroniser."
-                                : authReady && !user
-                                ? "Cet appareil n'est pas connecté à Google. Connectez votre compte atelier pour télécharger et envoyer les fiches."
-                                : isQuotaExceeded
-                                ? "Le quota journalier de lectures Cloud Firestore est temporairement dépassé. Vos fiches locales sont protégées et restent en attente."
-                                : lastError
-                                ? lastError
-                                : pendingChanges > 0
-                                ? "Des fiches modifiées attendent d'être transmises vers le Cloud."
-                                : !lastSync && counts.tickets === 0
-                                ? "Aucune fiche locale pour le moment. Connectez Google et lancez la synchronisation."
-                                : "Toutes vos modifications ont bien été transmises sur le Cloud de TGS."}
-                        </p>
-                    </div>
-                </div>
+            {(() => {
+                const queuedTicketIds = new Set(
+                    localQueue.filter(q => q.entity === 'ticket').map(q => q.entityId.trim().toUpperCase()),
+                );
+                const extraUnsyncedCount = unsyncedTickets.filter(
+                    u => !queuedTicketIds.has(u.id.trim().toUpperCase()),
+                ).length;
+                const combinedQueueCount = localQueue.length + extraUnsyncedCount;
+                const effectivePendingCount = Math.max(pendingTickets, pendingChanges, unsyncedTickets.length, combinedQueueCount);
+                const hasUnsentItems = effectivePendingCount > 0;
+                const hasRedIncident = !isOnline || Boolean(isQuotaExceeded) || Boolean(lastError) || (!lastPushSucceeded && !hasUnsentItems);
+                const hasOrangeUnsent = !hasRedIncident && hasUnsentItems;
+                const needsAuthWarning = !hasRedIncident && !hasOrangeUnsent && ((authReady && !user) || (!lastSync && counts.tickets === 0));
+                const isTrulyUpToDate = !hasRedIncident && !hasOrangeUnsent && !needsAuthWarning && unsyncedTickets.length === 0;
 
-                {/* CARD 2: Last cloud verification */}
-                <div className="bg-white/5 border border-white/5 p-5 rounded-2xl flex items-start gap-4">
-                    <div className="mt-1 p-2.5 bg-indigo-500/10 rounded-xl border border-indigo-500/20">
-                        <Server className="w-5 h-5 text-indigo-400" />
-                    </div>
-                    <div className="flex-1 space-y-1">
-                        <span className="text-[9px] font-black uppercase tracking-widest text-apple-muted">Dernière Connexion</span>
-                        <h4 className="text-sm font-black text-white uppercase tracking-tight">
-                            {user ? (lastSync ? "Cloud Vérifié" : "Connecté — En attente") : "Non Connecté"}
-                        </h4>
-                        <p className="text-xs text-zinc-300 font-semibold">
-                            {user ? (user.email || formatSyncDate(lastSync)) : 'Compte Google non lié'}
-                        </p>
-                        <p className="text-[10px] text-zinc-400">
-                            {user && lastSync
-                                ? `Dernier échange : ${formatSyncDate(lastSync)}`
-                                : "La vérification télécharge les changements d'autres postes de travail."}
-                        </p>
-                    </div>
-                </div>
+                return (
+                    <>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                        {/* CARD 1: Sync Health */}
+                        <div className={`border p-5 rounded-2xl flex items-start gap-4 ${
+                            hasRedIncident
+                                ? 'bg-red-950/20 border-red-500/30'
+                                : (hasOrangeUnsent || needsAuthWarning)
+                                ? 'bg-orange-950/20 border-orange-500/35'
+                                : 'bg-white/5 border-white/5'
+                        }`}>
+                            <div className="mt-1">
+                                {hasRedIncident ? (
+                                    <div className="p-2.5 bg-red-500/15 rounded-xl border border-red-500/30">
+                                        <ShieldAlert className="w-5 h-5 text-red-400 animate-pulse" />
+                                    </div>
+                                ) : (hasOrangeUnsent || needsAuthWarning) ? (
+                                    <div className="p-2.5 bg-orange-500/15 rounded-xl border border-orange-500/30">
+                                        <AlertTriangle className="w-5 h-5 text-orange-400 animate-pulse" />
+                                    </div>
+                                ) : (
+                                    <div className="p-2.5 bg-emerald-500/10 rounded-xl border border-emerald-500/20">
+                                        <CheckCircle2 className="w-5 h-5 text-emerald-400" />
+                                    </div>
+                                )}
+                            </div>
+                            <div className="flex-1 space-y-1">
+                                <span className="text-[9px] font-black uppercase tracking-widest text-apple-muted">État Global</span>
+                                <h4 className={`text-sm font-black uppercase tracking-tight ${
+                                    hasRedIncident
+                                        ? 'text-red-300'
+                                        : hasOrangeUnsent
+                                        ? 'text-orange-300'
+                                        : 'text-white'
+                                }`}>
+                                    {hasUnsentItems
+                                        ? `${effectivePendingCount} fiche(s) non envoyée(s)`
+                                        : !isOnline
+                                        ? "Mode Hors Ligne Actif"
+                                        : isQuotaExceeded
+                                        ? "Quota Cloud Journalier Atteint"
+                                        : (!lastPushSucceeded || lastError)
+                                        ? "Échec d'envoi vers le Cloud"
+                                        : authReady && !user
+                                        ? "Connexion Google Requise"
+                                        : !lastSync && counts.tickets === 0
+                                        ? "Synchronisation Initiale Requise"
+                                        : isTrulyUpToDate
+                                        ? "Instance Parfaitement à Jour"
+                                        : "Synchronisation Requise"}
+                                </h4>
+                                <p className={`text-xs leading-relaxed ${
+                                    hasRedIncident
+                                        ? 'text-red-200/90'
+                                        : hasOrangeUnsent
+                                        ? 'text-orange-200/90'
+                                        : 'text-zinc-400'
+                                }`}>
+                                    {lastError
+                                        ? lastError
+                                        : hasUnsentItems
+                                        ? (!isOnline
+                                            ? "Appareil hors ligne : ces fiches sont sécurisées en local et partiront dès le retour du réseau."
+                                            : "Des fiches locales ou provisoires ne sont pas encore confirmées sur Firestore.")
+                                        : !isOnline
+                                        ? "Stockage autonome hors ligne actif. Reconnectez-vous pour synchroniser."
+                                        : authReady && !user
+                                        ? "Cet appareil n'est pas connecté à Google. Connectez votre compte atelier pour télécharger et envoyer les fiches."
+                                        : isQuotaExceeded
+                                        ? "Le quota journalier de lectures Cloud Firestore est temporairement dépassé. Vos fiches locales sont protégées et restent en attente."
+                                        : !lastPushSucceeded
+                                        ? "Le dernier envoi vers le Cloud n'a pas été confirmé."
+                                        : !lastSync && counts.tickets === 0
+                                        ? "Aucune fiche locale pour le moment. Connectez Google et lancez la synchronisation."
+                                        : "Toutes vos modifications ont bien été transmises et confirmées sur le Cloud."}
+                                </p>
+                            </div>
+                        </div>
 
-                {/* CARD 3: Forced Trigger Action */}
-                <div className="bg-white/5 border border-white/5 p-5 rounded-2xl flex flex-col justify-between">
-                    <div className="space-y-1">
-                        <span className="text-[9px] font-black uppercase tracking-widest text-apple-muted">Action Manuelle</span>
-                        <h4 className="text-xs font-black text-white uppercase tracking-wider">
-                            {authReady && !user ? "Lier cet appareil au Cloud" : "Mise à jour immédiate"}
-                        </h4>
-                        <p className="text-[10px] text-zinc-400 leading-normal">
-                            {authReady && !user
-                                ? "Connectez votre compte Google autorisé pour récupérer immédiatement toutes les fiches sur cet ordinateur."
-                                : "Forcez le transfert des données locales et le téléchargement des fiches clients depuis Firebase."}
-                        </p>
+                        {/* CARD 2: Last cloud verification */}
+                        <div className="bg-white/5 border border-white/5 p-5 rounded-2xl flex items-start gap-4">
+                            <div className="mt-1 p-2.5 bg-indigo-500/10 rounded-xl border border-indigo-500/20">
+                                <Server className="w-5 h-5 text-indigo-400" />
+                            </div>
+                            <div className="flex-1 space-y-1">
+                                <span className="text-[9px] font-black uppercase tracking-widest text-apple-muted">Dernière Connexion</span>
+                                <h4 className="text-sm font-black text-white uppercase tracking-tight">
+                                    {user ? (lastSync ? "Cloud Vérifié" : "Connecté — En attente") : "Non Connecté"}
+                                </h4>
+                                <p className="text-xs text-zinc-300 font-semibold">
+                                    {user ? (user.email || formatSyncDate(lastSync)) : 'Compte Google non lié'}
+                                </p>
+                                <p className="text-[10px] text-zinc-400">
+                                    {user && lastSync
+                                        ? `Dernier échange : ${formatSyncDate(lastSync)}`
+                                        : "La vérification télécharge les changements d'autres postes de travail."}
+                                </p>
+                            </div>
+                        </div>
+
+                        {/* CARD 3: Forced Trigger Action + Catch-up */}
+                        <div className="bg-white/5 border border-white/5 p-5 rounded-2xl flex flex-col justify-between gap-2.5">
+                            <div className="space-y-1">
+                                <span className="text-[9px] font-black uppercase tracking-widest text-apple-muted">Action Manuelle</span>
+                                <h4 className="text-xs font-black text-white uppercase tracking-wider">
+                                    {authReady && !user ? "Lier cet appareil au Cloud" : "Mise à jour & rattrapage"}
+                                </h4>
+                                <p className="text-[10px] text-zinc-400 leading-normal">
+                                    {authReady && !user
+                                        ? "Connectez votre compte Google autorisé pour récupérer immédiatement toutes les fiches sur cet ordinateur."
+                                        : "Comparez les fiches locales avec le Cloud ou forcez un cycle complet Envoi + Réception."}
+                                </p>
+                            </div>
+
+                            {authReady && !user ? (
+                                <button
+                                    onClick={() => signInWithGoogle(false)}
+                                    disabled={!isOnline || isReconnectingGoogle}
+                                    className="mt-2 w-full py-3 px-4 rounded-xl flex items-center justify-center gap-2 font-black text-[10px] uppercase tracking-widest transition-all bg-blue-600 hover:bg-blue-500 text-white active:scale-95 shadow-xl disabled:opacity-40"
+                                >
+                                    <LogIn className="w-3.5 h-3.5" />
+                                    <span>{isReconnectingGoogle ? "Connexion..." : "Connecter Google & Synchroniser"}</span>
+                                </button>
+                            ) : (
+                                <div className="space-y-2 mt-1">
+                                    <button
+                                        onClick={handlePushMissingTickets}
+                                        disabled={!isOnline || isCatchingUp}
+                                        className="w-full py-2.5 px-4 rounded-xl flex items-center justify-center gap-2 font-black text-[10px] uppercase tracking-widest transition-all bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white active:scale-95 shadow-lg"
+                                    >
+                                        {isCatchingUp ? (
+                                            <>
+                                                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                                                <span className="truncate">{catchUpProgress || 'Envoi en cours...'}</span>
+                                            </>
+                                        ) : (
+                                            <>
+                                                <Upload className="w-3.5 h-3.5" />
+                                                <span>Envoyer les fiches en attente</span>
+                                            </>
+                                        )}
+                                    </button>
+
+                                    <button
+                                        onClick={handleForceSync}
+                                        disabled={localSyncingState !== 'idle' && localSyncingState !== 'done' && localSyncingState !== 'error'}
+                                        className={`w-full py-2.5 px-4 rounded-xl flex items-center justify-center gap-2 font-black text-[10px] uppercase tracking-widest transition-all ${
+                                            localSyncingState === 'sending' || localSyncingState === 'receiving'
+                                                ? 'bg-amber-600 text-white cursor-wait'
+                                                : localSyncingState === 'done'
+                                                ? 'bg-emerald-600 text-white'
+                                                : localSyncingState === 'error'
+                                                ? 'bg-red-600 text-white'
+                                                : 'bg-white text-black hover:bg-zinc-200 active:scale-95 shadow-xl'
+                                        }`}
+                                    >
+                                        {localSyncingState === 'sending' && (
+                                            <>
+                                                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                                                <span>Transfert des fiches...</span>
+                                            </>
+                                        )}
+                                        {localSyncingState === 'receiving' && (
+                                            <>
+                                                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                                                <span>Réception depuis le Cloud...</span>
+                                            </>
+                                        )}
+                                        {localSyncingState === 'done' && (
+                                            <>
+                                                <Check className="w-3.5 h-3.5" />
+                                                <span>Synchronisation Réussie !</span>
+                                            </>
+                                        )}
+                                        {localSyncingState === 'error' && (
+                                            <>
+                                                <AlertTriangle className="w-3.5 h-3.5" />
+                                                <span>Échec, Réessayez</span>
+                                            </>
+                                        )}
+                                        {localSyncingState === 'idle' && (
+                                            <>
+                                                <RefreshCw className="w-3.5 h-3.5" />
+                                                <span>Forcer la synchronisation</span>
+                                            </>
+                                        )}
+                                    </button>
+                                </div>
+                            )}
+
+                            <button
+                                onClick={handleRunSelfTest}
+                                disabled={isRunningSelfTest}
+                                className="w-full py-2 px-4 rounded-xl flex items-center justify-center gap-2 font-black text-[10px] uppercase tracking-widest transition-all bg-zinc-800 hover:bg-zinc-700 border border-white/10 text-zinc-200 disabled:opacity-50"
+                                title="Exécute 4 tests strictement en mémoire sans modifier ni lire le Cloud réel"
+                            >
+                                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                                <span>{isRunningSelfTest ? 'Tests en cours...' : 'Auto-test synchro'}</span>
+                            </button>
+                        </div>
                     </div>
 
-                    {authReady && !user ? (
+                    {/* Liste explicite en orange des fiches locales non envoyées / provisoires */}
+                    {unsyncedTickets.length > 0 && (
+                        <div className="bg-orange-950/25 border border-orange-500/35 rounded-2xl p-5 space-y-3">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                                <div>
+                                    <h4 className="text-xs font-black uppercase tracking-widest text-orange-300 flex items-center gap-2">
+                                        <AlertTriangle className="w-4 h-4 text-orange-400" />
+                                        {effectivePendingCount} fiche(s) non envoyée(s)
+                                    </h4>
+                                    <p className="text-[11px] text-orange-200/80 mt-0.5">
+                                        Ces fiches locales sont absentes du Cloud ou encore marquées provisoires.
+                                        {lastIntegrityCheckAt ? ` Dernière vérification : ${formatSyncDate(lastIntegrityCheckAt)}.` : ''}
+                                    </p>
+                                </div>
+                                <button
+                                    onClick={handlePushMissingTickets}
+                                    disabled={!isOnline || isCatchingUp}
+                                    className="px-3.5 py-2 rounded-xl bg-orange-500 hover:bg-orange-400 disabled:opacity-40 text-black font-black text-[10px] uppercase tracking-wider transition-all"
+                                >
+                                    Envoyer les fiches en attente
+                                </button>
+                            </div>
+                            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 max-h-48 overflow-y-auto pr-1">
+                                {unsyncedTickets.map((t) => (
+                                    <div key={t.id} className="p-2.5 rounded-xl bg-black/40 border border-orange-500/25 flex items-center justify-between gap-2 text-xs">
+                                        <div className="min-w-0">
+                                            <div className="font-mono font-bold text-orange-200 truncate">{t.id}</div>
+                                            <div className="text-[11px] text-white font-semibold truncate">{t.clientName}</div>
+                                            <div className="text-[10px] text-zinc-400 truncate">{t.macModel}</div>
+                                        </div>
+                                        <span className="text-[9px] font-black uppercase px-2 py-0.5 rounded bg-orange-500/20 text-orange-300 border border-orange-500/30 shrink-0">
+                                            {t.isProvisional ? 'Provisoire' : 'Absente Cloud'}
+                                        </span>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+                    </>
+                );
+            })()}
+
+            {/* Résultats Auto-test synchro (strictement en mémoire) */}
+            {selfTestSuite && (
+                <div className={`rounded-2xl border p-5 space-y-3 ${
+                    selfTestSuite.allPassed
+                        ? 'bg-emerald-950/15 border-emerald-500/30'
+                        : 'bg-red-950/20 border-red-500/30'
+                }`}>
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div>
+                            <h4 className="text-xs font-black uppercase tracking-widest text-white">
+                                Auto-test synchro (en mémoire — 0 écriture Cloud)
+                            </h4>
+                            <p className="text-[11px] text-zinc-400">
+                                Exécuté le {formatSyncDate(selfTestSuite.executedAt)} — {selfTestSuite.results.filter(r => r.passed).length}/{selfTestSuite.results.length} réussi(s)
+                            </p>
+                        </div>
                         <button
-                            onClick={() => signInWithGoogle(false)}
-                            disabled={!isOnline || isReconnectingGoogle}
-                            className="mt-4 w-full py-3 px-4 rounded-xl flex items-center justify-center gap-2 font-black text-[10px] uppercase tracking-widest transition-all bg-blue-600 hover:bg-blue-500 text-white active:scale-95 shadow-xl disabled:opacity-40"
+                            onClick={() => setSelfTestSuite(null)}
+                            className="text-[10px] font-bold uppercase tracking-wider text-zinc-400 hover:text-white px-2.5 py-1 rounded-lg bg-white/5"
                         >
-                            <LogIn className="w-3.5 h-3.5" />
-                            <span>{isReconnectingGoogle ? "Connexion..." : "Connecter Google & Synchroniser"}</span>
+                            Fermer
                         </button>
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+                        {selfTestSuite.results.map((res) => (
+                            <div
+                                key={res.id}
+                                className={`p-3 rounded-xl border text-xs space-y-1 ${
+                                    res.passed
+                                        ? 'bg-black/30 border-emerald-500/25'
+                                        : 'bg-red-950/30 border-red-500/35'
+                                }`}
+                            >
+                                <div className="flex items-center justify-between gap-2">
+                                    <span className="font-bold text-white">
+                                        Test ({res.id}) : {res.title}
+                                    </span>
+                                    <span className={`text-[9px] font-black uppercase px-2 py-0.5 rounded-full ${
+                                        res.passed ? 'bg-emerald-500/20 text-emerald-300' : 'bg-red-500/20 text-red-300'
+                                    }`}>
+                                        {res.passed ? 'OK' : 'ÉCHEC'}
+                                    </span>
+                                </div>
+                                <p className="text-[11px] text-zinc-300 leading-relaxed">{res.details}</p>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            )}
+
+            {/* Rapport de rattrapage des fiches manquantes */}
+            {catchUpReport && (
+                <div className={`rounded-2xl border p-5 space-y-3 ${
+                    catchUpReport.failed.length > 0
+                        ? 'bg-red-950/20 border-red-500/30'
+                        : 'bg-emerald-950/15 border-emerald-500/25'
+                }`}>
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div>
+                            <h4 className="text-xs font-black uppercase tracking-widest text-white">
+                                Rapport d&apos;envoi des fiches manquantes
+                            </h4>
+                            <p className="text-[11px] text-zinc-400">
+                                Comparaison : {catchUpReport.totalLocal} fiche(s) locales vs {catchUpReport.totalCloud} dans le Cloud — {catchUpReport.missingFound} manquante(s) détectée(s).
+                            </p>
+                        </div>
+                        <button
+                            onClick={() => setCatchUpReport(null)}
+                            className="text-[10px] font-bold uppercase tracking-wider text-zinc-400 hover:text-white px-2.5 py-1 rounded-lg bg-white/5"
+                        >
+                            Fermer
+                        </button>
+                    </div>
+
+                    {catchUpReport.missingFound === 0 ? (
+                        <p className="text-xs text-emerald-300 font-semibold">
+                            Toutes les fiches locales sont déjà présentes dans le Cloud.
+                        </p>
                     ) : (
-                        <button
-                            onClick={handleForceSync}
-                            disabled={localSyncingState !== 'idle' && localSyncingState !== 'done' && localSyncingState !== 'error'}
-                            className={`mt-4 w-full py-3 px-4 rounded-xl flex items-center justify-center gap-2 font-black text-[10px] uppercase tracking-widest transition-all ${
-                                localSyncingState === 'sending' || localSyncingState === 'receiving'
-                                    ? 'bg-amber-600 text-white cursor-wait'
-                                    : localSyncingState === 'done'
-                                    ? 'bg-emerald-600 text-white'
-                                    : localSyncingState === 'error'
-                                    ? 'bg-red-600 text-white'
-                                    : 'bg-white text-black hover:bg-zinc-200 active:scale-95 shadow-xl'
-                            }`}
-                        >
-                            {localSyncingState === 'sending' && (
-                                <>
-                                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                                    <span>Transfert des fiches...</span>
-                                </>
-                            )}
-                            {localSyncingState === 'receiving' && (
-                                <>
-                                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                                    <span>Réception depuis le Cloud...</span>
-                                </>
-                            )}
-                            {localSyncingState === 'done' && (
-                                <>
-                                    <Check className="w-3.5 h-3.5" />
-                                    <span>Synchronisation Réussie !</span>
-                                </>
-                            )}
-                            {localSyncingState === 'error' && (
-                                <>
-                                    <AlertTriangle className="w-3.5 h-3.5" />
-                                    <span>Échec, Réessayez</span>
-                                </>
-                            )}
-                            {localSyncingState === 'idle' && (
-                                <>
-                                    <RefreshCw className="w-3.5 h-3.5" />
-                                    <span>Forcer la synchronisation</span>
-                                </>
-                            )}
-                        </button>
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
+                            <div className="bg-black/30 border border-emerald-500/20 rounded-xl p-3 space-y-1">
+                                <span className="text-[10px] font-black uppercase tracking-wider text-emerald-400 block">
+                                    Envoyées ({catchUpReport.sent.length})
+                                </span>
+                                {catchUpReport.sent.length === 0 ? (
+                                    <p className="text-zinc-500 text-[11px]">Aucune</p>
+                                ) : (
+                                    <p className="text-zinc-200 font-mono text-[11px] break-all">
+                                        {catchUpReport.sent.join(', ')}
+                                    </p>
+                                )}
+                            </div>
+
+                            <div className="bg-black/30 border border-blue-500/20 rounded-xl p-3 space-y-1">
+                                <span className="text-[10px] font-black uppercase tracking-wider text-blue-400 block">
+                                    Renumérotées ({catchUpReport.renumbered.length})
+                                </span>
+                                {catchUpReport.renumbered.length === 0 ? (
+                                    <p className="text-zinc-500 text-[11px]">Aucune collision</p>
+                                ) : (
+                                    <ul className="space-y-0.5 text-[11px] font-mono text-blue-200">
+                                        {catchUpReport.renumbered.map((r) => (
+                                            <li key={`${r.oldId}-${r.newId}`}>
+                                                {r.oldId} &rarr; {r.newId}
+                                            </li>
+                                        ))}
+                                    </ul>
+                                )}
+                            </div>
+
+                            <div className="bg-black/30 border border-red-500/20 rounded-xl p-3 space-y-1">
+                                <span className="text-[10px] font-black uppercase tracking-wider text-red-400 block">
+                                    Échouées ({catchUpReport.failed.length})
+                                </span>
+                                {catchUpReport.failed.length === 0 ? (
+                                    <p className="text-zinc-500 text-[11px]">Aucun échec</p>
+                                ) : (
+                                    <ul className="space-y-1 text-[11px] text-red-300">
+                                        {catchUpReport.failed.map((f) => (
+                                            <li key={f.id} className="break-words">
+                                                <strong className="font-mono">{f.id}</strong> : {f.reason}
+                                            </li>
+                                        ))}
+                                    </ul>
+                                )}
+                            </div>
+                        </div>
                     )}
                 </div>
-            </div>
+            )}
 
             {/* Sub-panels triggers */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-2 border-t border-white/5">
@@ -551,8 +861,14 @@ export const SyncDiagnosticPanel: React.FC = () => {
                         <List className={`w-4 h-4 ${showQueueDetails ? 'text-amber-400' : 'text-zinc-400'}`} />
                         <div>
                             <span className="text-[8px] font-black uppercase tracking-widest text-apple-muted block leading-none mb-1">File d&apos;attente</span>
-                            <span className="text-xs font-bold text-white uppercase tracking-tight">
-                                {localQueue.length === 0 ? "Aucune en attente" : `${localQueue.length} fiches modifiées`}
+                            <span className={`text-xs font-bold uppercase tracking-tight ${
+                                Math.max(pendingTickets, pendingChanges, unsyncedTickets.length, localQueue.length) > 0
+                                    ? 'text-orange-300'
+                                    : 'text-white'
+                            }`}>
+                                {Math.max(pendingTickets, pendingChanges, unsyncedTickets.length, localQueue.length) === 0
+                                    ? "Aucune en attente"
+                                    : `${Math.max(pendingTickets, pendingChanges, unsyncedTickets.length, localQueue.length)} fiche(s) en attente`}
                             </span>
                         </div>
                     </div>
@@ -667,13 +983,35 @@ export const SyncDiagnosticPanel: React.FC = () => {
                             </div>
                         </div>
                         
-                        {localQueue.length === 0 ? (
+                        {unsyncedTickets.length > 0 && (
+                            <div className="mb-4 p-3 rounded-xl bg-orange-950/25 border border-orange-500/30 space-y-2">
+                                <span className="text-[10px] font-black uppercase tracking-wider text-orange-300 block">
+                                    {unsyncedTickets.length} fiche(s) non envoyée(s) / provisoire(s)
+                                </span>
+                                <div className="space-y-1.5 max-h-40 overflow-y-auto pr-1">
+                                    {unsyncedTickets.map((t) => (
+                                        <div key={t.id} className="flex items-center justify-between p-2 rounded-lg bg-black/40 border border-orange-500/20 text-xs">
+                                            <div className="min-w-0">
+                                                <span className="font-mono font-bold text-orange-200">{t.id}</span>
+                                                <span className="text-zinc-300 ml-2">{t.clientName}</span>
+                                                <span className="text-zinc-400 ml-2">({t.macModel})</span>
+                                            </div>
+                                            <span className="text-[9px] font-black uppercase px-2 py-0.5 rounded bg-orange-500/20 text-orange-300 shrink-0">
+                                                {t.isProvisional ? 'Provisoire' : 'Absente Cloud'}
+                                            </span>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+
+                        {localQueue.length === 0 && unsyncedTickets.length === 0 ? (
                             <div className="text-center py-6 text-zinc-500 space-y-2">
                                 <CheckCircle2 className="w-8 h-8 mx-auto text-emerald-500/50 animate-bounce" />
                                 <p className="text-xs font-semibold uppercase tracking-wider text-zinc-400">Aucune modification en file d&apos;attente</p>
                                 <p className="text-[10px] text-zinc-500">Toutes les opérations effectuées sur ce poste de travail sont sauvegardées sur Firebase.</p>
                             </div>
-                        ) : (
+                        ) : localQueue.length === 0 ? null : (
                             <div className="max-h-60 overflow-y-auto space-y-2 pr-2">
                                 {localQueue.map((item, index) => {
                                     const actionType = getActionTypeLabel(item.operation);

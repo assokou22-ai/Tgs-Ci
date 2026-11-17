@@ -1,4 +1,4 @@
-import { getDB, dbQueuePut, dbGetSyncQueue } from './dbService.ts';
+import { getDB, dbQueuePut, dbGetSyncQueue, bulkPut } from './dbService.ts';
 import { hydrateFromCloudBestEffort, mergeUnresolvedMediaFallback, hasMediaRefs, warmMediaCacheFromRecord } from './cloudMedia.ts';
 import { calibrateServerClock } from './syncClock.ts';
 import { mergeUpdates } from '../utils/merge.ts';
@@ -9,24 +9,41 @@ import { db, auth, isQuotaCooldownActive, isQuotaExceededError, reportQuotaExcee
 import { reportRealtimeSyncSuccess } from './syncService.ts';
 import { resolveIncrementalSince, advanceCollectionWatermark } from './syncWatermark.ts';
 
+interface CollectionSpec {
+    entity: EntityType;
+    collectionName: string;
+    storeName: string;
+}
 
-// --- Firestore Real-time Sync List ---
-const collectionsToListen: { entity: EntityType; collectionName: string; storeName: string }[] = [
+// --- Collections temps réel permanentes (flux atelier quotidien) ---
+const liveRealtimeCollections: CollectionSpec[] = [
     { entity: 'ticket', collectionName: 'tickets', storeName: 'tickets' },
     { entity: 'stock', collectionName: 'stock', storeName: 'stock' },
     { entity: 'stockUsage', collectionName: 'stockUsage', storeName: 'stockUsage' },
-    { entity: 'externalPurchase', collectionName: 'externalPurchases', storeName: 'externalPurchases' },
-    { entity: 'service', collectionName: 'services', storeName: 'services' },
     { entity: 'facture', collectionName: 'factures', storeName: 'factures' },
-    { entity: 'proforma', collectionName: 'proformas', storeName: 'proformas' },
     { entity: 'commande', collectionName: 'commandes', storeName: 'commandes' },
     { entity: 'appointment', collectionName: 'appointments', storeName: 'appointments' },
+    { entity: 'engagementSav', collectionName: 'engagementsSav', storeName: 'engagementsSav' },
+    { entity: 'mouvementStock', collectionName: 'mouvementsStock', storeName: 'mouvementsStock' },
+];
+
+// --- Collections à faible fréquence (synchronisation incrémentale espacée, sans écouteur permanent) ---
+const periodicCollections: CollectionSpec[] = [
+    { entity: 'service', collectionName: 'services', storeName: 'services' },
+    { entity: 'proforma', collectionName: 'proformas', storeName: 'proformas' },
+    { entity: 'externalPurchase', collectionName: 'externalPurchases', storeName: 'externalPurchases' },
     { entity: 'simpleDocument', collectionName: 'simpleDocuments', storeName: 'simpleDocuments' },
     { entity: 'storedDocument', collectionName: 'storedDocuments', storeName: 'knowledge_files' },
     { entity: 'suggestions', collectionName: 'suggestions', storeName: 'suggestions' },
-    { entity: 'engagementSav', collectionName: 'engagementsSav', storeName: 'engagementsSav' },
-    { entity: 'mouvementStock', collectionName: 'mouvementsStock', storeName: 'mouvementsStock' }
 ];
+
+const LEADER_STORAGE_KEY = 'tgs_realtime_leader_v1';
+const LEADER_CHANNEL_NAME = 'tgs_realtime_sync_v1';
+const LEADER_TTL_MS = 12_000;
+const LEADER_HEARTBEAT_MS = 4_000;
+const PERIODIC_PULL_INTERVAL_MS = 15 * 60_000;
+
+const TAB_ID = `tab-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
 const unsubscribeList: (() => void)[] = [];
 const pendingMediaRetry = new Set<string>();
@@ -35,6 +52,62 @@ let activeUid: string | null = null;
 let startingUid: string | null = null;
 let startSeq = 0;
 let lifecycleInitialized = false;
+let leaderHeartbeatTimer: ReturnType<typeof setInterval> | null = null;
+let broadcastChannel: BroadcastChannel | null = null;
+let lastPeriodicPullAt = 0;
+let periodicPullRunning = false;
+
+interface LeaderLease {
+    tabId: string;
+    uid: string;
+    expiresAt: number;
+}
+
+const readLeaderLease = (): LeaderLease | null => {
+    if (typeof localStorage === 'undefined') return null;
+    try {
+        const raw = localStorage.getItem(LEADER_STORAGE_KEY);
+        if (!raw) return null;
+        const parsed = JSON.parse(raw) as LeaderLease;
+        if (!parsed || typeof parsed.tabId !== 'string' || typeof parsed.expiresAt !== 'number') return null;
+        return parsed;
+    } catch {
+        return null;
+    }
+};
+
+const tryAcquireOrRenewLeadership = (uid: string): boolean => {
+    if (typeof localStorage === 'undefined') return true;
+    const now = Date.now();
+    const existing = readLeaderLease();
+    if (existing && existing.tabId !== TAB_ID && existing.uid === uid && existing.expiresAt > now) {
+        return false;
+    }
+    try {
+        const next: LeaderLease = { tabId: TAB_ID, uid, expiresAt: now + LEADER_TTL_MS };
+        localStorage.setItem(LEADER_STORAGE_KEY, JSON.stringify(next));
+        const check = readLeaderLease();
+        return Boolean(check && check.tabId === TAB_ID);
+    } catch {
+        return true;
+    }
+};
+
+const releaseLeadership = () => {
+    if (typeof localStorage === 'undefined') return;
+    try {
+        const existing = readLeaderLease();
+        if (existing && existing.tabId === TAB_ID) {
+            localStorage.removeItem(LEADER_STORAGE_KEY);
+        }
+    } catch { /* ignore */ }
+};
+
+const notifyOtherTabsDataReceived = () => {
+    try {
+        broadcastChannel?.postMessage({ type: 'datareceived', from: TAB_ID });
+    } catch { /* ignore */ }
+};
 
 /** Arrête proprement tous les écouteurs Firestore en cours. */
 export const stopFirebaseRealtimeSync = () => {
@@ -46,6 +119,11 @@ export const stopFirebaseRealtimeSync = () => {
             try { unsub(); } catch { /* ignore */ }
         }
     }
+    if (leaderHeartbeatTimer) {
+        clearInterval(leaderHeartbeatTimer);
+        leaderHeartbeatTimer = null;
+    }
+    releaseLeadership();
     activeUid = null;
 };
 
@@ -62,6 +140,109 @@ const scheduleRepush = async (entity: EntityType, id: string, payload: unknown) 
     await dbQueuePut(entity, id, payload);
 };
 
+/** Synchronisation incrémentale espacée pour les collections secondaires (services, proformas, documents...). */
+const pullPeriodicCollectionsIfNeeded = async (force = false) => {
+    if (periodicPullRunning || !navigator.onLine || !auth.currentUser || isQuotaCooldownActive()) return;
+    const now = Date.now();
+    if (!force && lastPeriodicPullAt > 0 && now - lastPeriodicPullAt < PERIODIC_PULL_INTERVAL_MS) {
+        return;
+    }
+    periodicPullRunning = true;
+    lastPeriodicPullAt = now;
+
+    try {
+        const liveDb = await getDB();
+        let anyChanges = false;
+        let receivedCount = 0;
+
+        for (const colSpec of periodicCollections) {
+            if (!auth.currentUser || isQuotaCooldownActive()) break;
+            try {
+                let pullTarget: Query<DocumentData> = collection(db, colSpec.collectionName);
+                try {
+                    const localItems = await liveDb.getAll(colSpec.storeName);
+                    const since = resolveIncrementalSince(colSpec.collectionName, localItems);
+                    if (since) {
+                        pullTarget = query(collection(db, colSpec.collectionName), where('updatedAt', '>', since));
+                    }
+                } catch { /* repli collection complète */ }
+
+                const startedAt = new Date().toISOString();
+                const snap = await getDocs(pullTarget);
+                if (snap.empty) {
+                    advanceCollectionWatermark(colSpec.collectionName, [], startedAt);
+                    continue;
+                }
+
+                const itemsToPut: unknown[] = [];
+                const rawForWm: unknown[] = [];
+                for (const docSnap of snap.docs) {
+                    const raw = { ...(docSnap.data() as Record<string, unknown>) };
+                    if (!raw.id) raw.id = docSnap.id;
+                    if (colSpec.storeName === 'suggestions') raw.category = docSnap.id;
+                    rawForWm.push(raw);
+
+                    const itemKey = colSpec.storeName === 'suggestions' ? String(raw.category) : String(raw.id);
+                    const localItem = await liveDb.get(colSpec.storeName, itemKey);
+                    if (localItem && hasMediaRefs(raw)) {
+                        await warmMediaCacheFromRecord(localItem);
+                    }
+                    const hydrated = await hydrateFromCloudBestEffort(raw, !isQuotaCooldownActive());
+                    const safeRemote = localItem && hydrated.unresolvedRefs > 0
+                        ? mergeUnresolvedMediaFallback(localItem, hydrated.data)
+                        : hydrated.data;
+                    const merged = localItem ? mergeUpdates(colSpec.entity, localItem, safeRemote) : safeRemote;
+
+                    if (!localItem || stableStringify(localItem) !== stableStringify(merged)) {
+                        itemsToPut.push(merged);
+                    }
+                }
+
+                if (itemsToPut.length > 0) {
+                    await bulkPut(colSpec.storeName, itemsToPut);
+                    anyChanges = true;
+                    receivedCount += itemsToPut.length;
+                }
+                advanceCollectionWatermark(colSpec.collectionName, rawForWm, startedAt);
+            } catch (err) {
+                if (isQuotaExceededError(err)) {
+                    reportQuotaExceeded(err);
+                    break;
+                }
+                console.warn(`[PeriodicSync] Erreur non bloquante sur ${colSpec.collectionName}:`, err);
+            }
+        }
+
+        if (anyChanges) {
+            window.dispatchEvent(new CustomEvent('datareceived'));
+            notifyOtherTabsDataReceived();
+            reportRealtimeSyncSuccess(receivedCount);
+        }
+    } finally {
+        periodicPullRunning = false;
+    }
+};
+
+const ensureLeaderHeartbeat = (uid: string) => {
+    if (leaderHeartbeatTimer) clearInterval(leaderHeartbeatTimer);
+    leaderHeartbeatTimer = setInterval(() => {
+        if (!auth.currentUser || auth.currentUser.uid !== uid || isQuotaCooldownActive()) {
+            return;
+        }
+        const isLeader = tryAcquireOrRenewLeadership(uid);
+        if (isLeader && unsubscribeList.length === 0 && startingUid !== uid) {
+            startFirebaseRealtimeSync(true);
+        } else if (!isLeader && unsubscribeList.length > 0) {
+            // Un autre onglet est devenu leader : on libère les écouteurs de cet onglet secondaire
+            while (unsubscribeList.length > 0) {
+                const unsub = unsubscribeList.pop();
+                if (unsub) {
+                    try { unsub(); } catch { /* ignore */ }
+                }
+            }
+        }
+    }, LEADER_HEARTBEAT_MS);
+};
 
 export const startFirebaseRealtimeSync = (forceRestart = false) => {
     if (!auth.currentUser) {
@@ -76,18 +257,29 @@ export const startFirebaseRealtimeSync = (forceRestart = false) => {
     }
 
     const currentUid = auth.currentUser.uid;
+    ensureLeaderHeartbeat(currentUid);
+
+    if (!tryAcquireOrRenewLeadership(currentUid)) {
+        console.log("Firebase Real-time Sync: Onglet secondaire — écoute déléguée à l'onglet maître.");
+        return;
+    }
+
     // Ne pas détruire/recréer inutilement les écouteurs si déjà actifs ou en cours de démarrage pour cet utilisateur
     if (!forceRestart && ((unsubscribeList.length > 0 && activeUid === currentUid) || startingUid === currentUid)) {
         return;
     }
 
     stopFirebaseRealtimeSync();
+    ensureLeaderHeartbeat(currentUid);
+    tryAcquireOrRenewLeadership(currentUid);
+
     const mySeq = ++startSeq;
     activeUid = currentUid;
     startingUid = currentUid;
 
-    console.log("Firebase Real-time Sync: Initializing watermarked onSnapshot listeners...");
+    console.log("Firebase Real-time Sync: Initializing watermarked onSnapshot listeners (Leader Tab)...");
     calibrateServerClock().catch(() => { /* non bloquant */ });
+    pullPeriodicCollectionsIfNeeded(false).catch(() => { /* non bloquant */ });
 
     (async () => {
         let dbInstance;
@@ -102,7 +294,7 @@ export const startFirebaseRealtimeSync = (forceRestart = false) => {
             return;
         }
 
-        for (const colSpec of collectionsToListen) {
+        for (const colSpec of liveRealtimeCollections) {
             if (mySeq !== startSeq || isQuotaCooldownActive()) break;
             try {
                 let listenerTarget: Query<DocumentData> = collection(db, colSpec.collectionName);
@@ -186,101 +378,102 @@ export const startFirebaseRealtimeSync = (forceRestart = false) => {
                                     }
                                 }
 
-                            if (docChange.type === 'added' || docChange.type === 'modified') {
-                                // Protège les photos locales si un média distant n'a pas pu être hydraté
-                                const safeRemoteDoc = localItem && unresolvedRefs > 0
-                                    ? mergeUnresolvedMediaFallback(localItem, docData)
-                                    : docData;
+                                if (docChange.type === 'added' || docChange.type === 'modified') {
+                                    // Protège les photos locales si un média distant n'a pas pu être hydraté
+                                    const safeRemoteDoc = localItem && unresolvedRefs > 0
+                                        ? mergeUnresolvedMediaFallback(localItem, docData)
+                                        : docData;
 
-                                if (localItem) {
-                                    const mergedItem = mergeUpdates(colSpec.entity, localItem, safeRemoteDoc);
-                                    // L'appareil possède des modifications plus récentes que le Cloud : on les renvoie (sauf si média incomplet)
-                                    if (
-                                        unresolvedRefs === 0 &&
-                                        colSpec.entity !== 'suggestions' &&
-                                        stableStringify(mergedItem) !== stableStringify(safeRemoteDoc)
-                                    ) {
-                                        await scheduleRepush(colSpec.entity, String(itemKey), mergedItem);
-                                    }
-                                    if (stableStringify(localItem) !== stableStringify(mergedItem)) {
-                                        await liveDb.put(colSpec.storeName, mergedItem);
+                                    if (localItem) {
+                                        const mergedItem = mergeUpdates(colSpec.entity, localItem, safeRemoteDoc);
+                                        // L'appareil possède des modifications plus récentes que le Cloud : on les renvoie (sauf si média incomplet)
+                                        if (
+                                            unresolvedRefs === 0 &&
+                                            colSpec.entity !== 'suggestions' &&
+                                            stableStringify(mergedItem) !== stableStringify(safeRemoteDoc)
+                                        ) {
+                                            await scheduleRepush(colSpec.entity, String(itemKey), mergedItem);
+                                        }
+                                        if (stableStringify(localItem) !== stableStringify(mergedItem)) {
+                                            await liveDb.put(colSpec.storeName, mergedItem);
+                                            changesToProcess.push({
+                                                id: Date.now() + Math.random(),
+                                                timestamp: Date.now(),
+                                                entity: colSpec.entity,
+                                                entityId: itemKey,
+                                                operation: 'put',
+                                                payload: mergedItem
+                                            });
+                                        }
+                                    } else {
+                                        await liveDb.put(colSpec.storeName, safeRemoteDoc);
                                         changesToProcess.push({
                                             id: Date.now() + Math.random(),
                                             timestamp: Date.now(),
                                             entity: colSpec.entity,
                                             entityId: itemKey,
                                             operation: 'put',
-                                            payload: mergedItem
+                                            payload: safeRemoteDoc
                                         });
                                     }
-                                } else {
-                                    await liveDb.put(colSpec.storeName, safeRemoteDoc);
-                                    changesToProcess.push({
-                                        id: Date.now() + Math.random(),
-                                        timestamp: Date.now(),
-                                        entity: colSpec.entity,
-                                        entityId: itemKey,
-                                        operation: 'put',
-                                        payload: safeRemoteDoc
-                                    });
+                                } else if (docChange.type === 'removed') {
+                                    if (localItem) {
+                                        await liveDb.delete(colSpec.storeName, docId);
+                                        changesToProcess.push({
+                                            id: Date.now() + Math.random(),
+                                            timestamp: Date.now(),
+                                            entity: colSpec.entity,
+                                            entityId: docId,
+                                            operation: 'delete'
+                                        });
+                                    }
                                 }
-                            } else if (docChange.type === 'removed') {
-                                if (localItem) {
-                                    await liveDb.delete(colSpec.storeName, docId);
-                                    changesToProcess.push({
-                                        id: Date.now() + Math.random(),
-                                        timestamp: Date.now(),
-                                        entity: colSpec.entity,
-                                        entityId: docId,
-                                        operation: 'delete'
-                                    });
-                                }
+                            } catch (itemErr) {
+                                console.error(`Error processing real-time change for ${colSpec.collectionName}/${docChange.doc.id}:`, itemErr);
                             }
-                        } catch (itemErr) {
-                            console.error(`Error processing real-time change for ${colSpec.collectionName}/${docChange.doc.id}:`, itemErr);
                         }
-                    }
 
-                    if (!snapshot.metadata.fromCache) {
-                        advanceCollectionWatermark(colSpec.collectionName, serverDocsForWm, new Date().toISOString());
-                    }
-
-                    if (changesToProcess.length > 0) {
-                        window.dispatchEvent(new CustomEvent('datareceived', { detail: changesToProcess }));
-                        try {
-                            reportRealtimeSyncSuccess(changesToProcess.length);
-                        } catch (err) {
-                            console.error("Failed to report real-time sync success:", err);
+                        if (!snapshot.metadata.fromCache) {
+                            advanceCollectionWatermark(colSpec.collectionName, serverDocsForWm, new Date().toISOString());
                         }
-                    }
-                } catch (snapshotErr) {
-                    console.error(`Fatal error in snapshot callback for ${colSpec.collectionName}:`, snapshotErr);
-                }
-            }, (error) => {
-                console.warn(`onSnapshot error for ${colSpec.collectionName}:`, error);
-                if (isQuotaExceededError(error)) {
-                    reportQuotaExceeded(error);
-                    stopFirebaseRealtimeSync();
-                    return;
-                }
-                const errMsg = error instanceof Error ? error.message : String(error);
-                if (errMsg.toLowerCase().includes('permission') || errMsg.toLowerCase().includes('autoris') || errMsg.toLowerCase().includes('insufficient')) {
-                    window.dispatchEvent(new CustomEvent('syncerror', { 
-                        detail: { 
-                            message: auth.currentUser?.email
-                                ? `Votre compte ${auth.currentUser.email} n'est pas autorisé à accéder aux données de l'atelier. Demandez à un administrateur de l'ajouter dans Paramètres > Modularité Super-Admin > Équipe autorisée.`
-                                : `Synchronisation en temps réel (${colSpec.collectionName}) : connexion Google requise ou session expirée.` 
-                        } 
-                    }));
-                }
-            });
 
-            unsubscribeList.push(unsub);
-        } catch (err) {
-            console.error(`Failed to register onSnapshot for ${colSpec.collectionName}:`, err);
+                        if (changesToProcess.length > 0) {
+                            window.dispatchEvent(new CustomEvent('datareceived', { detail: changesToProcess }));
+                            notifyOtherTabsDataReceived();
+                            try {
+                                reportRealtimeSyncSuccess(changesToProcess.length);
+                            } catch (err) {
+                                console.error("Failed to report real-time sync success:", err);
+                            }
+                        }
+                    } catch (snapshotErr) {
+                        console.error(`Fatal error in snapshot callback for ${colSpec.collectionName}:`, snapshotErr);
+                    }
+                }, (error) => {
+                    console.warn(`onSnapshot error for ${colSpec.collectionName}:`, error);
+                    if (isQuotaExceededError(error)) {
+                        reportQuotaExceeded(error);
+                        stopFirebaseRealtimeSync();
+                        return;
+                    }
+                    const errMsg = error instanceof Error ? error.message : String(error);
+                    if (errMsg.toLowerCase().includes('permission') || errMsg.toLowerCase().includes('autoris') || errMsg.toLowerCase().includes('insufficient')) {
+                        window.dispatchEvent(new CustomEvent('syncerror', {
+                            detail: {
+                                message: auth.currentUser?.email
+                                    ? `Votre compte ${auth.currentUser.email} n'est pas autorisé à accéder aux données de l'atelier. Demandez à un administrateur de l'ajouter dans Paramètres > Modularité Super-Admin > Équipe autorisée.`
+                                    : `Synchronisation en temps réel (${colSpec.collectionName}) : connexion Google requise ou session expirée.`
+                            }
+                        }));
+                    }
+                });
+
+                unsubscribeList.push(unsub);
+            } catch (err) {
+                console.error(`Failed to register onSnapshot for ${colSpec.collectionName}:`, err);
+            }
         }
-    }
-    if (mySeq === startSeq) startingUid = null;
+        if (mySeq === startSeq) startingUid = null;
     })();
 };
 
@@ -300,10 +493,16 @@ export const triggerDeviceWakeupCatchUp = async (force = false) => {
     if (typeof window === 'undefined' || !navigator.onLine || !auth.currentUser || isQuotaCooldownActive()) return;
     lastWakeupCatchUp = now;
 
+    if (!tryAcquireOrRenewLeadership(auth.currentUser.uid)) {
+        return;
+    }
+
     const hadActiveListeners = unsubscribeList.length > 0 && activeUid === auth.currentUser.uid;
     if (!hadActiveListeners) {
         startFirebaseRealtimeSync(false);
     }
+
+    pullPeriodicCollectionsIfNeeded(false).catch(() => { /* non bloquant */ });
 
     // Si les écouteurs temps réel sont déjà actifs et qu'il ne s'agit pas d'un retour réseau explicite,
     // inutile de refaire une lecture getDocs supplémentaire sur tickets à chaque changement d'onglet.
@@ -311,7 +510,7 @@ export const triggerDeviceWakeupCatchUp = async (force = false) => {
         return;
     }
 
-    // 2. Rattrapage borné des fiches modifiées depuis le dernier jalon (max 100 docs, jamais de scan total non borné)
+    // Rattrapage borné des fiches modifiées depuis le dernier jalon (max 100 docs, jamais de scan total non borné)
     try {
         const WM_KEY = 'tgs_wakeup_watermark_tickets';
         const watermark = localStorage.getItem(WM_KEY);
@@ -364,6 +563,7 @@ export const triggerDeviceWakeupCatchUp = async (force = false) => {
             console.log(`[Wakeup] Rattrapage terminé : ${newOrUpdated} fiches actualisées.`);
             window.dispatchEvent(new CustomEvent('datareceived'));
             window.dispatchEvent(new CustomEvent('tickets-updated'));
+            notifyOtherTabsDataReceived();
         }
     } catch (err) {
         if (isQuotaExceededError(err)) {
@@ -375,6 +575,18 @@ export const triggerDeviceWakeupCatchUp = async (force = false) => {
 };
 
 export const initializeRealtimeSync = () => {
+    if (typeof window !== 'undefined' && typeof BroadcastChannel !== 'undefined' && !broadcastChannel) {
+        try {
+            broadcastChannel = new BroadcastChannel(LEADER_CHANNEL_NAME);
+            broadcastChannel.onmessage = (event) => {
+                if (event.data?.type === 'datareceived' && event.data?.from !== TAB_ID) {
+                    window.dispatchEvent(new CustomEvent('datareceived'));
+                    window.dispatchEvent(new CustomEvent('tickets-updated'));
+                }
+            };
+        } catch { /* ignore */ }
+    }
+
     startFirebaseRealtimeSync(false);
 
     if (typeof window !== 'undefined' && !lifecycleInitialized) {
@@ -395,8 +607,14 @@ export const initializeRealtimeSync = () => {
             window.dispatchEvent(new CustomEvent('requestsync'));
         };
 
+        const handleUnload = () => {
+            releaseLeadership();
+        };
+
         document.addEventListener('visibilitychange', handleVisibility);
         window.addEventListener('focus', handleFocus);
         window.addEventListener('online', handleOnline);
+        window.addEventListener('pagehide', handleUnload);
+        window.addEventListener('beforeunload', handleUnload);
     }
 };

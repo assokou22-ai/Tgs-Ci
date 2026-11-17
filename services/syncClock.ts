@@ -7,19 +7,21 @@ const OFFSET_KEY = 'tgs_server_clock_offset_ms';
 const DEVICE_KEY = 'tgs_device_id';
 const CALIBRATION_INTERVAL_MS = 30 * 60_000;
 
-let offsetMs = Number(localStorage.getItem(OFFSET_KEY) || '0') || 0;
+let offsetMs = typeof localStorage !== 'undefined' ? (Number(localStorage.getItem(OFFSET_KEY) || '0') || 0) : 0;
 let calibrating: Promise<void> | null = null;
 let lastCalibratedAt = 0;
 
 export const getDeviceId = (): string => {
-    let id = localStorage.getItem(DEVICE_KEY);
+    let id = typeof localStorage !== 'undefined' ? localStorage.getItem(DEVICE_KEY) : null;
     if (!id) {
         const rnd = (typeof crypto !== 'undefined' && 'randomUUID' in crypto)
             ? crypto.randomUUID().slice(0, 8)
             : Math.random().toString(36).slice(2, 10);
-        const kind = (window as unknown as { __IS_ANDROID_APP__?: boolean }).__IS_ANDROID_APP__ ? 'android' : 'web';
+        const kind = (typeof window !== 'undefined' && (window as unknown as { __IS_ANDROID_APP__?: boolean }).__IS_ANDROID_APP__) ? 'android' : 'web';
         id = `${kind}-${rnd}`;
-        localStorage.setItem(DEVICE_KEY, id);
+        if (typeof localStorage !== 'undefined') {
+            localStorage.setItem(DEVICE_KEY, id);
+        }
     }
     return id;
 };

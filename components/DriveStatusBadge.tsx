@@ -1,6 +1,7 @@
 import React from 'react';
 import { useFirebase } from '../context/FirebaseContext.tsx';
-import { Cloud, RefreshCw } from 'lucide-react';
+import { useSyncStatus } from '../hooks/useSyncStatus.ts';
+import { Cloud, RefreshCw, AlertTriangle } from 'lucide-react';
 
 export const DriveStatusBadge: React.FC = () => {
     const { 
@@ -9,6 +10,53 @@ export const DriveStatusBadge: React.FC = () => {
         signInWithGoogle, 
         isReconnectingGoogle 
     } = useFirebase();
+    const {
+        pendingChanges,
+        pendingTickets,
+        unsyncedTickets,
+        lastPushSucceeded,
+        lastError,
+        isQuotaExceeded,
+        isSyncing,
+    } = useSyncStatus();
+
+    const unsentCount = Math.max(pendingTickets, unsyncedTickets.length, pendingChanges);
+    const hasUnsentTickets = unsyncedTickets.length > 0 || pendingChanges > 0;
+    const hasHardError = Boolean(isQuotaExceeded) || Boolean(lastError) || (!lastPushSucceeded && !hasUnsentTickets);
+    const hasCloudPushProblem = hasUnsentTickets || hasHardError;
+
+    if (hasCloudPushProblem && !isSyncing) {
+        const badgeLabel = hasUnsentTickets
+            ? `${unsentCount} fiche(s) non envoyée(s)`
+            : isQuotaExceeded
+            ? 'Quota Cloud atteint'
+            : 'Erreur sync Cloud';
+        const isRedTone = Boolean(isQuotaExceeded) || Boolean(lastError) || !lastPushSucceeded;
+        const listPreview = unsyncedTickets.length > 0
+            ? ` — ${unsyncedTickets.slice(0, 5).map(t => `${t.id} (${t.clientName} - ${t.macModel})`).join(', ')}${unsyncedTickets.length > 5 ? '…' : ''}`
+            : '';
+
+        return (
+            <div
+                id="header-gdrive-status-badge"
+                className={`flex items-center gap-1.5 text-[9px] font-black uppercase tracking-wider px-2.5 py-1.5 rounded-full border shrink-0 ${
+                    isRedTone && !hasUnsentTickets
+                        ? 'border-red-500/40 bg-red-500/15 text-red-400'
+                        : isRedTone
+                        ? 'border-red-500/40 bg-red-500/15 text-red-400'
+                        : 'border-orange-500/40 bg-orange-500/15 text-orange-400'
+                }`}
+                title={
+                    lastError
+                        ? `Échec d'envoi Cloud : ${lastError}${listPreview}`
+                        : `${unsentCount} fiche(s) en attente d'envoi vers le Cloud${listPreview}`
+                }
+            >
+                <AlertTriangle className={`w-3 h-3 shrink-0 ${isRedTone ? 'text-red-400' : 'text-orange-400'}`} />
+                <span>{badgeLabel}</span>
+            </div>
+        );
+    }
 
     if (!driveMetadata.driveConnected) {
         return (
@@ -25,12 +73,12 @@ export const DriveStatusBadge: React.FC = () => {
         );
     }
 
-    if (driveSyncStatus === 'syncing') {
+    if (driveSyncStatus === 'syncing' || isSyncing) {
         return (
             <div 
                 id="header-gdrive-status-badge"
                 className="flex items-center gap-1.5 text-[9px] font-bold uppercase tracking-wider px-2.5 py-1.5 rounded-full border border-blue-500/30 bg-blue-500/10 text-blue-400 shrink-0"
-                title="Synchronisation vers Google Drive en cours..."
+                title="Synchronisation vers le Cloud en cours..."
             >
                 <RefreshCw className="w-3 h-3 animate-spin text-blue-400" />
                 <span className="hidden sm:inline">Drive :</span>
@@ -69,12 +117,12 @@ export const DriveStatusBadge: React.FC = () => {
         );
     }
 
-    // Default 'synced'
+    // Default 'synced' (seulement lorsque Firestore syncQueue est vide, 0 fiche manquante/provisoire et dernier push réussi)
     return (
         <div 
             id="header-gdrive-status-badge"
             className="hidden md:flex items-center gap-1.5 text-[9px] font-bold uppercase tracking-wider px-2.5 py-1.5 rounded-full border border-emerald-500/25 bg-emerald-500/5 text-emerald-400 shrink-0"
-            title={`Google Drive synchronisé (${driveMetadata.connectedEmail || 'Actif'})${driveMetadata.lastSyncTime ? ' - Dernier envoi : ' + new Date(driveMetadata.lastSyncTime).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }) : ''}`}
+            title={`Google Drive & Cloud synchronisés (${driveMetadata.connectedEmail || 'Actif'})${driveMetadata.lastSyncTime ? ' - Dernier envoi : ' + new Date(driveMetadata.lastSyncTime).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }) : ''}`}
         >
             <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
             <span className="hidden lg:inline">Drive :</span>
